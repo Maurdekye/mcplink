@@ -146,6 +146,130 @@ internal static class ToolsAssets
                 return completion.Task.GetAwaiter().GetResult();
             }));
 
+        add(new ToolDef("export_skinned_gltf",
+            "Export a SkinnedMeshRenderer's mesh WITH its full rig to a Blender-loadable glTF 2.0 file pair " +
+            "(.gltf + sibling .bin): bone hierarchy derived from the bind poses, per-vertex skin weights, " +
+            "blendshapes/morph targets with their names (position+normal deltas), all UV channels, and one " +
+            "primitive per submesh. This is exactly what the engine's own model export drops — ModelExporter " +
+            "writes geometry only, for every format. Read-only toward the world; only the output files are " +
+            "written. Handedness converts left-handed Y-up → glTF right-handed Y-up (z negated, winding " +
+            "flipped); rig defects held in bind poses are preserved faithfully, never repaired.",
+            $"{{\"type\":\"object\",\"properties\":{{{WorldProp}," +
+            "\"id\":{\"type\":\"string\",\"description\":\"SkinnedMeshRenderer component id, or a slot whose subtree contains exactly one.\"}," +
+            "\"path\":{\"type\":\"string\",\"description\":\"Output .gltf path; the buffer lands next to it as .bin.\"}," +
+            "\"timeoutMs\":{\"type\":\"integer\",\"default\":120000}}," +
+            "\"required\":[\"id\",\"path\"]}",
+            ArgAliases: ["componentId", "rendererId"],
+            Handler: args =>
+            {
+                var world = GetWorld(args);
+                string id = RequireAny(args, "id", "componentId", "rendererId");
+                string path = RequireString(args, "path");
+                int timeoutMs = Math.Clamp(OptInt(args, "timeoutMs", 120000), 5000, 600000);
+
+                var completion = new TaskCompletionSource<JsonNode>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+                WorldRunner.Run(world, () =>
+                {
+                    var worker = Resolve.Worker(world, id);
+                    SkinnedMeshRenderer renderer;
+                    if (worker is SkinnedMeshRenderer direct)
+                    {
+                        renderer = direct;
+                    }
+                    else if (worker is Slot slot)
+                    {
+                        var renderers = slot.GetComponentsInChildren<SkinnedMeshRenderer>();
+                        renderer = renderers.Count == 1
+                            ? renderers[0]
+                            : throw new ArgumentException(renderers.Count == 0
+                                ? $"No SkinnedMeshRenderer under slot {id}"
+                                : $"{renderers.Count} SkinnedMeshRenderers under slot {id} — pass one: " +
+                                  string.Join(", ", renderers.Select(r => r.ReferenceID.ToString())));
+                    }
+                    else
+                    {
+                        throw new ArgumentException(
+                            $"{id} is a {TypeUtil.FriendlyName(worker.GetType())}, not a SkinnedMeshRenderer or Slot");
+                    }
+                    var meshAsset = renderer.Mesh.Asset
+                        ?? throw new InvalidOperationException("Mesh asset is not loaded yet — retry in a moment");
+
+                    // bone slot names + nearest-bone-ancestor parenting, captured on the world thread
+                    var boneSlots = new List<Slot?>();
+                    for (int i = 0; i < renderer.Bones.Count; i++)
+                        boneSlots.Add(renderer.Bones[i]);
+                    var slotIndex = new Dictionary<Slot, int>();
+                    for (int i = 0; i < boneSlots.Count; i++)
+                        if (boneSlots[i] is Slot bone && !slotIndex.ContainsKey(bone))
+                            slotIndex[bone] = i;
+                    var slotNames = new string?[boneSlots.Count];
+                    var parents = new int[boneSlots.Count];
+                    for (int i = 0; i < boneSlots.Count; i++)
+                    {
+                        slotNames[i] = boneSlots[i]?.Name;
+                        parents[i] = -1;
+                        for (var ancestor = boneSlots[i]?.Parent; ancestor != null; ancestor = ancestor.Parent)
+                        {
+                            if (slotIndex.TryGetValue(ancestor, out int parentIndex))
+                            {
+                                parents[i] = parentIndex;
+                                break;
+                            }
+                        }
+                    }
+
+                    var materialNames = new List<string>();
+                    foreach (IAssetProvider<Material> material in renderer.Materials)
+                        materialNames.Add((material as Component)?.Slot?.Name ?? "");
+                    string meshName = renderer.Slot.Name ?? "Mesh";
+                    string meshUrl = FindUriField(renderer.Mesh.Target as Worker ?? renderer)?.BoxedValue?.ToString() ?? "";
+
+                    renderer.StartTask(async () =>
+                    {
+                        try
+                        {
+                            await default(ToBackground);
+                            object readLock = new object();
+                            await meshAsset.RequestReadLock(readLock).ConfigureAwait(false);
+                            var meshData = new MeshX(meshAsset.Data);
+                            meshAsset.ReleaseReadLock(readLock);
+
+                            var bones = new List<GltfSkinnedExport.BoneInfo>();
+                            var nameMismatches = new List<string>();
+                            for (int i = 0; i < meshData.BoneCount; i++)
+                            {
+                                string boneName = meshData.GetBone(i).Name;
+                                bones.Add(new GltfSkinnedExport.BoneInfo(boneName,
+                                    i < parents.Length ? parents[i] : -1));
+                                if (i < slotNames.Length && slotNames[i] != null && slotNames[i] != boneName)
+                                    nameMismatches.Add($"{i}: mesh '{boneName}' vs slot '{slotNames[i]}'");
+                            }
+
+                            var report = GltfSkinnedExport.Write(meshData, bones, materialNames, meshName, path);
+                            report["renderer"] = renderer.ReferenceID.ToString();
+                            report["meshUrl"] = meshUrl;
+                            if (parents.Length != meshData.BoneCount)
+                                report["boneSlotCountMismatch"] =
+                                    $"renderer has {parents.Length} bone slots, mesh has {meshData.BoneCount} bones";
+                            if (nameMismatches.Count > 0)
+                                report["boneNameMismatches"] = new JsonArray(
+                                    nameMismatches.Select(m => (JsonNode)m).ToArray());
+                            completion.TrySetResult(report);
+                        }
+                        catch (Exception e)
+                        {
+                            completion.TrySetException(e);
+                        }
+                    });
+                    return true;
+                });
+
+                if (!completion.Task.Wait(timeoutMs))
+                    throw new TimeoutException($"Export did not finish within {timeoutMs} ms");
+                return completion.Task.GetAwaiter().GetResult();
+            }));
+
         add(new ToolDef("spawn_import",
             "Run the engine's FULL standard import pipeline on a file (models: glb/fbx/obj, images, audio, ...) and " +
             "spawn the result in the world at the given position — identical to drag-and-drop import, including model " +

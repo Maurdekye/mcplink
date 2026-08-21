@@ -1259,6 +1259,203 @@ Check("presence: busy with an open question keeps the activity and appends the p
     return line.Contains(">thinking</color>") && line.Contains("question pending");
 });
 
+Console.WriteLine("== export_skinned_gltf writer ==");
+// Synthetic rigged mesh: 8-vert strip, 2 submeshes, 2 UV channels, 2 bones
+// (identity + T(0,-2,0.5) bind), split weights, 2 blendshapes (ShapeA with
+// normal deltas, ShapeB without). Every value below is asserted against the
+// written .gltf/.bin pair, including z-flip handedness and winding reversal.
+// (Lives in a local function so Elements.Assets JITs after the resolver is up.)
+RunGltfExporterChecks();
+void RunGltfExporterChecks()
+{
+    var mesh = new Elements.Assets.MeshX();
+    mesh.SetVertexCount(8);
+    Elements.Core.float3[] positions =
+    [
+        new(0, 0, 0), new(1, 0, 0), new(0, 1, 0), new(1, 1, 0),
+        new(0, 2, 0), new(1, 2, 0), new(0, 3, 1), new(1, 3, 0),
+    ];
+    mesh.HasNormals = true;
+    mesh.HasTangents = true;
+    mesh.HasUV0s = true;
+    mesh.HasUV1s = true;
+    mesh.HasBoneBindings = true;
+    for (int i = 0; i < 8; i++)
+    {
+        mesh.SetVertex(i, in positions[i]);
+        var normal = new Elements.Core.float3(0, 0, 1);
+        mesh.SetNormal(i, in normal);
+        var tangent = new Elements.Core.float4(1, 0, 0, 1);
+        mesh.SetTangent(i, in tangent);
+        var uv0 = new Elements.Core.float2(positions[i].x, positions[i].y / 3f);
+        mesh.SetUV(i, 0, in uv0);
+        var uv1 = new Elements.Core.float2(0.5f, 0.25f);
+        mesh.SetUV(i, 1, in uv1);
+    }
+    var boneA = mesh.AddBone("Bone_A");
+    boneA.BindPose = Elements.Core.float4x4.Identity;
+    var boneB = mesh.AddBone("Bone_B");
+    var bindTranslation = new Elements.Core.float3(0, -2, 0.5f);
+    boneB.BindPose = Elements.Core.float4x4.Translation(in bindTranslation);
+    var bindings = mesh.RawBoneBindings;
+    for (int i = 0; i < 8; i++)
+    {
+        bindings[i].ClearBones();
+        if (i <= 3) bindings[i].AddBone(0, 1f);
+        else if (i <= 5) { bindings[i].AddBone(0, 0.25f); bindings[i].AddBone(1, 0.75f); }
+        else bindings[i].AddBone(1, 1f);
+    }
+    var sub0 = mesh.AddSubmesh<Elements.Assets.TriangleSubmesh>();
+    sub0.AddTriangle(0, 1, 3); sub0.AddTriangle(0, 3, 2); sub0.AddTriangle(2, 3, 5);
+    var sub1 = mesh.AddSubmesh<Elements.Assets.TriangleSubmesh>();
+    sub1.AddTriangle(2, 5, 4); sub1.AddTriangle(4, 5, 7); sub1.AddTriangle(4, 7, 6);
+    var shapeA = mesh.AddBlendShape("ShapeA");
+    shapeA.HasNormals = true;
+    var frameA = shapeA.AddFrame(1f);
+    var deltasA = new Elements.Core.float3[8];
+    var normalDeltasA = new Elements.Core.float3[8];
+    for (int i = 0; i <= 3; i++) { deltasA[i] = new(0, 0, 0.5f); normalDeltasA[i] = new(0, 0.1f, 0); }
+    frameA.SetPositionDeltas(deltasA, null, 0, 0);
+    frameA.SetNormalDeltas(normalDeltasA, null, 0, 0);
+    var shapeB = mesh.AddBlendShape("ShapeB");
+    var frameB = shapeB.AddFrame(1f);
+    var deltasB = new Elements.Core.float3[8];
+    for (int i = 6; i <= 7; i++) deltasB[i] = new(0.3f, 0, 0);
+    frameB.SetPositionDeltas(deltasB, null, 0, 0);
+
+    string dir = Path.Combine(Path.GetTempPath(), "mcplink-gltf-test");
+    string gltfPath = Path.Combine(dir, "synthetic.gltf");
+    JsonObject report = GltfSkinnedExport.Write(mesh,
+        [new GltfSkinnedExport.BoneInfo("Bone_A", -1), new GltfSkinnedExport.BoneInfo("Bone_B", 0)],
+        ["MatX"], "TestMesh", gltfPath);
+    var doc = (JsonObject)JsonNode.Parse(File.ReadAllText(gltfPath))!;
+    byte[] bin = File.ReadAllBytes(Path.Combine(dir, "synthetic.bin"));
+
+    int AccessorOffset(int index)
+    {
+        var accessor = (JsonObject)doc["accessors"]![index]!;
+        var view = (JsonObject)doc["bufferViews"]![accessor["bufferView"]!.GetValue<int>()]!;
+        return view["byteOffset"]!.GetValue<int>();
+    }
+    float F(int byteOffset) => BitConverter.ToSingle(bin, byteOffset);
+
+    Check("gltf: report counts + buffer byteLength matches .bin", () =>
+        report["vertices"]!.GetValue<int>() == 8
+        && report["triangles"]!.GetValue<int>() == 6
+        && report["primitives"]!.GetValue<int>() == 2
+        && report["bones"]!.GetValue<int>() == 2
+        && report["rootBones"]!.GetValue<int>() == 1
+        && doc["buffers"]![0]!["byteLength"]!.GetValue<int>() == bin.Length);
+
+    var prim0 = (JsonObject)doc["meshes"]![0]!["primitives"]![0]!;
+    var prim1 = (JsonObject)doc["meshes"]![0]!["primitives"]![1]!;
+    Check("gltf: both primitives carry TEXCOORD_0+1, JOINTS_0, WEIGHTS_0, TANGENT", () =>
+        new[] { prim0, prim1 }.All(p =>
+        {
+            var a = (JsonObject)p["attributes"]!;
+            return a["TEXCOORD_0"] != null && a["TEXCOORD_1"] != null
+                && a["JOINTS_0"] != null && a["WEIGHTS_0"] != null
+                && a["NORMAL"] != null && a["TANGENT"] != null;
+        }));
+
+    Check("gltf: materials — given name then fallback", () =>
+        doc["materials"]![0]!["name"]!.GetValue<string>() == "MatX"
+        && doc["materials"]![1]!["name"]!.GetValue<string>() == "Material_1");
+
+    Check("gltf: POSITION z is negated (v6 z=1 → -1) and min/max track it", () =>
+    {
+        int posAcc = prim0["attributes"]!["POSITION"]!.GetValue<int>();
+        int offset = AccessorOffset(posAcc) + 6 * 12;
+        var min = ((JsonObject)doc["accessors"]![posAcc]!)["min"]!.AsArray();
+        return Math.Abs(F(offset + 8) - -1f) < 1e-6 && Math.Abs(min[2]!.GetValue<float>() - -1f) < 1e-6;
+    });
+
+    Check("gltf: winding reversed — first tri (0,1,3) emits 0,3,1", () =>
+    {
+        int offset = AccessorOffset(prim0["indices"]!.GetValue<int>());
+        return BitConverter.ToUInt32(bin, offset) == 0
+            && BitConverter.ToUInt32(bin, offset + 4) == 3
+            && BitConverter.ToUInt32(bin, offset + 8) == 1;
+    });
+
+    Check("gltf: UV v flipped (uv1 0.25 → 0.75)", () =>
+        Math.Abs(F(AccessorOffset(prim0["attributes"]!["TEXCOORD_1"]!.GetValue<int>()) + 4) - 0.75f) < 1e-6);
+
+    Check("gltf: tangent w flips with handedness", () =>
+        Math.Abs(F(AccessorOffset(prim0["attributes"]!["TANGENT"]!.GetValue<int>()) + 12) - -1f) < 1e-6);
+
+    Check("gltf: per-bone weight sums A=4.5 B=3.5 read back from bin", () =>
+    {
+        int jointsOffset = AccessorOffset(prim0["attributes"]!["JOINTS_0"]!.GetValue<int>());
+        int weightsOffset = AccessorOffset(prim0["attributes"]!["WEIGHTS_0"]!.GetValue<int>());
+        float sumA = 0, sumB = 0;
+        for (int v = 0; v < 8; v++)
+            for (int k = 0; k < 4; k++)
+            {
+                int joint = BitConverter.ToUInt16(bin, jointsOffset + v * 8 + k * 2);
+                float weight = F(weightsOffset + v * 16 + k * 4);
+                if (joint == 0) sumA += weight; else if (joint == 1) sumB += weight;
+            }
+        return Math.Abs(sumA - 4.5f) < 1e-5 && Math.Abs(sumB - 3.5f) < 1e-5;
+    });
+
+    Check("gltf: skin joints=2, IBM MAT4 count 2, B translation z-flipped to (0,-2,-0.5)", () =>
+    {
+        var skin = (JsonObject)doc["skins"]![0]!;
+        int ibmAcc = skin["inverseBindMatrices"]!.GetValue<int>();
+        var accessor = (JsonObject)doc["accessors"]![ibmAcc]!;
+        int offset = AccessorOffset(ibmAcc) + 64; // bone B, column-major, translation = elements 12..14
+        return skin["joints"]!.AsArray().Count == 2
+            && accessor["type"]!.GetValue<string>() == "MAT4"
+            && accessor["count"]!.GetValue<int>() == 2
+            && Math.Abs(F(offset + 12 * 4) - 0f) < 1e-6
+            && Math.Abs(F(offset + 13 * 4) - -2f) < 1e-6
+            && Math.Abs(F(offset + 14 * 4) - -0.5f) < 1e-6;
+    });
+
+    Check("gltf: joint node B is a child of A, local matrix = inv(bindA)·bindB z-flipped", () =>
+    {
+        var nodes = doc["nodes"]!.AsArray();
+        int nodeA = -1, nodeB = -1;
+        for (int i = 0; i < nodes.Count; i++)
+        {
+            string name = nodes[i]!["name"]!.GetValue<string>();
+            if (name == "Bone_A") nodeA = i;
+            if (name == "Bone_B") nodeB = i;
+        }
+        var childrenOfA = nodes[nodeA]!["children"]!.AsArray().Select(n => n!.GetValue<int>());
+        var matrix = nodes[nodeB]!["matrix"]!.AsArray();
+        // global bind of B = inverse(T(0,-2,0.5)) = T(0,2,-0.5); z-flip → (0,2,0.5)
+        return childrenOfA.Contains(nodeB)
+            && Math.Abs(matrix[12]!.GetValue<float>() - 0f) < 1e-6
+            && Math.Abs(matrix[13]!.GetValue<float>() - 2f) < 1e-6
+            && Math.Abs(matrix[14]!.GetValue<float>() - 0.5f) < 1e-6;
+    });
+
+    Check("gltf: targetNames [ShapeA, ShapeB]; NORMAL deltas only on ShapeA", () =>
+    {
+        var names = doc["meshes"]![0]!["extras"]!["targetNames"]!.AsArray()
+            .Select(n => n!.GetValue<string>()).ToArray();
+        var targets = prim0["targets"]!.AsArray();
+        return names.SequenceEqual(["ShapeA", "ShapeB"])
+            && targets.Count == 2
+            && targets[0]!["NORMAL"] != null
+            && targets[1]!["NORMAL"] == null
+            && report["blendshapes"]!.AsArray().Count == 2;
+    });
+
+    Check("gltf: ShapeA POSITION delta 0.5z lands sign-flipped in the z lane", () =>
+    {
+        int acc = prim0["targets"]![0]!["POSITION"]!.GetValue<int>();
+        return Math.Abs(F(AccessorOffset(acc) + 8) - -0.5f) < 1e-6;
+    });
+
+    Check("gltf: weight totals reported as 1.0 (faithful, no silent normalization)", () =>
+        Math.Abs(report["weightTotalMin"]!.GetValue<float>() - 1f) < 1e-5
+        && Math.Abs(report["weightTotalMax"]!.GetValue<float>() - 1f) < 1e-5
+        && report["zeroWeightVertices"]!.GetValue<int>() == 0);
+}
+
 Console.WriteLine();
 Console.WriteLine($"{passed} passed, {failed} failed");
 return failed == 0 ? 0 : 1;
