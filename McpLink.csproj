@@ -11,8 +11,16 @@
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
     <!-- Resonite install; override with -p:ResonitePath=... -->
     <ResonitePath Condition="'$(ResonitePath)' == ''">C:\Program Files (x86)\Steam\steamapps\common\Resonite</ResonitePath>
-    <!-- Set -p:CopyToMods=false to skip auto-deploy into rml_mods -->
-    <CopyToMods Condition="'$(CopyToMods)' == ''">true</CopyToMods>
+    <!-- Deploying is a DECISION, not a build side effect. rml_mods\McpLink.dll is
+         lock-protected while the game runs, but rml_mods\HotReloadMods\ — the path
+         hot_reload actually loads — is NEVER locked, so any stray build (the offline
+         suite's ProjectReference, a worktree branch build) would silently restage it
+         with unreviewed code (found live 2026-08-21). Default is therefore true ONLY
+         for a DIRECT build of the canonical checkout. -p:CopyToMods=true forces a
+         deploy (an explicit decision); -p:CopyToMods=false forces off. The offline
+         suite's ProjectReference additionally pins it false from its side. -->
+    <CopyToMods Condition="'$(CopyToMods)' == '' AND '$(MSBuildStartupDirectory)' == '$(MSBuildProjectDirectory)' AND '$(MSBuildProjectDirectory)' == 'E:\Libraries\Desktop\resonite\mcplink'">true</CopyToMods>
+    <CopyToMods Condition="'$(CopyToMods)' == ''">false</CopyToMods>
   </PropertyGroup>
 
   <ItemGroup>
@@ -80,6 +88,12 @@
     <!-- HotReloadLib reads this copy on 'hot_reload'; the file is never locked (loaded from memory) -->
     <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(ResonitePath)\rml_mods\HotReloadMods" ContinueOnError="true" />
     <Message Text="McpLink.dll deployed to rml_mods + rml_mods\HotReloadMods (hot_reload tool or restart to load)" Importance="high" />
+  </Target>
+
+  <!-- the skip is LOUD: a silent no-deploy reads exactly like a deploy to whoever builds
+       and then wonders why hot_reload loaded old code -->
+  <Target Name="DeployToModsSkipped" AfterTargets="Build" Condition="'$(CopyToMods)' != 'true'">
+    <Message Text="McpLink: deploy SKIPPED (CopyToMods='$(CopyToMods)') — referenced/worktree/foreign-cwd builds never restage rml_mods. A direct build in the canonical tree, or -p:CopyToMods=true, deploys." Importance="high" />
   </Target>
 
 </Project>

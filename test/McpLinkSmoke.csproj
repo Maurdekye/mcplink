@@ -13,7 +13,11 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\McpLink.csproj" />
+    <!-- CopyToMods pinned false: THE OFFLINE SUITE MUST NEVER DEPLOY. Without this, building
+         the suite fires the mod's DeployToMods and silently restages the (never-locked)
+         rml_mods\HotReloadMods DLL that hot_reload loads — the suite reaching production.
+         The mod csproj gates its own default too; this pin holds even if that gate drifts. -->
+    <ProjectReference Include="..\McpLink.csproj" AdditionalProperties="CopyToMods=false" />
     <Reference Include="FrooxEngine">
       <HintPath>$(ResonitePath)\FrooxEngine.dll</HintPath>
       <Private>false</Private>
