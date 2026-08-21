@@ -74,6 +74,17 @@ internal static class GltfSkinnedExport
             materialNames.Add((material as Component)?.Slot?.Name ?? "");
         string meshName = renderer.Slot.Name ?? "Mesh";
 
+        // Up-correction: how this renderer stands in the (Y-up) world, minus the
+        // world-Y heading — swing-twist decomposition, so scene yaw never leaks into
+        // the file but the FBX-importer's recorded stand-up rotation does. Measured on
+        // the live garments: identical across all three (meshZ→worldY, meshY→-worldZ)
+        // despite each carrying a different scene yaw.
+        var globalRotation = renderer.Slot.GlobalRotation;
+        var twist = new floatQ(0, globalRotation.y, 0, globalRotation.w);
+        floatQ upRotation = twist.Magnitude > 1e-6f
+            ? twist.Normalized.Inverted * globalRotation
+            : globalRotation;
+
         object readLock = new object();
         await meshAsset.RequestReadLock(readLock).ConfigureAwait(false);
         var meshData = new MeshX(meshAsset.Data);
@@ -89,7 +100,7 @@ internal static class GltfSkinnedExport
                 nameMismatches.Add($"{i}: mesh '{boneName}' vs slot '{slotNames[i]}'");
         }
 
-        var report = Write(meshData, bones, materialNames, meshName, path);
+        var report = Write(meshData, bones, materialNames, meshName, path, upRotation);
         report["renderer"] = renderer.ReferenceID.ToString();
         if (parents.Length != meshData.BoneCount)
             report["boneSlotCountMismatch"] =
@@ -100,8 +111,24 @@ internal static class GltfSkinnedExport
     }
 
     internal static JsonObject Write(MeshX mesh, IReadOnlyList<BoneInfo> bones,
-        IReadOnlyList<string> materialNames, string meshName, string gltfPath)
+        IReadOnlyList<string> materialNames, string meshName, string gltfPath,
+        floatQ? meshRotation = null)
     {
+        // glTF is +Y-up BY SPEC, but MeshX data lives in renderer-slot space, which for
+        // FBX-imported assets is typically Z-up — the importer records the stand-up
+        // rotation on the slot, not in the vertices. Exporting slot space verbatim
+        // produces a file every spec-following consumer shows lying down, and every
+        // same-frame or orientation-invariant check stays green (measured live: all
+        // three garments, caught only against an independent reference asset).
+        // The caller passes the slot-derived up-correction; it is applied to every
+        // point/vector AND conjugated through the bind matrices so the rig stays
+        // consistent — and it is REPORTED, never silent.
+        floatQ rotation = meshRotation ?? floatQ.Identity;
+        bool rotated = !MathX.Approximately(rotation.w, 1f, 1e-6f) || !MathX.Approximately(rotation.x, 0f, 1e-6f)
+            || !MathX.Approximately(rotation.y, 0f, 1e-6f) || !MathX.Approximately(rotation.z, 0f, 1e-6f);
+        var inverseRotation = rotation.Inverted;
+        var inverseRotationMatrix = float4x4.Rotation(in inverseRotation);
+
         var notes = new JsonArray();
         int vertexCount = mesh.VertexCount;
         int boneCount = mesh.BoneCount;
@@ -156,6 +183,8 @@ internal static class GltfSkinnedExport
                 for (int i = 0; i < count; i++)
                 {
                     var v = get(i);
+                    if (rotated)
+                        v = rotation * v;
                     float x = v.x, y = v.y, z = -v.z;
                     w.Write(x); w.Write(y); w.Write(z);
                     if (x < mn[0]) mn[0] = x; if (x > mx[0]) mx[0] = x;
@@ -178,8 +207,11 @@ internal static class GltfSkinnedExport
                 for (int i = 0; i < vertexCount; i++)
                 {
                     var t = mesh.RawTangents[i];
+                    var txyz = new float3(t.x, t.y, t.z);
+                    if (rotated)
+                        txyz = rotation * txyz;
                     // mirroring flips both the z component and the bitangent handedness
-                    w.Write(t.x); w.Write(t.y); w.Write(-t.z); w.Write(-t.w);
+                    w.Write(txyz.x); w.Write(txyz.y); w.Write(-txyz.z); w.Write(-t.w);
                 }
             });
             attributes["TANGENT"] = AddAccessor(view, 5126, vertexCount, "VEC4");
@@ -317,6 +349,8 @@ internal static class GltfSkinnedExport
                 var bindPose = mesh.GetBone(i).BindPose;
                 if (bindPose.Determinant < 0f)
                     negativeDeterminants++;
+                if (rotated)
+                    bindPose = bindPose * inverseRotationMatrix; // verts got R: B' = B·R⁻¹, G' = inv(B') = R·G
                 ibm[i] = bindPose;
                 globalBind[i] = bindPose.Inverse;
                 if (globalBind[i] == float4x4.Zero)
@@ -482,6 +516,11 @@ internal static class GltfSkinnedExport
             report["weightTotalMin"] = weightMin;
             report["weightTotalMax"] = weightMax;
             report["zeroWeightVertices"] = emptyBindings;
+        }
+        if (rotated)
+        {
+            var euler = rotation.EulerAngles;
+            report["meshRotationApplied"] = $"euler({euler.x:F2},{euler.y:F2},{euler.z:F2})";
         }
         if (bindScale != 1f)
             report["bindScaleNormalized"] = bindScale;

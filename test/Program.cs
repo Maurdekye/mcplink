@@ -1520,6 +1520,95 @@ void RunGltfScaleNormalizationCheck()
     });
 }
 
+// Up-correction twin: the same rig exported with the FBX stand-up rotation
+// (-90° X: meshZ-up -> glTF +Y-up). Verts must land height-on-Y, the root joint
+// node must carry the rotation, and rest skinning must stay exactly identity
+// (node chain × IBM = I) — the frame bug this guards against passed every
+// orientation-invariant check while being 90° wrong for every consumer.
+RunGltfUpRotationCheck();
+void RunGltfUpRotationCheck()
+{
+    var mesh = new Elements.Assets.MeshX();
+    mesh.SetVertexCount(3);
+    mesh.HasBoneBindings = true;
+    // strip along mesh +Z (the "height" axis of a Z-up asset)
+    Elements.Core.float3[] positions = [new(0, 0, 0), new(1, 0, 0), new(0, 0.2f, 3)];
+    for (int i = 0; i < 3; i++)
+    {
+        mesh.SetVertex(i, in positions[i]);
+        mesh.RawBoneBindings[i].ClearBones();
+        mesh.RawBoneBindings[i].AddBone(i < 2 ? 0 : 1, 1f);
+    }
+    var sub = mesh.AddSubmesh<Elements.Assets.TriangleSubmesh>();
+    sub.AddTriangle(0, 1, 2);
+    var rootBone = mesh.AddBone("Bone_A");
+    rootBone.BindPose = Elements.Core.float4x4.Identity;
+    var childBone = mesh.AddBone("Bone_B");
+    var childAt = new Elements.Core.float3(0, 0, 2); // 2 up the mesh-Z height axis
+    childBone.BindPose = Elements.Core.float4x4.Translation(in childAt).Inverse;
+
+    var standUp = Elements.Core.floatQ.Euler(-90f, 0f, 0f); // meshZ -> +Y up
+
+    string dir = Path.Combine(Path.GetTempPath(), "mcplink-gltf-test");
+    string gltfPath = Path.Combine(dir, "rotated.gltf");
+    JsonObject report = GltfSkinnedExport.Write(mesh,
+        [new GltfSkinnedExport.BoneInfo("Bone_A", -1), new GltfSkinnedExport.BoneInfo("Bone_B", 0)],
+        [], "Rotated", gltfPath, standUp);
+    var doc = (JsonObject)JsonNode.Parse(File.ReadAllText(gltfPath))!;
+    byte[] bin = File.ReadAllBytes(Path.Combine(dir, "rotated.bin"));
+
+    int Offset(int accessorIndex)
+    {
+        var accessor = (JsonObject)doc["accessors"]![accessorIndex]!;
+        return ((JsonObject)doc["bufferViews"]![accessor["bufferView"]!.GetValue<int>()]!)["byteOffset"]!.GetValue<int>();
+    }
+    float F(int byteOffset) => BitConverter.ToSingle(bin, byteOffset);
+
+    var prim = (JsonObject)doc["meshes"]![0]!["primitives"]![0]!;
+    Check("gltf-up: mesh-Z height lands on glTF +Y (v2 (0,0.2,3) → (0,3,0.2))", () =>
+    {
+        int off = Offset(prim["attributes"]!["POSITION"]!.GetValue<int>()) + 2 * 12;
+        return Math.Abs(F(off) - 0f) < 1e-5
+            && Math.Abs(F(off + 4) - 3f) < 1e-5
+            && Math.Abs(F(off + 8) - 0.2f) < 1e-5
+            && report["meshRotationApplied"] != null;
+    });
+
+    Check("gltf-up: bone B rests 2 up the glTF Y axis; rest skin (node·IBM) is identity", () =>
+    {
+        var nodes = doc["nodes"]!.AsArray();
+        var nodeA = nodes.First(n => n!["name"]!.GetValue<string>() == "Bone_A")!;
+        var nodeB = nodes.First(n => n!["name"]!.GetValue<string>() == "Bone_B")!;
+        float[] ma = nodeA["matrix"]!.AsArray().Select(v => v!.GetValue<float>()).ToArray();
+        float[] mb = nodeB["matrix"]!.AsArray().Select(v => v!.GetValue<float>()).ToArray();
+        var skin = (JsonObject)doc["skins"]![0]!;
+        int ibmOff = Offset(skin["inverseBindMatrices"]!.GetValue<int>()) + 64; // bone B
+        float[] ibm = Enumerable.Range(0, 16).Select(i => F(ibmOff + i * 4)).ToArray();
+
+        // column-major multiply: global(B) = A · B(local), then rest = global · IBM
+        float[] Mul(float[] x, float[] y)
+        {
+            var r = new float[16];
+            for (int c = 0; c < 4; c++)
+                for (int rw = 0; rw < 4; rw++)
+                    for (int k = 0; k < 4; k++)
+                        r[c * 4 + rw] += x[k * 4 + rw] * y[c * 4 + k];
+            return r;
+        }
+        float[] rest = Mul(Mul(ma, mb), ibm);
+        bool identity = true;
+        for (int c = 0; c < 4; c++)
+            for (int rw = 0; rw < 4; rw++)
+                identity &= Math.Abs(rest[c * 4 + rw] - (c == rw ? 1f : 0f)) < 1e-4;
+        // bone B global rest position = A·B translation — must be (0,2,0) in glTF frame
+        float[] globalB = Mul(ma, mb);
+        return identity
+            && Math.Abs(globalB[12] - 0f) < 1e-4
+            && Math.Abs(globalB[13] - 2f) < 1e-4
+            && Math.Abs(globalB[14] - 0f) < 1e-4;
+    });
+}
+
 Console.WriteLine();
 Console.WriteLine($"{passed} passed, {failed} failed");
 return failed == 0 ? 0 : 1;
