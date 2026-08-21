@@ -1,5 +1,33 @@
 # McpLink changelog
 
+## 2.5.0 (2026-08-21)
+
+**Prompt Wizard: detach panels, and no more agents leaked by quitting the game.** Closing a
+panel retires its agent; closing the world does too; but quitting the game outright used to do
+nothing — the agent stayed hired forever. And there was no way to close a panel while *keeping*
+its agent. Both fixed:
+
+- **⏏ Detach** — a second title-bar button beside the normal ✕ (the `Eject` icon, yellow, only
+  on panels that created their agent). It closes the panel *without* retiring: the agent first
+  receives a `[PANEL DETACHED]` mail telling it the panel and its `@mcp:` response handle are
+  gone and to work via normal org channels from now on — only a *delivered* notice closes the
+  panel (if the backend is unreachable the panel stays and says so, so an agent is never
+  silently orphaned from a panel it still believes in). A detached agent keeps running and can
+  be reached again later via a window panel (2.2.0). The kickoff contract and hire charter now
+  tell agents what a detach means. `wizard_drive` grows a `detach` action.
+- **Quit accounting.** `Engine.OnShutdown` — which fires only when a quit is *committed* (the
+  request event is cancelable) — now sweeps every bound body panel and registers one retire
+  task that the engine itself awaits before process teardown (`RegisterShutdownTask`, bounded
+  by the engine's shutdown wait). World-close handlers that fire moments later during disposal
+  see the panels already handled.
+- **Crash accounting.** A tiny persistent ledger (`%LOCALAPPDATA%\McpLink\panel-bindings.json`)
+  records every bound body panel; retire/detach/outside-retirement remove the entry. Wizard
+  panels are non-persistent, so *any* entry still present at engine startup is an orphan whose
+  panel died with the previous process — the next launch retires them (retried across launches
+  if the backend was down; runs only on real engine init, never on hot reload, which keeps
+  live panels). Offline suite grows to 156 checks (ledger round-trip/corruption, detach
+  notice, retire-on-close truth table).
+
 ## 2.4.0 (2026-08-21)
 
 **Prompt Wizard: agent questions are answerable in-game.** When the panel's agent asks the user

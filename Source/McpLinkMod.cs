@@ -11,7 +11,7 @@ namespace McpLink;
 /// </summary>
 public class McpLinkMod : ResoniteMod
 {
-    public const string VERSION = "2.4.0";
+    public const string VERSION = "2.5.0";
 
     public override string Name => "McpLink";
     public override string Author => "Maurdekye";
@@ -72,6 +72,7 @@ public class McpLinkMod : ResoniteMod
 
     private static McpHttpServer? _server;
     private static bool _hotReloadRegistered;
+    private static Action? _shutdownHandler;   // unsubscribed on hot-reload teardown
 
     public override void OnEngineInit()
     {
@@ -129,6 +130,22 @@ public class McpLinkMod : ResoniteMod
         {
             Error($"PromptWizard menu registration failed: {e.Message}");
         }
+
+        // Game-quit accounting (2.5.0): OnShutdown fires only on a COMMITTED quit (the request
+        // event is cancelable) — the handler registers a shutdown task the engine awaits, so
+        // panel-bound agents retire before process teardown. The orphan reconciler runs ONLY on
+        // real engine init: a hot reload keeps live panels whose bindings must not be swept.
+        try
+        {
+            _shutdownHandler = PromptWizard.HandleEngineShutdown;
+            FrooxEngine.Engine.Current.OnShutdown += _shutdownHandler;
+            if (engineInitializing)
+                Task.Run(PromptWizard.ReconcileOrphanedBindingsAsync);
+        }
+        catch (Exception e)
+        {
+            Error($"Shutdown accounting registration failed: {e.Message}");
+        }
     }
 
     // ======================= hot reload (ResoniteHotReloadLib, optional) =======================
@@ -164,6 +181,15 @@ public class McpLinkMod : ResoniteMod
         try { ToolsShell.CancelAllJobs(); } catch (Exception e) { Error($"jobs: {e.Message}"); }
         try { PromptWizard.RemoveMenuEntry(); } catch (Exception e) { Error($"prompt wizard menu: {e.Message}"); }
         try { AgentWires.Teardown(); } catch (Exception e) { Error($"agent wires: {e.Message}"); }
+        try
+        {
+            if (_shutdownHandler != null)
+            {
+                FrooxEngine.Engine.Current.OnShutdown -= _shutdownHandler;
+                _shutdownHandler = null;
+            }
+        }
+        catch (Exception e) { Error($"shutdown handler: {e.Message}"); }
     }
 
     private static void TryRegisterHotReload(ResoniteMod mod)

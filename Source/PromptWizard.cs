@@ -35,8 +35,13 @@ namespace McpLink;
 /// user mail (the first send carries the kickoff context). Agent responses long-poll in like
 /// mail and may embed [[ref:ID...]] tokens, rendered as grabbable reference cards.
 ///
-/// Deleting the panel (or closing the world) RETIRES the associated agent automatically — the
-/// close button is the retire button. The panel EMBODIES its agent in-game: square window with
+/// Deleting the panel (or closing the world, or quitting the game — Engine.OnShutdown retires
+/// synchronously-awaited, and a persistent binding ledger lets the next launch reconcile what a
+/// crash orphaned) RETIRES the associated agent automatically — the close button is the retire
+/// button. The exception is deliberate: the ⏏ DETACH button beside the ✕ closes the panel but
+/// KEEPS the agent hired — the agent is first told its panel and response handle are gone and
+/// to work via normal org channels; only a delivered notice closes the panel.
+/// The panel EMBODIES its agent in-game: square window with
 /// the orgtree node-card look (thin neutral ring + tier-colored top bar, orgtree's own tier
 /// palette), title = the agent's name ("● working" mirrored from a 5 s status poll; a
 /// retirement done outside the panel greys it out), the binding recorded as a Comment on the
@@ -171,7 +176,9 @@ internal static class PromptWizard
             "status reports render as system lines, and a turn that ends with no message here gets a nudge " +
             "line. An agent question (orgtree_ask) renders as an interactive question card — options, " +
             "free text, submit/dismiss (question batches only; credit/scope requests stay on the desk). " +
-            "Deleting the panel retires the agent. " +
+            "Deleting the panel retires the agent (as does closing the world or quitting the game); the " +
+            "⏏ title-bar button instead DETACHES — closes the panel, keeps the agent hired, and tells it " +
+            "to stop using the dead panel handle. " +
             "Same wizard as Dev Tool → Create New → Editor → Prompt Agent. Returns the wizard root RefID.",
             $"{{\"type\":\"object\",\"properties\":{{{WorldProp}," +
             "\"inFrontOf\":{\"type\":\"string\",\"description\":\"User name/id to place the wizard in front of (default: local user).\"}," +
@@ -218,13 +225,15 @@ internal static class PromptWizard
             "user a question (orgtree_ask renders as an in-panel question card): 'askPick' {tab, option} " +
             "toggles an option (option = label or 1-based number; tab is 0-based, default 0), 'askText' " +
             "{tab, text} sets a tab's free-text answer, 'askSubmit' answers the card, 'askDismiss' closes " +
-            "it unanswered; 'state' reports the panel's stage/agent/effort/attachments plus presence (the " +
+            "it unanswered; 'detach' closes a bound body panel WITHOUT retiring its agent (the agent is " +
+            "notified first that its panel + handle are gone; on notify failure the panel stays); " +
+            "'state' reports the panel's stage/agent/effort/attachments plus presence (the " +
             "live footer ticker line), awaitingReply (a send is outstanding) and ask (the open question " +
             "card, with each tab's options/picked/text). Only works on panels built by the current mod " +
             "generation (a hot reload orphans older panels).",
             $"{{\"type\":\"object\",\"properties\":{{{WorldProp}," +
             "\"wizard\":{\"type\":\"string\",\"description\":\"Wizard root slot RefID.\"}," +
-            "\"action\":{\"type\":\"string\",\"enum\":[\"name\",\"selectRow\",\"expand\",\"tier\",\"effort\",\"create\",\"open\",\"input\",\"attach\",\"send\",\"askPick\",\"askText\",\"askSubmit\",\"askDismiss\",\"state\"]}," +
+            "\"action\":{\"type\":\"string\",\"enum\":[\"name\",\"selectRow\",\"expand\",\"tier\",\"effort\",\"create\",\"open\",\"input\",\"attach\",\"send\",\"askPick\",\"askText\",\"askSubmit\",\"askDismiss\",\"detach\",\"state\"]}," +
             "\"text\":{\"type\":\"string\"},\"row\":{\"type\":\"string\"},\"tier\":{\"type\":\"string\"}," +
             "\"effort\":{\"type\":\"string\",\"enum\":[\"default\",\"low\",\"medium\",\"high\",\"xhigh\",\"max\"]}," +
             "\"id\":{\"type\":\"string\"}," +
@@ -340,6 +349,13 @@ internal static class PromptWizard
                             if (state.AskId == null)
                                 throw new InvalidOperationException("No open question card on this panel.");
                             SubmitAsk(state, dismiss: action == "askDismiss");
+                            break;
+                        case "detach":
+                            if (!RetiresOnClose(state.WindowMode, state.FallbackMode, state.RetireFired, state.NodeId != null))
+                                throw new InvalidOperationException(
+                                    "Only a bound body panel can detach — window/fallback panels just close, " +
+                                    "and this one has no live agent binding.");
+                            Detach(state);
                             break;
                         case "state":
                             break; // the report below is the action
@@ -1177,9 +1193,11 @@ internal static class PromptWizard
                 // itself (introspectable data, survives the mod's memory) and join the wire
                 // graph so related panels get linked in 3D
                 state.Root.AttachComponent<Comment>().Text.Value =
-                    $"orgtree agent {org.Slug}/{node} · handle @mcp:{peer} · deleting this panel retires it";
+                    $"orgtree agent {org.Slug}/{node} · handle @mcp:{peer} · deleting this panel retires it (⏏ detaches)";
                 state.Wire = AgentWires.Register(state.Root.World, state.Root, org.Slug, node, parentId, TierColor(tier));
                 ArmAutoRetire(state);
+                PanelBindings.Add(org.Slug, node);  // orphan ledger: cleared on retire/detach
+                AddDetachChromeButton(state);
                 // no system note here (user ruling 2026-08-20): the retitle + solid frame are
                 // the creation feedback — the chat starts empty, like a fresh thread
                 EnterChatStage(state);
@@ -1608,11 +1626,189 @@ internal static class PromptWizard
         Task.Run(async () =>
         {
             var r = await OrgtreeClient.RetireAsync(slug, node).ConfigureAwait(false);
+            if (r.Error == null || LooksAlreadyResolved(r.Error))
+                PanelBindings.Remove(slug, node);
             if (r.Error != null)
                 McpLinkMod.LogError($"PromptWizard: auto-retire of {node} failed: {r.Error}");
             else
                 McpLinkMod.LogInfo($"PromptWizard: {node} retired (seat refunded).");
         });
+    }
+
+    // ======================= detach + game-quit accounting (2.5.0) =======================
+    // Closing a panel retires its agent; closing the world does too. Two gaps closed here:
+    // quitting the GAME outright (Engine.OnShutdown fires only when the quit is COMMITTED —
+    // the request event is cancelable — and the engine then awaits RegisterShutdownTask work,
+    // so the retires land before process teardown; a CRASH instead leaves the persistent
+    // PanelBindings entries, which the next launch's reconciler retires). And DETACH — the
+    // deliberate "close the panel, keep the agent": a chrome button beside the X that first
+    // NOTIFIES the agent its panel + handle are gone (only on notify success does the panel
+    // close), removes the binding so neither shutdown nor reconciler ever retires it, and
+    // leaves the agent running on normal org channels.
+
+    /// <summary>Does closing this panel retire its agent? Window panels are views, fallback
+    /// panels have no node, and a fired/detached panel is already accounted for. Internal +
+    /// pure for the offline suite — the destroy path and the shutdown sweep share it.</summary>
+    internal static bool RetiresOnClose(bool windowMode, bool fallbackMode, bool retireFired, bool hasNode)
+        => !windowMode && !fallbackMode && !retireFired && hasNode;
+
+    /// <summary>A retire refusal that means the agent is ALREADY gone (someone else retired or
+    /// dissolved it) — the binding is stale and safe to drop, not an error to retry.</summary>
+    private static bool LooksAlreadyResolved(string error) =>
+        error.Contains("archiv", StringComparison.OrdinalIgnoreCase)
+        || error.Contains("no node", StringComparison.OrdinalIgnoreCase)
+        || error.Contains("not found", StringComparison.OrdinalIgnoreCase)
+        || error.Contains("dissolv", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>The ⏏ chrome button, inserted beside the window's normal ✕ once the panel is a
+    /// BOUND BODY (window/fallback panels never get it). SetupPanel's header is a
+    /// HorizontalLayout of title + pin + close; the close button carries ButtonDestroy, which
+    /// is how it's found. Ordering: the ✕ moves to OrderOffset 1 so ⏏ (0, appended after pin)
+    /// slots in between — [title][pin][⏏][✕].</summary>
+    private static void AddDetachChromeButton(WizardState state)
+    {
+        try
+        {
+            var closeDestroy = state.Root.GetComponentInChildren<ButtonDestroy>();
+            if (closeDestroy == null || closeDestroy.Slot.Parent == null)
+                return; // chrome drift — the wizard_drive 'detach' action still works
+            var ui = new UIBuilder(closeDestroy.Slot.Parent);
+            RadiantUI_Constants.SetupDefaultStyle(ui);
+            ui.Style.MinWidth = 64f;
+            ui.Style.ButtonIconPadding = 8f;
+            ui.Style.ButtonSprite = ui.CircleSprite;
+            var detach = ui.Button(OfficialAssets.Graphics.Icons.General.Eject,
+                (colorX?)RadiantUI_Constants.Sub.YELLOW, colorX.White);
+            detach.Slot.OrderOffset = 0;
+            closeDestroy.Slot.OrderOffset = 1;
+            detach.LocalPressed += (_, _) => Detach(state);
+        }
+        catch (Exception e)
+        {
+            McpLinkMod.LogError($"PromptWizard: detach chrome button failed: {e.Message}");
+        }
+    }
+
+    /// <summary>Close the panel WITHOUT retiring: notify the agent first (its panel and handle
+    /// are gone — stop using them), and only on a delivered notice tear the panel down. A
+    /// failed notice keeps the panel: the agent must never be silently orphaned from a panel
+    /// it still believes in.</summary>
+    private static void Detach(WizardState state)
+    {
+        if (state.Busy || state.WindowMode || state.FallbackMode || state.RetireFired || state.NodeId == null)
+            return;
+        state.Busy = true;
+        string slug = state.OrgSlug!, node = state.NodeId, peer = state.Peer ?? "";
+        var world = state.Root.World;
+        string notice = ComposeDetachNotice(peer);
+        Task.Run(async () =>
+        {
+            var r = await OrgtreeClient.MessageNodeAsync(slug, node, notice).ConfigureAwait(false);
+            RunSync(world, state, () =>
+            {
+                state.Busy = false;
+                if (r.Error != null)
+                {
+                    AppendSystem(state, $"<color=#f88>couldn't detach — the agent wasn't notified: " +
+                                        $"{Escape(r.Error)}</color> — the panel stays open.");
+                    return;
+                }
+                state.RetireFired = true;          // the destroy below must not retire
+                PanelBindings.Remove(slug, node);  // nor may shutdown / the next-launch reconciler
+                if (state.WorldClosed != null)
+                {
+                    try { world.WorldDestroyed -= state.WorldClosed; } catch { }
+                    state.WorldClosed = null;
+                }
+                state.Poll?.Cancel();
+                AgentWires.Drop(state.Wire);
+                McpLinkMod.LogInfo($"PromptWizard: {node} detached — panel closed, agent stays hired.");
+                state.Root.Destroy();
+            });
+        });
+    }
+
+    /// <summary>The mail that keeps a detached agent aware. Internal + pure for the suite.</summary>
+    internal static string ComposeDetachNotice(string peer)
+    {
+        return "[PANEL DETACHED] The user closed your in-game panel WITHOUT retiring you — you stay " +
+               "hired and keep working.\n" +
+               $"- The panel and its response handle @mcp:{peer} are GONE. Do NOT send anything to that " +
+               "address anymore — nothing reads it.\n" +
+               "- Communicate through normal org channels from now on: orgtree_status for progress, " +
+               "mail to your superior, or user mail if you hold a user audience.\n" +
+               "- The user can reopen a chat with you later as a window onto the user mail thread; " +
+               "anything you send as user mail reaches their desk regardless.\n" +
+               "- Continue your current task unless told otherwise.";
+    }
+
+    /// <summary>Engine.OnShutdown subscriber (fires ONLY on a committed quit, on the main
+    /// thread, before worlds tear down). Marks every bound body panel handled — so the
+    /// WorldDestroyed handlers that fire moments later during engine disposal no-op — and
+    /// registers ONE task retiring them all; the engine awaits it (bounded by
+    /// MaxShutdownWaitMilliseconds) before environment teardown. Anything that still fails
+    /// stays in PanelBindings for the next launch's reconciler.</summary>
+    internal static void HandleEngineShutdown()
+    {
+        var toRetire = new List<(string Slug, string Node)>();
+        foreach (var state in LiveStates.Values)
+        {
+            if (!RetiresOnClose(state.WindowMode, state.FallbackMode, state.RetireFired, state.NodeId != null))
+                continue;
+            state.RetireFired = true;
+            state.Poll?.Cancel();
+            toRetire.Add((state.OrgSlug!, state.NodeId!));
+        }
+        if (toRetire.Count == 0)
+            return;
+        McpLinkMod.LogInfo($"PromptWizard: game shutting down — retiring {toRetire.Count} panel-bound agent(s).");
+        FrooxEngine.Engine.Current.RegisterShutdownTask(Task.Run(async () =>
+        {
+            await Task.WhenAll(toRetire.Select(async entry =>
+            {
+                var r = await OrgtreeClient.RetireAsync(entry.Slug, entry.Node).ConfigureAwait(false);
+                if (r.Error == null || LooksAlreadyResolved(r.Error))
+                    PanelBindings.Remove(entry.Slug, entry.Node);
+                McpLinkMod.LogInfo(r.Error == null
+                    ? $"PromptWizard: {entry.Node} retired on game shutdown."
+                    : $"PromptWizard: shutdown retire of {entry.Node}: {r.Error} (reconciled next launch if still bound)");
+            })).ConfigureAwait(false);
+        }));
+    }
+
+    /// <summary>Next-launch sweep: wizard panels are non-persistent, so ANY binding present at
+    /// engine startup is an orphan — its panel died with the previous game process (crash, or
+    /// a quit whose retires didn't land). Retire them; keep entries whose retire genuinely
+    /// failed (backend down) for the launch after. Runs only during REAL engine init — a hot
+    /// reload keeps live panels whose bindings are current, and must never sweep them.</summary>
+    internal static async Task ReconcileOrphanedBindingsAsync()
+    {
+        for (int attempt = 0; attempt < 3; attempt++)
+        {
+            await Task.Delay(attempt == 0 ? 15000 : 45000).ConfigureAwait(false);
+            var entries = PanelBindings.Snapshot();
+            if (entries.Count == 0)
+                return;
+            bool allResolved = true;
+            foreach (var (org, node) in entries)
+            {
+                var r = await OrgtreeClient.RetireAsync(org, node).ConfigureAwait(false);
+                if (r.Error == null || LooksAlreadyResolved(r.Error))
+                {
+                    PanelBindings.Remove(org, node);
+                    McpLinkMod.LogInfo($"PromptWizard: reconciled orphaned panel binding — " +
+                                       $"{node} ({org}) {(r.Error == null ? "retired" : "was already gone")}.");
+                }
+                else
+                {
+                    allResolved = false;
+                    McpLinkMod.LogError($"PromptWizard: orphan reconcile of {node} ({org}) failed: {r.Error}");
+                }
+            }
+            if (allResolved)
+                return;
+        }
+        McpLinkMod.LogError("PromptWizard: some orphaned panel bindings could not be reconciled — retrying next launch.");
     }
 
     // ======================= live status (the panel mirrors the real node) =======================
@@ -1656,6 +1852,8 @@ internal static class PromptWizard
                         if (!state.RetireFired)
                         {
                             state.RetireFired = true; // nothing left to retire on panel delete
+                            if (!state.WindowMode && !state.FallbackMode)
+                                PanelBindings.Remove(slug, node); // already gone — nothing to reconcile
                             AgentWires.Drop(state.Wire);
                             UpdateFrame(state, NeutralBorder);
                             SetTitle(state, $"{state.AgentLabel}{state.TitleTag} (retired)");
@@ -2422,7 +2620,8 @@ internal static class PromptWizard
         "and ground engine claims with mcp__ilspy-mcp__* against the DLLs in the game folder root. " +
         "Read-only toward the user's objects unless asked for changes; save_object before risky " +
         "mutations. The cross-session mail hub is OFF-LIMITS. When a task completes: answer to the " +
-        "handle, then orgtree_status done with a short summary.";
+        "handle, then orgtree_status done with a short summary. If a [PANEL DETACHED] mail arrives, " +
+        "your panel is gone but you remain hired: stop using the handle and work via org channels.";
 
     private static string BuildKickoff(WizardState state, string prompt, JsonArray refs, string peer)
     {
@@ -2458,6 +2657,8 @@ internal static class PromptWizard
                       + "but the handle message is the required minimum.");
         sb.AppendLine("- Follow-ups arrive as more user mail; they may carry [ATTACHED OBJECT REFERENCES] blocks like the one above.");
         sb.AppendLine("- The user deleting the panel retires you; when a task is complete, answer to the handle, then orgtree_status done.");
+        sb.AppendLine("- The user may instead DETACH the panel: you get a [PANEL DETACHED] mail, you STAY HIRED, "
+                      + "and the handle above goes dead — from then on use normal org channels, not the handle.");
         return sb.ToString();
     }
 

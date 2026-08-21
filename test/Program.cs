@@ -1521,5 +1521,59 @@ void RunGltfScaleNormalizationCheck()
 }
 
 Console.WriteLine();
+Console.WriteLine("== prompt wizard detach + quit accounting (2.5.0) ==");
+Check("bindings: serialize → parse round-trip preserves entries and order", () =>
+{
+    var entries = new List<(string, string)> { ("resonite", "helper"), ("other-org", "scout") };
+    var back = PanelBindings.Parse(PanelBindings.Serialize(entries));
+    return back.Count == 2 && back[0] == ("resonite", "helper") && back[1] == ("other-org", "scout");
+});
+Check("bindings: corrupt, empty and wrong-shape input all degrade to an empty ledger", () =>
+    PanelBindings.Parse("{not json").Count == 0
+    && PanelBindings.Parse("").Count == 0
+    && PanelBindings.Parse("{\"bindings\":[{\"org\":\"\",\"node\":\"x\"},{\"org\":\"a\"},42]}").Count == 0
+    && PanelBindings.Parse("[1,2,3]").Count == 0);
+string bindingsTmp = Path.Combine(Path.GetTempPath(), $"mcplink-test-bindings-{Guid.NewGuid():N}.json");
+PanelBindings.StorePath = bindingsTmp;
+Check("bindings: add + snapshot on the store file; duplicate add is idempotent", () =>
+{
+    PanelBindings.Add("resonite", "helper");
+    PanelBindings.Add("resonite", "scout");
+    PanelBindings.Add("resonite", "helper"); // again
+    var snap = PanelBindings.Snapshot();
+    return snap.Count == 2 && snap.Contains(("resonite", "helper")) && snap.Contains(("resonite", "scout"));
+});
+Check("bindings: remove drops exactly its entry; removing a missing one is a no-op", () =>
+{
+    PanelBindings.Remove("resonite", "helper");
+    PanelBindings.Remove("resonite", "never-there");
+    var snap = PanelBindings.Snapshot();
+    return snap.Count == 1 && snap[0] == ("resonite", "scout");
+});
+Check("bindings: the ledger is really on disk (fresh parse of the file agrees)", () =>
+{
+    var onDisk = PanelBindings.Parse(File.ReadAllText(bindingsTmp));
+    return onDisk.Count == 1 && onDisk[0] == ("resonite", "scout");
+});
+try { File.Delete(bindingsTmp); } catch { }
+Check("detach notice: names the dead handle and forbids sending to it", () =>
+{
+    string notice = PromptWizard.ComposeDetachNotice("resonite.abc123");
+    return notice.Contains("@mcp:resonite.abc123") && notice.Contains("Do NOT")
+        && notice.Contains("[PANEL DETACHED]");
+});
+Check("detach notice: the agent stays hired and is pointed at org channels", () =>
+{
+    string notice = PromptWizard.ComposeDetachNotice("p");
+    return notice.Contains("stay") && notice.Contains("hired") && notice.Contains("orgtree_status");
+});
+Check("retires-on-close: bound body only — window/fallback/fired/nodeless never retire", () =>
+    PromptWizard.RetiresOnClose(windowMode: false, fallbackMode: false, retireFired: false, hasNode: true)
+    && !PromptWizard.RetiresOnClose(true, false, false, true)
+    && !PromptWizard.RetiresOnClose(false, true, false, true)
+    && !PromptWizard.RetiresOnClose(false, false, true, true)
+    && !PromptWizard.RetiresOnClose(false, false, false, false));
+
+Console.WriteLine();
 Console.WriteLine($"{passed} passed, {failed} failed");
 return failed == 0 ? 0 : 1;
