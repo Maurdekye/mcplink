@@ -1456,6 +1456,70 @@ void RunGltfExporterChecks()
         && report["zeroWeightVertices"]!.GetValue<int>() == 0);
 }
 
+// Inch-scale twin: same rig but every bind global carries a uniform 0.0254 scale
+// (as one live garment does). Normalization must cancel it exactly — IBM and node
+// values byte-match the unscaled rig above, and the report carries the marker.
+RunGltfScaleNormalizationCheck();
+void RunGltfScaleNormalizationCheck()
+{
+    const float sigma = 0.0254f;
+    var mesh = new Elements.Assets.MeshX();
+    mesh.SetVertexCount(3);
+    mesh.HasBoneBindings = true;
+    for (int i = 0; i < 3; i++)
+    {
+        var p = new Elements.Core.float3(i, 0, 0);
+        mesh.SetVertex(i, in p);
+        mesh.RawBoneBindings[i].ClearBones();
+        mesh.RawBoneBindings[i].AddBone(i < 2 ? 0 : 1, 1f);
+    }
+    var sub = mesh.AddSubmesh<Elements.Assets.TriangleSubmesh>();
+    sub.AddTriangle(0, 1, 2);
+    // S01-like structure: bind globals = T(meters) · S(sigma) — basis carries the
+    // inch scale, bone rest positions stay in meters
+    var sigmaScale = new Elements.Core.float3(sigma, sigma, sigma);
+    var scaledA = mesh.AddBone("Bone_A");
+    scaledA.BindPose = Elements.Core.float4x4.Scale(in sigmaScale).Inverse;
+    var scaledB = mesh.AddBone("Bone_B");
+    var childLocal = new Elements.Core.float3(0, 2, -0.5f);
+    scaledB.BindPose = (Elements.Core.float4x4.Translation(in childLocal)
+        * Elements.Core.float4x4.Scale(in sigmaScale)).Inverse;
+
+    string dir = Path.Combine(Path.GetTempPath(), "mcplink-gltf-test");
+    string gltfPath = Path.Combine(dir, "scaled.gltf");
+    JsonObject report = GltfSkinnedExport.Write(mesh,
+        [new GltfSkinnedExport.BoneInfo("Bone_A", -1), new GltfSkinnedExport.BoneInfo("Bone_B", 0)],
+        [], "Scaled", gltfPath);
+    var doc = (JsonObject)JsonNode.Parse(File.ReadAllText(gltfPath))!;
+    byte[] bin = File.ReadAllBytes(Path.Combine(dir, "scaled.bin"));
+
+    Check("gltf-scale: uniform bind scale is reported and normalized away", () =>
+    {
+        var skin = (JsonObject)doc["skins"]![0]!;
+        int ibmAcc = skin["inverseBindMatrices"]!.GetValue<int>();
+        var accessor = (JsonObject)doc["accessors"]![ibmAcc]!;
+        var view = (JsonObject)doc["bufferViews"]![accessor["bufferView"]!.GetValue<int>()]!;
+        int offset = view["byteOffset"]!.GetValue<int>() + 64; // bone B
+        float tx = BitConverter.ToSingle(bin, offset + 12 * 4);
+        float ty = BitConverter.ToSingle(bin, offset + 13 * 4);
+        float tz = BitConverter.ToSingle(bin, offset + 14 * 4);
+        float diag = BitConverter.ToSingle(bin, offset); // element [0,0] must be ~1 after normalization
+        return Math.Abs(report["bindScaleNormalized"]!.GetValue<float>() - sigma) < 1e-4
+            && Math.Abs(tx - 0f) < 1e-4 && Math.Abs(ty - -2f) < 1e-4 && Math.Abs(tz - -0.5f) < 1e-4
+            && Math.Abs(diag - 1f) < 1e-4;
+    });
+
+    Check("gltf-scale: node B rest translation lands in meters (0,2,0.5)", () =>
+    {
+        var nodes = doc["nodes"]!.AsArray();
+        var nodeB = nodes.First(n => n!["name"]!.GetValue<string>() == "Bone_B")!;
+        var matrix = nodeB["matrix"]!.AsArray();
+        return Math.Abs(matrix[12]!.GetValue<float>() - 0f) < 1e-4
+            && Math.Abs(matrix[13]!.GetValue<float>() - 2f) < 1e-4
+            && Math.Abs(matrix[14]!.GetValue<float>() - 0.5f) < 1e-4;
+    });
+}
+
 Console.WriteLine();
 Console.WriteLine($"{passed} passed, {failed} failed");
 return failed == 0 ? 0 : 1;

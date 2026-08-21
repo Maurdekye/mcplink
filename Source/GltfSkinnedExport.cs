@@ -306,15 +306,18 @@ internal static class GltfSkinnedExport
         var meshNode = new JsonObject { ["name"] = meshName, ["mesh"] = 0 };
         nodes.Add(meshNode);
         int negativeDeterminants = 0, degenerateBindPoses = 0;
+        float bindScale = 1f;
         JsonObject? skin = null;
         if (mesh.HasBoneBindings && boneCount > 0)
         {
             var globalBind = new float4x4[boneCount];
+            var ibm = new float4x4[boneCount];
             for (int i = 0; i < boneCount; i++)
             {
                 var bindPose = mesh.GetBone(i).BindPose;
                 if (bindPose.Determinant < 0f)
                     negativeDeterminants++;
+                ibm[i] = bindPose;
                 globalBind[i] = bindPose.Inverse;
                 if (globalBind[i] == float4x4.Zero)
                 {
@@ -322,6 +325,41 @@ internal static class GltfSkinnedExport
                     globalBind[i] = float4x4.Identity;
                     notes.Add($"bone {i} '{bones[i].Name}' has a non-invertible BindPose — node placed at identity");
                 }
+            }
+
+            // Inch-authored FBX rigs carry a uniform scale in every bind pose (measured:
+            // one live garment is exactly 0.0254 on all bones). Self-consistent for
+            // skinning, but importers then bake a scaled armature frame into the mesh.
+            // If the WHOLE rig shares one uniform scale, cancel it: globals become K·G,
+            // bind matrices B·K⁻¹, so rest skinning stays identity, every relative
+            // rotation/translation (including deliberate rig defects) is untouched, and
+            // bones land in the same meter frame as the vertices.
+            var perBone = new float[boneCount];
+            for (int i = 0; i < boneCount; i++)
+            {
+                var s = globalBind[i].DecomposedScale;
+                perBone[i] = (s.x + s.y + s.z) / 3f;
+            }
+            float scaleMin = perBone.Min(), scaleMax = perBone.Max();
+            if (scaleMax > 0f && scaleMax - scaleMin < 0.01f * scaleMax && MathF.Abs(scaleMax - 1f) > 0.001f)
+            {
+                bindScale = (scaleMin + scaleMax) / 2f;
+                var inverseScale = new float3(1f / bindScale, 1f / bindScale, 1f / bindScale);
+                var forwardScale = new float3(bindScale, bindScale, bindScale);
+                var k = float4x4.Scale(in inverseScale);
+                var kInverse = float4x4.Scale(in forwardScale);
+                for (int i = 0; i < boneCount; i++)
+                {
+                    // right-multiply strips the basis scale but keeps the bone's rest
+                    // position (4th column) where the mesh actually is; the bind matrix
+                    // takes the inverse factor on the left so G'·B' stays identity
+                    globalBind[i] = globalBind[i] * k;
+                    ibm[i] = kInverse * ibm[i];
+                }
+            }
+            else if (scaleMax - scaleMin >= 0.01f * scaleMax)
+            {
+                notes.Add($"bind-pose scale varies per bone ({scaleMin:F5}..{scaleMax:F5}) — exported raw, no normalization");
             }
 
             int firstJointNode = nodes.Count;
@@ -349,7 +387,7 @@ internal static class GltfSkinnedExport
             int viewIbm = AddView(w =>
             {
                 for (int i = 0; i < boneCount; i++)
-                    foreach (var component in MatrixColumnMajorZFlipped(mesh.GetBone(i).BindPose))
+                    foreach (var component in MatrixColumnMajorZFlipped(ibm[i]))
                         w.Write(component!.GetValue<float>());
             });
             int accIbm = AddAccessor(viewIbm, 5126, boneCount, "MAT4");
@@ -445,6 +483,8 @@ internal static class GltfSkinnedExport
             report["weightTotalMax"] = weightMax;
             report["zeroWeightVertices"] = emptyBindings;
         }
+        if (bindScale != 1f)
+            report["bindScaleNormalized"] = bindScale;
         if (negativeDeterminants > 0)
             report["negativeDeterminantBindPoses"] = negativeDeterminants;
         if (degenerateBindPoses > 0)
