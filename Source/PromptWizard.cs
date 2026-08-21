@@ -1677,8 +1677,10 @@ internal static class PromptWizard
             ui.Style.MinWidth = 64f;
             ui.Style.ButtonIconPadding = 8f;
             ui.Style.ButtonSprite = ui.CircleSprite;
+            // the ✕'s own idiom (Hero circle + Sub glyph): Sub.YELLOW alone as the circle was
+            // near-invisible against the dark header — "i dont see the eject button" (user, live)
             var detach = ui.Button(OfficialAssets.Graphics.Icons.General.Eject,
-                (colorX?)RadiantUI_Constants.Sub.YELLOW, colorX.White);
+                (colorX?)RadiantUI_Constants.Hero.YELLOW, RadiantUI_Constants.Sub.YELLOW);
             detach.Slot.OrderOffset = 0;
             closeDestroy.Slot.OrderOffset = 1;
             detach.LocalPressed += (_, _) => Detach(state);
