@@ -1362,12 +1362,15 @@ void RunGltfExporterChecks()
         doc["materials"]![0]!["name"]!.GetValue<string>() == "MatX"
         && doc["materials"]![1]!["name"]!.GetValue<string>() == "Material_1");
 
-    Check("gltf: POSITION z is negated (v6 z=1 → -1) and min/max track it", () =>
+    Check("gltf: POSITION x negated (v1 x=1 → -1), z untouched (v6 z stays 1)", () =>
     {
         int posAcc = prim0["attributes"]!["POSITION"]!.GetValue<int>();
-        int offset = AccessorOffset(posAcc) + 6 * 12;
+        int off1 = AccessorOffset(posAcc) + 1 * 12;
+        int off6 = AccessorOffset(posAcc) + 6 * 12;
         var min = ((JsonObject)doc["accessors"]![posAcc]!)["min"]!.AsArray();
-        return Math.Abs(F(offset + 8) - -1f) < 1e-6 && Math.Abs(min[2]!.GetValue<float>() - -1f) < 1e-6;
+        return Math.Abs(F(off1) - -1f) < 1e-6
+            && Math.Abs(F(off6 + 8) - 1f) < 1e-6
+            && Math.Abs(min[0]!.GetValue<float>() - -1f) < 1e-6;
     });
 
     Check("gltf: winding reversed — first tri (0,1,3) emits 0,3,1", () =>
@@ -1381,8 +1384,9 @@ void RunGltfExporterChecks()
     Check("gltf: UV v flipped (uv1 0.25 → 0.75)", () =>
         Math.Abs(F(AccessorOffset(prim0["attributes"]!["TEXCOORD_1"]!.GetValue<int>()) + 4) - 0.75f) < 1e-6);
 
-    Check("gltf: tangent w flips with handedness", () =>
-        Math.Abs(F(AccessorOffset(prim0["attributes"]!["TANGENT"]!.GetValue<int>()) + 12) - -1f) < 1e-6);
+    Check("gltf: tangent x and w flip with handedness", () =>
+        Math.Abs(F(AccessorOffset(prim0["attributes"]!["TANGENT"]!.GetValue<int>())) - -1f) < 1e-6
+        && Math.Abs(F(AccessorOffset(prim0["attributes"]!["TANGENT"]!.GetValue<int>()) + 12) - -1f) < 1e-6);
 
     Check("gltf: per-bone weight sums A=4.5 B=3.5 read back from bin", () =>
     {
@@ -1399,7 +1403,7 @@ void RunGltfExporterChecks()
         return Math.Abs(sumA - 4.5f) < 1e-5 && Math.Abs(sumB - 3.5f) < 1e-5;
     });
 
-    Check("gltf: skin joints=2, IBM MAT4 count 2, B translation z-flipped to (0,-2,-0.5)", () =>
+    Check("gltf: skin joints=2, IBM MAT4 count 2, B translation x-mirrored to (0,-2,0.5)", () =>
     {
         var skin = (JsonObject)doc["skins"]![0]!;
         int ibmAcc = skin["inverseBindMatrices"]!.GetValue<int>();
@@ -1410,7 +1414,7 @@ void RunGltfExporterChecks()
             && accessor["count"]!.GetValue<int>() == 2
             && Math.Abs(F(offset + 12 * 4) - 0f) < 1e-6
             && Math.Abs(F(offset + 13 * 4) - -2f) < 1e-6
-            && Math.Abs(F(offset + 14 * 4) - -0.5f) < 1e-6;
+            && Math.Abs(F(offset + 14 * 4) - 0.5f) < 1e-6;
     });
 
     Check("gltf: joint node B is a child of A, local matrix = inv(bindA)·bindB z-flipped", () =>
@@ -1425,11 +1429,11 @@ void RunGltfExporterChecks()
         }
         var childrenOfA = nodes[nodeA]!["children"]!.AsArray().Select(n => n!.GetValue<int>());
         var matrix = nodes[nodeB]!["matrix"]!.AsArray();
-        // global bind of B = inverse(T(0,-2,0.5)) = T(0,2,-0.5); z-flip → (0,2,0.5)
+        // global bind of B = inverse(T(0,-2,0.5)) = T(0,2,-0.5); x-mirror keeps it
         return childrenOfA.Contains(nodeB)
             && Math.Abs(matrix[12]!.GetValue<float>() - 0f) < 1e-6
             && Math.Abs(matrix[13]!.GetValue<float>() - 2f) < 1e-6
-            && Math.Abs(matrix[14]!.GetValue<float>() - 0.5f) < 1e-6;
+            && Math.Abs(matrix[14]!.GetValue<float>() - -0.5f) < 1e-6;
     });
 
     Check("gltf: targetNames [ShapeA, ShapeB]; NORMAL deltas only on ShapeA", () =>
@@ -1444,10 +1448,10 @@ void RunGltfExporterChecks()
             && report["blendshapes"]!.AsArray().Count == 2;
     });
 
-    Check("gltf: ShapeA POSITION delta 0.5z lands sign-flipped in the z lane", () =>
+    Check("gltf: ShapeA POSITION delta 0.5z stays +0.5 in the z lane (x-mirror untouched)", () =>
     {
         int acc = prim0["targets"]![0]!["POSITION"]!.GetValue<int>();
-        return Math.Abs(F(AccessorOffset(acc) + 8) - -0.5f) < 1e-6;
+        return Math.Abs(F(AccessorOffset(acc) + 8) - 0.5f) < 1e-6;
     });
 
     Check("gltf: weight totals reported as 1.0 (faithful, no silent normalization)", () =>
@@ -1505,18 +1509,154 @@ void RunGltfScaleNormalizationCheck()
         float tz = BitConverter.ToSingle(bin, offset + 14 * 4);
         float diag = BitConverter.ToSingle(bin, offset); // element [0,0] must be ~1 after normalization
         return Math.Abs(report["bindScaleNormalized"]!.GetValue<float>() - sigma) < 1e-4
-            && Math.Abs(tx - 0f) < 1e-4 && Math.Abs(ty - -2f) < 1e-4 && Math.Abs(tz - -0.5f) < 1e-4
+            && Math.Abs(tx - 0f) < 1e-4 && Math.Abs(ty - -2f) < 1e-4 && Math.Abs(tz - 0.5f) < 1e-4
             && Math.Abs(diag - 1f) < 1e-4;
     });
 
-    Check("gltf-scale: node B rest translation lands in meters (0,2,0.5)", () =>
+    Check("gltf-scale: node B rest translation lands in meters (0,2,-0.5)", () =>
     {
         var nodes = doc["nodes"]!.AsArray();
         var nodeB = nodes.First(n => n!["name"]!.GetValue<string>() == "Bone_B")!;
         var matrix = nodeB["matrix"]!.AsArray();
         return Math.Abs(matrix[12]!.GetValue<float>() - 0f) < 1e-4
             && Math.Abs(matrix[13]!.GetValue<float>() - 2f) < 1e-4
-            && Math.Abs(matrix[14]!.GetValue<float>() - 0.5f) < 1e-4;
+            && Math.Abs(matrix[14]!.GetValue<float>() - -0.5f) < 1e-4;
+    });
+}
+
+// Up-correction twin: the same rig exported with the FBX stand-up rotation
+// (-90° X: meshZ-up -> glTF +Y-up). Verts must land height-on-Y, the root joint
+// node must carry the rotation, and rest skinning must stay exactly identity
+// (node chain × IBM = I) — the frame bug this guards against passed every
+// orientation-invariant check while being 90° wrong for every consumer.
+RunGltfUpRotationCheck();
+void RunGltfUpRotationCheck()
+{
+    var mesh = new Elements.Assets.MeshX();
+    mesh.SetVertexCount(3);
+    mesh.HasBoneBindings = true;
+    // strip along mesh +Z (the "height" axis of a Z-up asset)
+    Elements.Core.float3[] positions = [new(0, 0, 0), new(1, 0, 0), new(0, 0.2f, 3)];
+    for (int i = 0; i < 3; i++)
+    {
+        mesh.SetVertex(i, in positions[i]);
+        mesh.RawBoneBindings[i].ClearBones();
+        mesh.RawBoneBindings[i].AddBone(i < 2 ? 0 : 1, 1f);
+    }
+    var sub = mesh.AddSubmesh<Elements.Assets.TriangleSubmesh>();
+    sub.AddTriangle(0, 1, 2);
+    var rootBone = mesh.AddBone("Bone_A");
+    rootBone.BindPose = Elements.Core.float4x4.Identity;
+    var childBone = mesh.AddBone("Bone_B");
+    var childAt = new Elements.Core.float3(0, 0, 2); // 2 up the mesh-Z height axis
+    childBone.BindPose = Elements.Core.float4x4.Translation(in childAt).Inverse;
+
+    var standUp = Elements.Core.floatQ.Euler(-90f, 0f, 0f); // meshZ -> +Y up
+
+    string dir = Path.Combine(Path.GetTempPath(), "mcplink-gltf-test");
+    string gltfPath = Path.Combine(dir, "rotated.gltf");
+    JsonObject report = GltfSkinnedExport.Write(mesh,
+        [new GltfSkinnedExport.BoneInfo("Bone_A", -1), new GltfSkinnedExport.BoneInfo("Bone_B", 0)],
+        [], "Rotated", gltfPath, standUp);
+    var doc = (JsonObject)JsonNode.Parse(File.ReadAllText(gltfPath))!;
+    byte[] bin = File.ReadAllBytes(Path.Combine(dir, "rotated.bin"));
+
+    int Offset(int accessorIndex)
+    {
+        var accessor = (JsonObject)doc["accessors"]![accessorIndex]!;
+        return ((JsonObject)doc["bufferViews"]![accessor["bufferView"]!.GetValue<int>()]!)["byteOffset"]!.GetValue<int>();
+    }
+    float F(int byteOffset) => BitConverter.ToSingle(bin, byteOffset);
+
+    var prim = (JsonObject)doc["meshes"]![0]!["primitives"]![0]!;
+    Check("gltf-up: mesh-Z height lands on glTF +Y (v2 (0,0.2,3) → (0,3,-0.2))", () =>
+    {
+        int off = Offset(prim["attributes"]!["POSITION"]!.GetValue<int>()) + 2 * 12;
+        return Math.Abs(F(off) - 0f) < 1e-5
+            && Math.Abs(F(off + 4) - 3f) < 1e-5
+            && Math.Abs(F(off + 8) - -0.2f) < 1e-5
+            && report["meshRotationApplied"] != null;
+    });
+
+    Check("gltf-up: bone B rests 2 up the glTF Y axis; rest skin (node·IBM) is identity", () =>
+    {
+        var nodes = doc["nodes"]!.AsArray();
+        var nodeA = nodes.First(n => n!["name"]!.GetValue<string>() == "Bone_A")!;
+        var nodeB = nodes.First(n => n!["name"]!.GetValue<string>() == "Bone_B")!;
+        float[] ma = nodeA["matrix"]!.AsArray().Select(v => v!.GetValue<float>()).ToArray();
+        float[] mb = nodeB["matrix"]!.AsArray().Select(v => v!.GetValue<float>()).ToArray();
+        var skin = (JsonObject)doc["skins"]![0]!;
+        int ibmOff = Offset(skin["inverseBindMatrices"]!.GetValue<int>()) + 64; // bone B
+        float[] ibm = Enumerable.Range(0, 16).Select(i => F(ibmOff + i * 4)).ToArray();
+
+        // column-major multiply: global(B) = A · B(local), then rest = global · IBM
+        float[] Mul(float[] x, float[] y)
+        {
+            var r = new float[16];
+            for (int c = 0; c < 4; c++)
+                for (int rw = 0; rw < 4; rw++)
+                    for (int k = 0; k < 4; k++)
+                        r[c * 4 + rw] += x[k * 4 + rw] * y[c * 4 + k];
+            return r;
+        }
+        float[] rest = Mul(Mul(ma, mb), ibm);
+        bool identity = true;
+        for (int c = 0; c < 4; c++)
+            for (int rw = 0; rw < 4; rw++)
+                identity &= Math.Abs(rest[c * 4 + rw] - (c == rw ? 1f : 0f)) < 1e-4;
+        // bone B global rest position = A·B translation — must be (0,2,0) in glTF frame
+        float[] globalB = Mul(ma, mb);
+        return identity
+            && Math.Abs(globalB[12] - 0f) < 1e-4
+            && Math.Abs(globalB[13] - 2f) < 1e-4
+            && Math.Abs(globalB[14] - 0f) < 1e-4;
+    });
+}
+
+// Heading derivation: the anchor path must recover the importer-authored rotation
+// EXACTLY — including any intrinsic facing yaw — while the yaw-strip fallback
+// structurally cannot (it removes ALL world-Y twist, authored or user). Note: the
+// live garments' authored rotation happens to carry no intrinsic yaw (their 180°
+// bug was the handedness constant, negate-Z vs negate-X), but the anchor boundary
+// is what keeps assets that DO have one from silently losing it.
+RunUpRotationDerivationChecks();
+void RunUpRotationDerivationChecks()
+{
+    // authored = what the FBX importer recorded below the model root (live-measured
+    // slot euler on all three garments); userYaw = the scene placement above it
+    var authored = Elements.Core.floatQ.Euler(-90f, 180f, 180f);
+    var userYaw = Elements.Core.floatQ.Euler(0f, 18.1f, 0f);
+    var rendererGlobal = userYaw * authored;
+
+    float Dot(Elements.Core.floatQ a, Elements.Core.floatQ b) =>
+        Math.Abs(a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w);
+
+    Check("derive: anchor path recovers the authored rotation exactly (facing kept)", () =>
+    {
+        var derived = GltfSkinnedExport.DeriveUpRotation(rendererGlobal, userYaw);
+        var up = derived * new Elements.Core.float3(0, 0, 1);
+        return Dot(derived, authored) > 0.99999f && Math.Abs(up.y - 1f) < 1e-4;
+    });
+
+    Check("derive: an intrinsic facing yaw survives the anchor path, dies under yaw-strip", () =>
+    {
+        // an asset whose importer-authored rotation includes a 180° facing
+        var facing = Elements.Core.floatQ.Euler(0f, 180f, 0f) * Elements.Core.floatQ.Euler(-90f, 0f, 0f);
+        var global = userYaw * facing;
+        var anchored = GltfSkinnedExport.DeriveUpRotation(global, userYaw);
+        var stripped = GltfSkinnedExport.DeriveUpRotation(global, null);
+        var strippedUp = stripped * new Elements.Core.float3(0, 0, 1);
+        return Dot(anchored, facing) > 0.99999f            // anchor keeps the facing
+            && Math.Abs(strippedUp.y - 1f) < 1e-3          // strip still stands it up...
+            && Dot(stripped, facing) < 0.999f;             // ...but the facing is gone
+    });
+
+    Check("derive: user yaw never leaks (two placements, same derived rotation)", () =>
+    {
+        var otherYaw = Elements.Core.floatQ.Euler(0f, 297f, 0f);
+        var a = GltfSkinnedExport.DeriveUpRotation(userYaw * authored, userYaw);
+        var b = GltfSkinnedExport.DeriveUpRotation(otherYaw * authored, otherYaw);
+        return Dot(a, b) > 0.99999f;
     });
 }
 

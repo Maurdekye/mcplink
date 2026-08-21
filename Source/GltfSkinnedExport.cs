@@ -18,9 +18,13 @@ namespace McpLink;
 /// into Blender 5.1 even for plain skins.
 ///
 /// Space conversion: Resonite is left-handed Y-up +Z-forward; glTF is right-handed
-/// Y-up -Z-forward. Everything is mapped through S = diag(1,1,-1): positions/normals
-/// negate z, matrices conjugate S·M·S, triangle winding reverses, tangent w flips.
-/// UV v flips to glTF's top-left origin.
+/// Y-up with the asset's front facing +Z. Everything is mapped through S = diag(-1,1,1)
+/// (negate X — the standard Unity-style LH→RH conversion): positions/normals negate x,
+/// matrices conjugate S·M·S, triangle winding reverses, tangent w flips. UV v flips to
+/// glTF's top-left origin. ⚠ Negating Z instead also converts handedness but maps
+/// front onto glTF's BACK — shipped that way once, every orientation-invariant check
+/// stayed green, and all three garments fit on backwards (exact 180° yaw vs the
+/// reference body, uniform across assets — the signature of a convention constant).
 ///
 /// Bind semantics (decompiled BoneBinding.TransformPosition): skinned = boneTransform ·
 /// BindPose · v, with bone transforms relative to the RENDERER's slot — so BindPose IS
@@ -74,6 +78,29 @@ internal static class GltfSkinnedExport
             materialNames.Add((material as Component)?.Slot?.Name ?? "");
         string meshName = renderer.Slot.Name ?? "Mesh";
 
+        // Up-correction: the importer-authored rotation, i.e. the renderer slot's
+        // rotation RELATIVE TO the model-file root slot. That boundary is the right
+        // one: at and above the ".fbx" root is user placement (grab yaw — discard),
+        // below it is what the importer recorded — the stand-up AND the facing.
+        // (First attempt stripped the whole world-Y heading by swing-twist; that
+        // deleted the model's intrinsic 180° facing together with the user yaw and
+        // put every garment on backwards — left sleeve on the right arm — while
+        // passing the up-axis check. Heading is a separate axis; pin all three.)
+        Slot? modelRoot = null;
+        for (var ancestor = renderer.Slot.Parent; ancestor != null; ancestor = ancestor.Parent)
+        {
+            if (ancestor.Name is string name && ModelFileExtensions.Any(
+                    e => name.EndsWith(e, StringComparison.OrdinalIgnoreCase)))
+            {
+                modelRoot = ancestor;
+                break;
+            }
+        }
+        floatQ upRotation = DeriveUpRotation(renderer.Slot.GlobalRotation, modelRoot?.GlobalRotation);
+        string rotationAnchor = modelRoot != null
+            ? $"relative to model root '{modelRoot.Name}'"
+            : "world orientation with world-Y heading removed (no model-file root ancestor)";
+
         object readLock = new object();
         await meshAsset.RequestReadLock(readLock).ConfigureAwait(false);
         var meshData = new MeshX(meshAsset.Data);
@@ -89,8 +116,9 @@ internal static class GltfSkinnedExport
                 nameMismatches.Add($"{i}: mesh '{boneName}' vs slot '{slotNames[i]}'");
         }
 
-        var report = Write(meshData, bones, materialNames, meshName, path);
+        var report = Write(meshData, bones, materialNames, meshName, path, upRotation);
         report["renderer"] = renderer.ReferenceID.ToString();
+        report["meshRotationAnchor"] = rotationAnchor;
         if (parents.Length != meshData.BoneCount)
             report["boneSlotCountMismatch"] =
                 $"renderer has {parents.Length} bone slots, mesh has {meshData.BoneCount} bones";
@@ -100,8 +128,24 @@ internal static class GltfSkinnedExport
     }
 
     internal static JsonObject Write(MeshX mesh, IReadOnlyList<BoneInfo> bones,
-        IReadOnlyList<string> materialNames, string meshName, string gltfPath)
+        IReadOnlyList<string> materialNames, string meshName, string gltfPath,
+        floatQ? meshRotation = null)
     {
+        // glTF is +Y-up BY SPEC, but MeshX data lives in renderer-slot space, which for
+        // FBX-imported assets is typically Z-up — the importer records the stand-up
+        // rotation on the slot, not in the vertices. Exporting slot space verbatim
+        // produces a file every spec-following consumer shows lying down, and every
+        // same-frame or orientation-invariant check stays green (measured live: all
+        // three garments, caught only against an independent reference asset).
+        // The caller passes the slot-derived up-correction; it is applied to every
+        // point/vector AND conjugated through the bind matrices so the rig stays
+        // consistent — and it is REPORTED, never silent.
+        floatQ rotation = meshRotation ?? floatQ.Identity;
+        bool rotated = !MathX.Approximately(rotation.w, 1f, 1e-6f) || !MathX.Approximately(rotation.x, 0f, 1e-6f)
+            || !MathX.Approximately(rotation.y, 0f, 1e-6f) || !MathX.Approximately(rotation.z, 0f, 1e-6f);
+        var inverseRotation = rotation.Inverted;
+        var inverseRotationMatrix = float4x4.Rotation(in inverseRotation);
+
         var notes = new JsonArray();
         int vertexCount = mesh.VertexCount;
         int boneCount = mesh.BoneCount;
@@ -146,7 +190,7 @@ internal static class GltfSkinnedExport
             return accessors.Count - 1;
         }
 
-        // float3 array -> VEC3 accessor, z negated (the S map)
+        // float3 array -> VEC3 accessor, x negated (the S map)
         int AccPoints(Func<int, float3> get, int count, bool minMax)
         {
             float[] mn = [float.MaxValue, float.MaxValue, float.MaxValue];
@@ -156,7 +200,9 @@ internal static class GltfSkinnedExport
                 for (int i = 0; i < count; i++)
                 {
                     var v = get(i);
-                    float x = v.x, y = v.y, z = -v.z;
+                    if (rotated)
+                        v = rotation * v;
+                    float x = -v.x, y = v.y, z = v.z;
                     w.Write(x); w.Write(y); w.Write(z);
                     if (x < mn[0]) mn[0] = x; if (x > mx[0]) mx[0] = x;
                     if (y < mn[1]) mn[1] = y; if (y > mx[1]) mx[1] = y;
@@ -178,8 +224,11 @@ internal static class GltfSkinnedExport
                 for (int i = 0; i < vertexCount; i++)
                 {
                     var t = mesh.RawTangents[i];
-                    // mirroring flips both the z component and the bitangent handedness
-                    w.Write(t.x); w.Write(t.y); w.Write(-t.z); w.Write(-t.w);
+                    var txyz = new float3(t.x, t.y, t.z);
+                    if (rotated)
+                        txyz = rotation * txyz;
+                    // mirroring flips both the x component and the bitangent handedness
+                    w.Write(-txyz.x); w.Write(txyz.y); w.Write(txyz.z); w.Write(-t.w);
                 }
             });
             attributes["TANGENT"] = AddAccessor(view, 5126, vertexCount, "VEC4");
@@ -317,6 +366,8 @@ internal static class GltfSkinnedExport
                 var bindPose = mesh.GetBone(i).BindPose;
                 if (bindPose.Determinant < 0f)
                     negativeDeterminants++;
+                if (rotated)
+                    bindPose = bindPose * inverseRotationMatrix; // verts got R: B' = B·R⁻¹, G' = inv(B') = R·G
                 ibm[i] = bindPose;
                 globalBind[i] = bindPose.Inverse;
                 if (globalBind[i] == float4x4.Zero)
@@ -372,7 +423,7 @@ internal static class GltfSkinnedExport
                 var node = new JsonObject
                 {
                     ["name"] = bones[i].Name,
-                    ["matrix"] = MatrixColumnMajorZFlipped(local),
+                    ["matrix"] = MatrixColumnMajorXFlipped(local),
                 };
                 nodes.Add(node);
                 if (parent >= 0)
@@ -387,7 +438,7 @@ internal static class GltfSkinnedExport
             int viewIbm = AddView(w =>
             {
                 for (int i = 0; i < boneCount; i++)
-                    foreach (var component in MatrixColumnMajorZFlipped(ibm[i]))
+                    foreach (var component in MatrixColumnMajorXFlipped(ibm[i]))
                         w.Write(component!.GetValue<float>());
             });
             int accIbm = AddAccessor(viewIbm, 5126, boneCount, "MAT4");
@@ -483,6 +534,11 @@ internal static class GltfSkinnedExport
             report["weightTotalMax"] = weightMax;
             report["zeroWeightVertices"] = emptyBindings;
         }
+        if (rotated)
+        {
+            var euler = rotation.EulerAngles;
+            report["meshRotationApplied"] = $"euler({euler.x:F2},{euler.y:F2},{euler.z:F2})";
+        }
         if (bindScale != 1f)
             report["bindScaleNormalized"] = bindScale;
         if (negativeDeterminants > 0)
@@ -494,11 +550,30 @@ internal static class GltfSkinnedExport
         return report;
     }
 
-    /// <summary>S·M·S (S = diag(1,1,-1)) flattened column-major, as glTF stores matrices.
-    /// float4x4 is row-major with translation in the 4th column, so out[c*4+r] = s_r·M[r,c]·s_c.</summary>
-    private static JsonArray MatrixColumnMajorZFlipped(in float4x4 m)
+    private static readonly string[] ModelFileExtensions =
+        [".fbx", ".glb", ".gltf", ".obj", ".dae", ".blend", ".x", ".3ds", ".stl", ".ply"];
+
+    /// <summary>
+    /// The up-correction applied to exported data. With a model-root anchor: the
+    /// renderer's rotation relative to it — exactly the importer-authored frame,
+    /// preserving intrinsic facing (a 180° yaw baked below the root survives).
+    /// Without one: the renderer's world orientation with its world-Y twist removed —
+    /// stands the mesh up but CANNOT distinguish facings, which is why the anchor
+    /// path is preferred. Pure function so the offline suite can pin the difference.
+    /// </summary>
+    public static floatQ DeriveUpRotation(floatQ rendererGlobal, floatQ? modelRootGlobal)
     {
-        Span<float> sign = [1f, 1f, -1f, 1f];
+        if (modelRootGlobal is floatQ anchor)
+            return anchor.Inverted * rendererGlobal;
+        var twist = new floatQ(0, rendererGlobal.y, 0, rendererGlobal.w);
+        return twist.Magnitude > 1e-6f ? twist.Normalized.Inverted * rendererGlobal : rendererGlobal;
+    }
+
+    /// <summary>S·M·S (S = diag(-1,1,1)) flattened column-major, as glTF stores matrices.
+    /// float4x4 is row-major with translation in the 4th column, so out[c*4+r] = s_r·M[r,c]·s_c.</summary>
+    private static JsonArray MatrixColumnMajorXFlipped(in float4x4 m)
+    {
+        Span<float> sign = [-1f, 1f, 1f, 1f];
         var array = new JsonArray();
         for (int c = 0; c < 4; c++)
             for (int r = 0; r < 4; r++)
