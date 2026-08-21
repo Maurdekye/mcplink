@@ -1,0 +1,49 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Companion assembly for McpLink's `eval` tool. McpLink.dll never references Roslyn;
+    it lazily loads THIS assembly (plus the Roslyn dependency closure deployed next to it)
+    into an isolated AssemblyLoadContext on first eval call. Engine assemblies resolve
+    from the game's default context so script types unify with live objects.
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>McpLinkEval</RootNamespace>
+    <AssemblyName>McpLinkEval</AssemblyName>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <!-- pull the full Roslyn dependency closure into the output dir for deployment -->
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+    <ResonitePath Condition="'$(ResonitePath)' == ''">C:\Program Files (x86)\Steam\steamapps\common\Resonite</ResonitePath>
+    <CopyToMods Condition="'$(CopyToMods)' == ''">true</CopyToMods>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp.Scripting" Version="4.14.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="FrooxEngine">
+      <HintPath>$(ResonitePath)\FrooxEngine.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Elements.Core">
+      <HintPath>$(ResonitePath)\Elements.Core.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <!-- deploy the eval assembly + Roslyn closure into a SUBFOLDER of rml_mods
+       (RML only auto-loads top-level rml_mods\*.dll, so nothing here becomes a "mod") -->
+  <Target Name="DeployEvalLibs" AfterTargets="Build" Condition="'$(CopyToMods)' == 'true'">
+    <ItemGroup>
+      <EvalLibs Include="$(OutDir)*.dll" />
+    </ItemGroup>
+    <Copy SourceFiles="@(EvalLibs)" DestinationFolder="$(ResonitePath)\rml_mods\McpLink_libs" ContinueOnError="true" />
+    <Message Text="McpLinkEval + Roslyn deployed to $(ResonitePath)\rml_mods\McpLink_libs" Importance="high" />
+  </Target>
+
+</Project>
