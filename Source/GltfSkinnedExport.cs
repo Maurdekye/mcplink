@@ -1,6 +1,7 @@
 ﻿using System.Text.Json.Nodes;
 using Elements.Assets;
 using Elements.Core;
+using FrooxEngine;
 
 namespace McpLink;
 
@@ -32,6 +33,71 @@ internal static class GltfSkinnedExport
 {
     /// <param name="ParentIndex">Index into the bone list of the nearest ancestor bone, -1 for a root.</param>
     internal sealed record BoneInfo(string Name, int ParentIndex);
+
+    /// <summary>
+    /// Full renderer export: rig collection + read-locked MeshX copy + Write. MUST be
+    /// invoked on the renderer's world thread (StartTask / update thread) — everything
+    /// before the first await runs there, the file write happens off-thread under the
+    /// asset read lock. Public and reflection-friendly so an eval script can drive the
+    /// exact committed code path without a mod deploy.
+    /// </summary>
+    public static async Task<JsonObject> ExportRendererAsync(SkinnedMeshRenderer renderer, string path)
+    {
+        var meshAsset = renderer.Mesh.Asset
+            ?? throw new InvalidOperationException("Mesh asset is not loaded yet — retry in a moment");
+
+        // bone slot names + nearest-bone-ancestor parenting, captured on the world thread
+        var boneSlots = new List<Slot?>();
+        for (int i = 0; i < renderer.Bones.Count; i++)
+            boneSlots.Add(renderer.Bones[i]);
+        var slotIndex = new Dictionary<Slot, int>();
+        for (int i = 0; i < boneSlots.Count; i++)
+            if (boneSlots[i] is Slot bone && !slotIndex.ContainsKey(bone))
+                slotIndex[bone] = i;
+        var slotNames = new string?[boneSlots.Count];
+        var parents = new int[boneSlots.Count];
+        for (int i = 0; i < boneSlots.Count; i++)
+        {
+            slotNames[i] = boneSlots[i]?.Name;
+            parents[i] = -1;
+            for (var ancestor = boneSlots[i]?.Parent; ancestor != null; ancestor = ancestor.Parent)
+            {
+                if (slotIndex.TryGetValue(ancestor, out int parentIndex))
+                {
+                    parents[i] = parentIndex;
+                    break;
+                }
+            }
+        }
+        var materialNames = new List<string>();
+        foreach (IAssetProvider<FrooxEngine.Material> material in renderer.Materials)
+            materialNames.Add((material as Component)?.Slot?.Name ?? "");
+        string meshName = renderer.Slot.Name ?? "Mesh";
+
+        object readLock = new object();
+        await meshAsset.RequestReadLock(readLock).ConfigureAwait(false);
+        var meshData = new MeshX(meshAsset.Data);
+        meshAsset.ReleaseReadLock(readLock);
+
+        var bones = new List<BoneInfo>();
+        var nameMismatches = new List<string>();
+        for (int i = 0; i < meshData.BoneCount; i++)
+        {
+            string boneName = meshData.GetBone(i).Name;
+            bones.Add(new BoneInfo(boneName, i < parents.Length ? parents[i] : -1));
+            if (i < slotNames.Length && slotNames[i] != null && slotNames[i] != boneName)
+                nameMismatches.Add($"{i}: mesh '{boneName}' vs slot '{slotNames[i]}'");
+        }
+
+        var report = Write(meshData, bones, materialNames, meshName, path);
+        report["renderer"] = renderer.ReferenceID.ToString();
+        if (parents.Length != meshData.BoneCount)
+            report["boneSlotCountMismatch"] =
+                $"renderer has {parents.Length} bone slots, mesh has {meshData.BoneCount} bones";
+        if (nameMismatches.Count > 0)
+            report["boneNameMismatches"] = new JsonArray(nameMismatches.Select(m => (JsonNode)m).ToArray());
+        return report;
+    }
 
     internal static JsonObject Write(MeshX mesh, IReadOnlyList<BoneInfo> bones,
         IReadOnlyList<string> materialNames, string meshName, string gltfPath)

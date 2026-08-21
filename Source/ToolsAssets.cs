@@ -192,69 +192,16 @@ internal static class ToolsAssets
                         throw new ArgumentException(
                             $"{id} is a {TypeUtil.FriendlyName(worker.GetType())}, not a SkinnedMeshRenderer or Slot");
                     }
-                    var meshAsset = renderer.Mesh.Asset
-                        ?? throw new InvalidOperationException("Mesh asset is not loaded yet — retry in a moment");
-
-                    // bone slot names + nearest-bone-ancestor parenting, captured on the world thread
-                    var boneSlots = new List<Slot?>();
-                    for (int i = 0; i < renderer.Bones.Count; i++)
-                        boneSlots.Add(renderer.Bones[i]);
-                    var slotIndex = new Dictionary<Slot, int>();
-                    for (int i = 0; i < boneSlots.Count; i++)
-                        if (boneSlots[i] is Slot bone && !slotIndex.ContainsKey(bone))
-                            slotIndex[bone] = i;
-                    var slotNames = new string?[boneSlots.Count];
-                    var parents = new int[boneSlots.Count];
-                    for (int i = 0; i < boneSlots.Count; i++)
-                    {
-                        slotNames[i] = boneSlots[i]?.Name;
-                        parents[i] = -1;
-                        for (var ancestor = boneSlots[i]?.Parent; ancestor != null; ancestor = ancestor.Parent)
-                        {
-                            if (slotIndex.TryGetValue(ancestor, out int parentIndex))
-                            {
-                                parents[i] = parentIndex;
-                                break;
-                            }
-                        }
-                    }
-
-                    var materialNames = new List<string>();
-                    foreach (IAssetProvider<Material> material in renderer.Materials)
-                        materialNames.Add((material as Component)?.Slot?.Name ?? "");
-                    string meshName = renderer.Slot.Name ?? "Mesh";
                     string meshUrl = FindUriField(renderer.Mesh.Target as Worker ?? renderer)?.BoxedValue?.ToString() ?? "";
 
                     renderer.StartTask(async () =>
                     {
                         try
                         {
-                            await default(ToBackground);
-                            object readLock = new object();
-                            await meshAsset.RequestReadLock(readLock).ConfigureAwait(false);
-                            var meshData = new MeshX(meshAsset.Data);
-                            meshAsset.ReleaseReadLock(readLock);
-
-                            var bones = new List<GltfSkinnedExport.BoneInfo>();
-                            var nameMismatches = new List<string>();
-                            for (int i = 0; i < meshData.BoneCount; i++)
-                            {
-                                string boneName = meshData.GetBone(i).Name;
-                                bones.Add(new GltfSkinnedExport.BoneInfo(boneName,
-                                    i < parents.Length ? parents[i] : -1));
-                                if (i < slotNames.Length && slotNames[i] != null && slotNames[i] != boneName)
-                                    nameMismatches.Add($"{i}: mesh '{boneName}' vs slot '{slotNames[i]}'");
-                            }
-
-                            var report = GltfSkinnedExport.Write(meshData, bones, materialNames, meshName, path);
-                            report["renderer"] = renderer.ReferenceID.ToString();
+                            // rig collection runs synchronously on the world thread before
+                            // the first await inside ExportRendererAsync
+                            var report = await GltfSkinnedExport.ExportRendererAsync(renderer, path);
                             report["meshUrl"] = meshUrl;
-                            if (parents.Length != meshData.BoneCount)
-                                report["boneSlotCountMismatch"] =
-                                    $"renderer has {parents.Length} bone slots, mesh has {meshData.BoneCount} bones";
-                            if (nameMismatches.Count > 0)
-                                report["boneNameMismatches"] = new JsonArray(
-                                    nameMismatches.Select(m => (JsonNode)m).ToArray());
                             completion.TrySetResult(report);
                         }
                         catch (Exception e)
