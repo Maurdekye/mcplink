@@ -17,6 +17,12 @@ only), McpLink trades that sandbox for total access:
   construction — plain-class parameters (`DuplicationSettings`), optional-parameter defaults,
   generic methods, out-params — the exact calls the closed ResoniteLink verb union cannot express.
 
+> **Used McpLink for a real job? Log the friction in [`TOOLKIT-NOTES.md`](TOOLKIT-NOTES.md)
+> afterwards** — anything a tool made you guess at, work around, or that quietly gave you the wrong
+> answer. Append-only, one short entry, and *put the measurement in it*: the "≈1.135 `spawn_import`
+> scale" survived as folklore until someone measured 0.671 / 0.923 / 1.062 on three garments from
+> one folder.
+
 ## Distribution / releases
 
 `powershell -File package.ps1` produces `release\McpLink-<version>.zip` — the full release
