@@ -97,3 +97,56 @@ Priority order, most-unproven first:
 Retire the throwaway agent (✕ on a body panel retires; the window panel's ✕ does **not**).
 Confirm it is gone from the org tree — a leaked panel-bound agent is what the 2.5.0 quit
 accounting exists to prevent, and this test deliberately creates one.
+
+---
+
+# 5. RESULT — run live 2026-08-22 ~19:10–19:20Z against build 2.6.0 / `g37d44259803d`
+
+Run by `panel-chat`, driven headlessly through McpLink (`open_prompt_wizard` + `wizard_drive`), so no
+user action was needed. Preconditions 0.2/0.3 passed independently of the deploy probe:
+`session_info` → `version 2.6.0`, `informationalVersion g37d44259803d`, `mvid de2f5141-…`,
+`deployConsistent: true`, both on-disk copies `matchesRunning: true`, `hotReloads: 0`.
+
+**Fixture:** agent `panelfixture-throwaway` (haiku, effort low, peer `resonite.d13f3d6d`), one slot
+`PanelChatFixtureRef` created by the test itself. Body panel → message with the ref attached → its reply
+(with its own token) → ⏏ detach → reopen as a window panel. All cleaned up: agent retired, panels and
+fixture slot destroyed, `find_slots` for all three names returns 0.
+
+> ⚠ **Deviation, recorded deliberately:** the throwaway was hired into **`resonite`**, not a scratch org.
+> `wizard_drive` has **no org action** — the org picker is a UI cycle button with no headless verb, and
+> forcing it via `eval`/`call_method` would have been a larger novel mutation of live production UI than
+> the risk it avoided. No existing agent was touched.
+
+| # | Assertion | Result | Positive evidence |
+|---|---|---|---|
+| A1 | title `… · window` | ✅ | panel root slot named `panelfixture-throwaway · window` |
+| A2 | no "couldn't give a handle" note | ✅ | `state.fallback: false`, `state.peer: resonite.d13f3d6d` |
+| A3 | Comment carries the handle | ✅ | `Comment.Text` = `orgtree agent window resonite/panelfixture-throwaway · handle @mcp:resonite.d13f3d6d · …` |
+| B1 | agent's earlier reply backfilled | ✅ | `Fixture accepted and ready. 📎PanelChatFixtureRef` present in the reopened panel |
+| B2 | chronological | ✅ | container `orderOffset` runs 0–7 (user) → 48–50 (reply) → 96–97 (status) |
+| **C1** | **replayed USER ref → grabbable card** | ✅ | order-5 Button carries `ReferenceProxySource.Reference → the fixture slot`, tint alpha 1.0 |
+| C2 | agent's ref → card | ✅ | order-50 Button, same component, same target |
+| C3 | grabbing yields the reference | ⚠ partial | the ProxySource targets the right element; an actual hand-grab still needs a user |
+| A4 | agent replies INTO the panel | ✅ | after a send from the reopened window panel: `panelfixture-throwaway 22:14` / `Ready for the next step.` |
+| A5 | no manual refresh needed | ✅ | it appeared while only `state` was being polled; the panel was never reopened |
+| A6 | backfill not duplicated by the live poll | ✅ | exactly 2 `ReferenceProxySource` cards and exactly 1 `Fixture accepted and ready` in the whole panel |
+
+## Why C1's evidence is positive rather than an absence
+
+`ExtractRefTokens` **replaces** a matched `[[ref:ID|label]]` with the inline marker **`📎label`** and appends
+a card. The replayed user body rendered `• 📎PanelChatFixtureRef (Slot) on slot "PanelChatFixtureRef"
+(IDxxxxxxxx) …`. **The 📎 is itself the proof the token was matched.** Had the render half been missing, that
+same line would read literally `• [[ref:IDxxxxxxxx|PanelChatFixtureRef]] …` with no Button and no
+`ReferenceProxySource` — §2's named failure mode. Control pair: the agent's `[DONE]` status message, which
+carries no token, produced **no** card.
+
+## 🐞 Defect found by this pass (NOT fixed — no build is permitted while the game runs)
+
+**The response contract's own worked examples render as two junk cards in every panel.** `PromptWizard.cs`
+(~line 2879) writes the syntax example literally as `[[ref:ID12345678]] or [[ref:ID12345678|short label]]`.
+That contract text is itself rendered through `ExtractRefTokens`, so the examples are parsed as real tokens.
+Measured in the live panel: two extra Buttons labelled **`📎 ID12345678 (gone)`** and **`📎 short label
+(gone)`** — 4 components each, **no** `ReferenceProxySource`, tint alpha **0.5** (the dimmed "(gone)" style),
+against the real card's 5 components and alpha 1.0. Harmless but visibly wrong, and it lands directly under
+the contract on first open, which is the first thing a user sees. Fix: escape the examples in the contract
+text so they cannot match `RefToken`.

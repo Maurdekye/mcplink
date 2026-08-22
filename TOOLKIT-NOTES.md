@@ -330,3 +330,30 @@ make the same mistake unless the measurement is written down.
 - **Disposition:** re-armed as `wd929d336a`, `notice: false`. Its create-time `smoke` returned
   `port:7357 is UP right now`, which is the positive evidence that the dog can observe its target at all —
   read that field, because `armed, fired: 0` cannot distinguish a healthy dog from a blind one.
+
+### 2026-08-22 — `wizard_drive state` reports `org`/`node` as null in STAGE 1, even when a row IS selected
+- **Reported by:** `panel-chat`, during the panel-chat acceptance pass.
+- **What I called:** `wizard_drive {action:"name"}`, `{action:"tier"}`, `{action:"selectRow", row:"panel-chat"}`
+  against a freshly opened stage-1 panel, then read the returned state block after each.
+- **What I expected:** `selectRow` to be reflected somewhere in the returned state — that is the only
+  feedback a headless caller gets, and the tool returns a state block on *every* action precisely so you
+  can confirm the action landed.
+- **What I got:** `org: null, node: null` after all three — **byte-identical state to the untouched panel.**
+  Read naively that says "nothing selected; your call did nothing."
+- **The truth:** all three had landed. Grepping the panel's own Text components showed the name field set
+  to `panelfixture-throwaway`, the tier button reading `haiku  (1 cr)`, an `Open chat with panel-chat`
+  button that only exists once a row is selected, and the ghost preview row nesting the agent-to-be under
+  `panel-chat`. `org`/`node` are simply **not populated until stage 2**.
+- **Measurement:** 3 of 3 stage-1 actions reported `org:null, node:null`; 3 of 3 had actually taken effect.
+  Note `effort` is the counter-example — it *does* echo in stage 1 (`effort: "low"` after `{action:"effort"}`),
+  which makes the null fields read even more like a real answer than a missing one.
+- **Why this is the shape this repo keeps getting bitten by:** it is an **abstention that reads exactly like
+  a negative result.** `null` here means "not applicable at this stage", but it is indistinguishable from
+  "no row is selected" — and a caller who trusts it will press Create against what it believes is an
+  unselected panel, or worse, "fix" a selectRow that was never broken.
+- **Workaround:** in stage 1, verify via the panel's own UI text
+  (`grep {rootId:<wizard>, stringOnly:true}` for the name / tier / `Open chat with <node>` strings), not via
+  the state block. In stage 2 the state block is trustworthy — `org`, `node` and `peer` all populate.
+- **Suggested fix (not made — the game was running and no build was permitted):** have stage 1 report the
+  *pending* selection, e.g. `pendingNode`/`pendingOrg`, or omit the keys entirely rather than emitting
+  `null`. An omitted key is honest about "no answer"; `null` claims one.
