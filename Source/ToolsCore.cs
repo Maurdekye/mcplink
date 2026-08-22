@@ -233,7 +233,18 @@ internal static class ToolsCore
 
     private static JsonNode SessionInfo(JsonObject args)
     {
-        var engine = Engine.Current ?? throw new InvalidOperationException("Engine is not ready yet");
+        // Build identity does not need the engine, and "which build is this?" is precisely the
+        // question you want answered when nothing else works — so report it even during the
+        // pre-init window rather than throwing the whole call away.
+        var engine = Engine.Current;
+        if (engine == null)
+            return new JsonObject
+            {
+                ["engineReady"] = false,
+                ["note"] = "Engine is not ready yet — world information is unavailable, but the build report below is valid.",
+                ["build"] = BuildReport(),
+            };
+
         var manager = engine.WorldManager;
         var worlds = new JsonArray();
         foreach (var world in manager.Worlds)
@@ -247,16 +258,23 @@ internal static class ToolsCore
                 ["isAuthority"] = world.IsAuthority,
             }));
         }
-        var result = new JsonObject
+        return new JsonObject
         {
+            ["engineReady"] = true,
             ["focusedWorld"] = manager.FocusedWorld?.Name,
             ["worlds"] = worlds,
+            ["build"] = BuildReport(),
         };
-        // Never let a fault in build reporting take down session_info — it is the tool people
-        // reach for when nothing else works. Report the failure in-place instead.
-        try { result["build"] = BuildInfo.Report(); }
-        catch (Exception e) { result["build"] = new JsonObject { ["error"] = $"{e.GetType().Name}: {e.Message}" }; }
-        return result;
+    }
+
+    /// <summary>
+    /// Never let a fault in build reporting take down session_info — it is the tool people reach
+    /// for when nothing else works. A failure is reported in place, as a value, not thrown.
+    /// </summary>
+    private static JsonNode BuildReport()
+    {
+        try { return BuildInfo.Report(); }
+        catch (Exception e) { return new JsonObject { ["error"] = $"{e.GetType().Name}: {e.Message}" }; }
     }
 
     private static JsonNode SlotJson(Slot slot, int depth, bool includeComponents)

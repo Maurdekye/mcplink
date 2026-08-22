@@ -1855,6 +1855,38 @@ Check("session_info's description tells a caller the build report exists", () =>
     return desc.Contains("build") && desc.Contains("deployConsistent");
 });
 
+// The check above matches a DESCRIPTION STRING — it would keep passing if session_info stopped
+// emitting the report entirely. (Measured: a mutant that deleted the call survived the suite.)
+// These CALL the tool and read the value, which is the only thing that can actually fail.
+JsonObject CallSessionInfo() => (JsonObject)JsonNode.Parse(ToolRegistry.Call("session_info", new JsonObject()))!;
+
+Check("session_info ACTUALLY RETURNS a build report, with no engine running", () =>
+{
+    var result = CallSessionInfo();
+    // Build identity must not depend on the engine — it is what you ask for when nothing works.
+    return (bool)result["engineReady"]! == false && result["build"] is JsonObject;
+});
+
+Check("the mvid session_info reports is the running assembly's real mvid", () =>
+{
+    var build = (JsonObject)CallSessionInfo()["build"]!;
+    return build["mvid"]!.GetValue<string>()
+            == typeof(McpLink.Encode).Assembly.ManifestModule.ModuleVersionId.ToString()
+        && build["version"]!.GetValue<string>() == McpLink.McpLinkMod.VERSION;
+});
+
+Check("session_info compares against BOTH deployable paths and states deployConsistent", () =>
+{
+    var build = (JsonObject)CallSessionInfo()["build"]!;
+    var deployed = build["deployed"]!.AsArray();
+    var roles = deployed.Select(d => d!["role"]!.GetValue<string>()).ToList();
+    return roles.Contains("rml_mods") && roles.Contains("HotReloadMods")
+        && build.ContainsKey("deployConsistent")
+        // matchesRunning is tri-state: a present file must carry it, and an unreadable one must be
+        // null rather than a false that reads as "checked, and it differs".
+        && deployed.All(d => (bool)d!["present"]! == false || d.AsObject().ContainsKey("matchesRunning"));
+});
+
 Console.WriteLine();
 Console.WriteLine($"{passed} passed, {failed} failed");
 return failed == 0 ? 0 : 1;
