@@ -1959,5 +1959,117 @@ Check("a pending-deploy note left by a blocked build is surfaced in the report",
 try { Directory.Delete(mvidDir, recursive: true); } catch { }
 
 Console.WriteLine();
+Console.WriteLine("== reopened panels replay BOTH halves (thread merge) ==");
+
+// THE DEFECT. A reopened window panel showed the user's messages but not the agent's
+// replies, so it read as a conversation the agent never answered. The two halves travel on
+// different transports — the user's on user mail, the agent's on its @mcp: handle channel —
+// and the panel only ever read the first. MergeThread is the ordering half of the fix.
+
+OrgtreeClient.UserMail Mail(string id, string at, string? to = "agent") =>
+    new(id, "agent", to, "message", at, $"body-{id}", false, []);
+OrgtreeClient.HandleMessage Reply(string at, string body = "reply") =>
+    new("org", at, body, "agent");
+
+Check("merge: an agent reply lands between the two user messages that bracket it", () =>
+{
+    var (render, _) = PromptWizard.MergeThread(
+        [Mail("u1", "2026-08-22T10:00:00Z"), Mail("u2", "2026-08-22T10:02:00Z")],
+        [Reply("2026-08-22T10:01:00Z")], 20);
+    return render.Count == 3
+        && render[0].Mail?.Id == "u1"
+        && render[1].Handle != null          // ← the half that used to be missing entirely
+        && render[2].Mail?.Id == "u2";
+});
+Check("merge: the agent's half is present at all (the actual reported bug)", () =>
+{
+    var (render, _) = PromptWizard.MergeThread(
+        [Mail("u1", "2026-08-22T10:00:00Z")],
+        [Reply("2026-08-22T10:01:00Z"), Reply("2026-08-22T10:02:00Z")], 20);
+    return render.Count(e => e.Handle != null) == 2;
+});
+Check("merge: the cap applies to the MERGED thread, not to each half", () =>
+{
+    // 10 user messages, 10 replies, limit 5 → the newest 5 OVERALL. Capping each half
+    // separately would return 10 and would keep stale entries from the quieter side.
+    var mails = Enumerable.Range(0, 10)
+        .Select(i => Mail($"u{i}", $"2026-08-22T10:{i:00}:00Z")).ToList();
+    var reps = Enumerable.Range(0, 10)
+        .Select(i => Reply($"2026-08-22T11:{i:00}:00Z")).ToList();
+    var (render, older) = PromptWizard.MergeThread(mails, reps, 5);
+    return render.Count == 5 && older == 15 && render.All(e => e.Handle != null);
+});
+Check("merge: the dropped count is what the 'showing the last N of M' line needs", () =>
+{
+    var (render, older) = PromptWizard.MergeThread(
+        Enumerable.Range(0, 7).Select(i => Mail($"u{i}", $"2026-08-22T10:{i:00}:00Z")), [], 3);
+    return render.Count == 3 && older == 4;
+});
+Check("merge: same-timestamp entries keep supply order (stable sort, no reply above its question)", () =>
+{
+    // List.Sort would be free to invert these; OrderBy may not. Same instant is routine.
+    var (render, _) = PromptWizard.MergeThread(
+        [Mail("u1", "2026-08-22T10:00:00Z")], [Reply("2026-08-22T10:00:00Z")], 20);
+    return render.Count == 2 && render[0].Mail?.Id == "u1" && render[1].Handle != null;
+});
+Check("merge: an unparsable timestamp sorts LAST, never silently to the top", () =>
+{
+    var (render, _) = PromptWizard.MergeThread(
+        [Mail("good", "2026-08-22T10:00:00Z"), Mail("bad", "not-a-date")], [], 20);
+    return render[0].Mail?.Id == "good" && render[1].Mail?.Id == "bad";
+});
+Check("merge: empty on both sides is empty, not a crash", () =>
+    PromptWizard.MergeThread([], [], 20) is { Render.Count: 0, Older: 0 });
+Check("ParseAt: a malformed stamp is MaxValue (the sort floor that makes the above true)", () =>
+    PromptWizard.ParseAt("nonsense") == DateTime.MaxValue
+    && PromptWizard.ParseAt("2026-08-22T10:00:00Z") != DateTime.MaxValue);
+
+Console.WriteLine();
+Console.WriteLine("== attached references survive a reopen (send side ⇄ render side) ==");
+
+// THE DEFECT, and it is TWO defects that only show together. References the user attached
+// came back inert after a reopen because (a) they were serialized to the mail body as prose
+// with no [[ref:]] token in it, and (b) the token extractor ran only on INBOUND mail, so the
+// user's own replayed messages skipped it. Fixing either alone changes nothing observable —
+// which is exactly why this section tests the PAIR rather than either half.
+
+JsonArray OneRef(string id = "ID12AB34CD", string? name = "Cube") =>
+[
+    new JsonObject
+    {
+        ["id"] = id, ["type"] = "Slot", ["name"] = name,
+        ["slotId"] = "ID99", ["slotPath"] = "/Root/Cube",
+    }
+];
+
+Check("send side: an attached reference goes out carrying a [[ref:]] token", () =>
+    PromptWizard.ComposeRefLines(OneRef()).Contains("[[ref:ID12AB34CD"));
+Check("send side: the descriptive detail the AGENT reads is still there", () =>
+{
+    string s = PromptWizard.ComposeRefLines(OneRef());
+    return s.Contains("Slot") && s.Contains("/Root/Cube") && s.Contains("ID99");
+});
+Check("ROUND TRIP: the render side recognises the token the send side emits", () =>
+    // the whole of item C in one line — the two halves must AGREE, not merely each be sane
+    PromptWizard.ContainsRefToken(PromptWizard.ComposeRefLines(OneRef())));
+Check("round trip: holds for a reference with no slot name (label falls back to the id)", () =>
+{
+    string s = PromptWizard.ComposeRefLines(OneRef(name: null));
+    return PromptWizard.ContainsRefToken(s) && s.Contains("[[ref:ID12AB34CD|ID12AB34CD]]");
+});
+Check("round trip: several attachments each produce a recognised token", () =>
+{
+    JsonArray many =
+    [
+        new JsonObject { ["id"] = "ID01", ["type"] = "Slot", ["name"] = "A" },
+        new JsonObject { ["id"] = "ID02", ["type"] = "Slot", ["name"] = "B" },
+    ];
+    string s = PromptWizard.ComposeRefLines(many);
+    return s.Split('\n').Count(l => PromptWizard.ContainsRefToken(l)) == 2;
+});
+Check("CONTROL: prose with no token is NOT reported as containing one", () =>
+    !PromptWizard.ContainsRefToken("- ID12AB34CD (Slot) on slot \"Cube\" path /Root/Cube"));
+
+Console.WriteLine();
 Console.WriteLine($"{passed} passed, {failed} failed");
 return failed == 0 ? 0 : 1;

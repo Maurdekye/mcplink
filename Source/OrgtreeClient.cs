@@ -162,7 +162,7 @@ internal static class OrgtreeClient
     internal sealed record NodeStatus(string State, bool Busy, string? Tier, string? ScopeEffort,
         string? ActivityPhase, string? ActivityTool, string? Phase, int Queued, int Tasks,
         string? LastError, string? StatusKind, string? StatusSummary, string? StatusAt,
-        AskCard? Ask = null);
+        AskCard? Ask = null, IReadOnlyList<string>? ExternalHandles = null);
 
     /// <summary>Parse a node's `ask` payload into an AskCard (null in = null out; malformed in =
     /// null out, so backend drift degrades to "no card" rather than a crashing poll loop).
@@ -275,11 +275,24 @@ internal static class OrgtreeClient
                     statusAt = lastStatus?["at"]?.GetValue<string>();
                 }
                 catch { }
+                // external_handles (backend 2026-08-22): the @mcp: channels this agent may
+                // answer directly. A window panel reads them to ADOPT the handle already bound
+                // to the agent instead of minting a second one — an agent chatted with from
+                // two panels in a row should keep answering on one address.
+                // Absent on older backends ⇒ empty ⇒ the panel mints and attaches.
+                var handles = new List<string>();
+                try
+                {
+                    foreach (var h in o["external_handles"] as JsonArray ?? new JsonArray())
+                        if (h?.GetValue<string>() is { Length: > 0 } s)
+                            handles.Add(s);
+                }
+                catch { }
                 found = new NodeStatus(o["state"]?.GetValue<string>() ?? "?", busy,
                     o["tier"]?.GetValue<string>(), scopeEffort,
                     activityPhase, activityTool, phase, queued, tasks,
                     lastError, statusKind, statusSummary, statusAt,
-                    ParseAsk(o["ask"]));
+                    ParseAsk(o["ask"]), handles);
                 return;
             }
             foreach (var c in o["children"] as JsonArray ?? new JsonArray())
@@ -353,6 +366,29 @@ internal static class OrgtreeClient
     internal static async Task<Result<JsonNode>> SetEffortAsync(string slug, string nodeId, string effort)
     {
         var body = new JsonObject { ["effort"] = effort };
+        return await RequestAsync(HttpMethod.Post,
+            $"/api/orgs/{Uri.EscapeDataString(slug)}/nodes/{Uri.EscapeDataString(nodeId)}/scope", body)
+            .ConfigureAwait(false);
+    }
+
+    /// <summary>Attach @mcp: response handles to an ALREADY-HIRED node (backend 2026-08-22).
+    /// Until that landed, `external_handles` was hire-time only, which is why window panels
+    /// onto existing agents had no handle to name and their agents were never told a panel was
+    /// watching — they answered by ending the turn. REPLACES the node's set, so callers that
+    /// mean to ADD read NodeStatus.ExternalHandles first and pass the union.
+    ///
+    /// Deliberately does NOT wake the agent: the supervisor injects a standing "You hold
+    /// EXTERNAL RESPONSE HANDLE(s): …" line into its system prompt from this field on its NEXT
+    /// turn, so attaching IS telling it — without spending a turn to say so. (The mirror of
+    /// detach, which must wake it, because a dead handle has to be announced before it dies.)
+    /// </summary>
+    internal static async Task<Result<JsonNode>> AttachHandlesAsync(
+        string slug, string nodeId, IEnumerable<string> handles)
+    {
+        var arr = new JsonArray();
+        foreach (var h in handles)
+            arr.Add(h);
+        var body = new JsonObject { ["external_handles"] = arr };
         return await RequestAsync(HttpMethod.Post,
             $"/api/orgs/{Uri.EscapeDataString(slug)}/nodes/{Uri.EscapeDataString(nodeId)}/scope", body)
             .ConfigureAwait(false);
@@ -485,6 +521,47 @@ internal static class OrgtreeClient
     }
 
     /// <summary>UTC-now cursor in the backend's own timestamp format — the poll floor, so a
-    /// fresh panel never replays older mail addressed to a recycled peer id.</summary>
+    /// fresh panel never replays older mail addressed to a recycled peer id.
+    /// ⚠ Body panels still open on this (their agent is brand new — there IS no history, and a
+    /// recycled peer id must not resurrect a stranger's). A WINDOW panel deliberately does not:
+    /// see ExternHistoryAsync.</summary>
     internal static string NowCursor() => DateTime.UtcNow.ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'");
+
+    /// <summary>The DURABLE read of a handle's channel — every reply ever sent to `peer`, oldest
+    /// first, from the org ledger rather than the live long-poll.
+    ///
+    /// This is what makes a reopened panel show the agent's half. The replies were never
+    /// missing: an agent answers a panel by mailing its @mcp: handle, which the ledger stores
+    /// as an org_inbox row — but the only reader was `WaitAsync`, whose cursor starts at
+    /// NowCursor(), so a fresh panel could never see anything said before it opened. The user
+    /// half backfilled from user mail and the agent half did not exist as far as the panel
+    /// could tell.
+    ///
+    /// Returns (messages, cursor): hand the cursor to WaitAsync so the live poll resumes
+    /// exactly where the history ended and nothing renders twice.
+    ///
+    /// NOT a transcript mirror (user ruling — panels are world-readable by every session user,
+    /// so content stays explicit): this channel holds only what the agent DELIBERATELY
+    /// addressed to the panel, never its working output.</summary>
+    internal static async Task<(List<HandleMessage> Messages, string? Cursor, string? Error)> ExternHistoryAsync(
+        string peer, string? after = null)
+    {
+        string query = after != null ? $"?after={Uri.EscapeDataString(after)}" : "";
+        var r = await RequestAsync(HttpMethod.Get,
+            $"/api/extern/{Uri.EscapeDataString(peer)}/messages{query}").ConfigureAwait(false);
+        if (r.Error != null)
+            return (new List<HandleMessage>(), after, r.Error);
+        var messages = new List<HandleMessage>();
+        foreach (var m in r.Value?["messages"] as JsonArray ?? new JsonArray())
+        {
+            if (m is not JsonObject o)
+                continue;
+            messages.Add(new HandleMessage(
+                o["org"]?.GetValue<string>() ?? "?",
+                o["at"]?.GetValue<string>() ?? "",
+                o["body"]?.GetValue<string>() ?? "",
+                o["by"]?.GetValue<string>()));
+        }
+        return (messages, r.Value?["cursor"]?.GetValue<string>() ?? after, null);
+    }
 }

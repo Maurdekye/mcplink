@@ -95,6 +95,14 @@ internal static class PromptWizard
     /// <summary>How much thread history a window panel renders on open (older mail stays on the desk).</summary>
     private const int BackfillLimit = 20;
 
+    /// <summary>Panel response handles are minted `resonite.&lt;hex&gt;`. The prefix is how a window
+    /// panel recognises a handle on an agent as ITS OWN kind — an agent may legitimately hold
+    /// handles belonging to other clients (an external chat, a different tool), and adopting
+    /// one of those would post this panel's chat into a stranger's channel.</summary>
+    private const string HandlePrefix = "@mcp:resonite.";
+
+    private static string NewPeerId() => $"resonite.{Guid.NewGuid():N}"[..17];
+
     // stage-2 footer orders (chat scroll = 0)
     private const long OrderAttach = 10;
     private const long OrderPresence = 15;     // live-activity ticker between attachments and input
@@ -1161,7 +1169,7 @@ internal static class PromptWizard
 
         var org = state.Orgs[state.OrgIndex];
         string nodeLabel = parentId ?? TopLevelLabel;
-        string peer = $"resonite.{Guid.NewGuid():N}"[..17];
+        string peer = NewPeerId();
         int effortIndex = state.EffortIndex;
         string? effort = effortIndex == 0 ? null : Efforts[effortIndex];
         string tierAndEffort = effort == null ? tier : $"{tier}, {effort} effort";
@@ -1257,6 +1265,41 @@ internal static class PromptWizard
             }
             // verify the node is (now) live and adopt its real tier + current effort override
             var r = await OrgtreeClient.NodeStatusAsync(org.Slug, node).ConfigureAwait(false);
+
+            // ITEM A — give this window a RESPONSE HANDLE before it binds.
+            // A window panel used to open onto an existing agent with no handle at all, so the
+            // agent was never told a panel was watching and had no address to answer on: it
+            // replied the only way it knew, by ending its turn, and what surfaced in the panel
+            // was its status text rather than anything it addressed to the user.
+            // ADOPT an existing panel handle rather than minting a second: a user who closes a
+            // window and reopens it should land back on the same channel, which is also what
+            // makes the backfill find the earlier replies.
+            // Attaching does NOT wake the agent — the supervisor injects "You hold EXTERNAL
+            // RESPONSE HANDLE(s): …" into its system prompt from this field on its next turn,
+            // so the grant IS the telling. (Detach is the mirror and must wake it: a handle
+            // going dead has to be announced before it dies.)
+            string? windowPeer = null, handleError = null;
+            if (r.Error == null && r.Value!.State == "live")
+            {
+                var existing = (r.Value.ExternalHandles ?? new List<string>()).ToList();
+                string? mine = existing.FirstOrDefault(
+                    h => h.StartsWith(HandlePrefix, StringComparison.Ordinal));
+                if (mine != null)
+                    windowPeer = mine["@mcp:".Length..];
+                else
+                {
+                    string minted = NewPeerId();
+                    // union, never replace: set_scope REPLACES the set, and an agent may hold
+                    // handles for other clients that must survive this panel opening
+                    existing.Add($"@mcp:{minted}");
+                    var attach = await OrgtreeClient.AttachHandlesAsync(org.Slug, node, existing)
+                        .ConfigureAwait(false);
+                    if (attach.Error == null)
+                        windowPeer = minted;
+                    else
+                        handleError = attach.Error;   // older backend, or a refusal — degrade below
+                }
+            }
             RunSync(world, state, () =>
             {
                 state.Busy = false;
@@ -1279,13 +1322,23 @@ internal static class PromptWizard
                 state.AgentLabel = node;
                 state.WindowMode = true;
                 state.TitleTag = " · window";
-                state.KickoffSent = true; // sends are plain follow-up mail — no wizard contract
+                state.Peer = windowPeer;
+                // with a handle, the first send carries the window contract naming it; without
+                // one (old backend, or the attach was refused) fall back to 2.5.0 behaviour —
+                // plain follow-up mail, no contract to send, agent answers via the desk
+                state.KickoffSent = windowPeer == null;
                 state.EffortIndex = Math.Max(0, Array.IndexOf(Efforts, r.Value.ScopeEffort ?? ""));
                 SetTitle(state, node + state.TitleTag);
                 UpdateFrame(state, TierColor(tier));
                 state.Root.AttachComponent<Comment>().Text.Value =
-                    $"orgtree agent window {org.Slug}/{node} · a view onto the user's mail thread · " +
-                    "closing it does NOT retire the agent";
+                    $"orgtree agent window {org.Slug}/{node}"
+                    + (windowPeer != null ? $" · handle @mcp:{windowPeer}" : " · no handle (degraded)")
+                    + " · a view onto the user's mail thread · closing it does NOT retire the agent";
+                if (handleError != null)
+                    AppendSystem(state, "<color=#fc6>couldn't give this agent a response handle: "
+                                        + $"{Escape(handleError)}</color> — it can still read your "
+                                        + "messages, but its replies will land on your desk rather "
+                                        + "than in this panel.");
                 state.Wire = AgentWires.Register(world, state.Root, org.Slug, node, row.Parent, TierColor(tier));
                 EnterChatStage(state);
                 StartInboxLoop(state);
@@ -1313,6 +1366,7 @@ internal static class PromptWizard
         string slug = state.OrgSlug!, node = state.NodeId!;
         var seen = new HashSet<string>();
         bool backfilled = false;
+        string? handleCursor = null;
         Task.Run(async () =>
         {
             while (!cts.Token.IsCancellationRequested)
@@ -1326,37 +1380,148 @@ internal static class PromptWizard
                     var thread = r.Value!.Where(m => m.Id.Length > 0
                         && (m.To == node || (m.To == null && m.From == node))).ToList();
                     var fresh = thread.Where(m => seen.Add(m.Id)).ToList();
-                    List<OrgtreeClient.UserMail> render;
-                    int older = 0;
                     if (!backfilled)
                     {
                         backfilled = true;
-                        older = Math.Max(0, fresh.Count - BackfillLimit);
-                        render = fresh.Skip(older).ToList();
+                        // BOTH HALVES (2.6.1). The user's half comes from user mail; the
+                        // agent's half does NOT — an agent answers a panel by mailing its
+                        // @mcp: handle, which lands on the extern channel, so a reopened
+                        // panel that read only user mail showed a conversation in which the
+                        // agent never replied. Pull the handle's durable history too and
+                        // merge the two by timestamp; the live poll then resumes at the
+                        // cursor this leaves off.
+                        var history = new List<OrgtreeClient.HandleMessage>();
+                        if (state.Peer is { Length: > 0 } peer0)
+                        {
+                            var (msgs, cursor0, err) =
+                                await OrgtreeClient.ExternHistoryAsync(peer0).ConfigureAwait(false);
+                            if (err == null)
+                            {
+                                history = msgs;
+                                handleCursor = cursor0;
+                            }
+                            else
+                                McpLinkMod.LogInfo($"PromptWizard: handle history for {peer0}: {err}");
+                        }
+                        if (cts.Token.IsCancellationRequested)
+                            break;
+                        RenderMergedBackfill(world, state, fresh, history);
+                        // hand the live handle poll the cursor the history ended on, so the
+                        // stream continues seamlessly instead of replaying or skipping
+                        if (state.Peer is { Length: > 0 })
+                            RunHandlePoll(state, cts, handleCursor ?? OrgtreeClient.NowCursor());
+                        var backfillUnread = fresh.Where(m => m.Unread).Select(m => m.Id).ToList();
+                        if (backfillUnread.Count > 0)
+                            await OrgtreeClient.MarkMailReadAsync(slug, backfillUnread).ConfigureAwait(false);
                     }
                     else
                     {
-                        render = fresh.Where(m => m.To == null).ToList();
-                    }
-                    var unreadIds = render.Where(m => m.Unread).Select(m => m.Id).ToList();
-                    if (render.Count > 0)
-                        RunSync(world, state, () =>
-                        {
-                            if (render.Any(m => m.To == null))
+                        // steady state: the user's own sends render locally at send time and
+                        // the agent's replies arrive on the handle poll, so only INBOUND user
+                        // mail is left for this loop to surface
+                        var render = fresh.Where(m => m.To == null).ToList();
+                        var unreadIds = render.Where(m => m.Unread).Select(m => m.Id).ToList();
+                        if (render.Count > 0)
+                            RunSync(world, state, () =>
+                            {
                                 state.AwaitingReply = false; // inbound mail landed — disarm the nudge
-                            if (older > 0)
-                                AppendSystem(state, $"showing the last {render.Count} of {older + render.Count} " +
-                                                    "mails in this thread — older mail stays on your desk");
-                            foreach (var m in render)
-                                AppendMail(state, m);
-                        });
-                    if (unreadIds.Count > 0)
-                        await OrgtreeClient.MarkMailReadAsync(slug, unreadIds).ConfigureAwait(false);
+                                foreach (var m in render)
+                                    AppendMail(state, m);
+                            });
+                        if (unreadIds.Count > 0)
+                            await OrgtreeClient.MarkMailReadAsync(slug, unreadIds).ConfigureAwait(false);
+                    }
                 }
                 try { await Task.Delay(4000, cts.Token).ConfigureAwait(false); }
                 catch (OperationCanceledException) { break; }
             }
         });
+    }
+
+    /// <summary>Replay a reopened window's thread — BOTH halves, in one chronological pass.
+    ///
+    /// The two halves arrive on different transports and neither knows about the other: the
+    /// user's messages are ordinary user mail, the agent's replies are handle sends on the
+    /// extern channel. Rendering them as they arrive would interleave by fetch order, not by
+    /// time, so a reply could sit above the message it answers. Merge on the timestamp instead,
+    /// then apply BackfillLimit to the MERGED sequence — capping each half separately would
+    /// silently drop one side of a lopsided conversation.
+    ///
+    /// Unparsable timestamps sort last rather than to DateTime.MinValue: a malformed `at`
+    /// should push an entry to the end of the replay, not silently to the top of it.</summary>
+    private static void RenderMergedBackfill(World world, WizardState state,
+        List<OrgtreeClient.UserMail> mails, List<OrgtreeClient.HandleMessage> handleMsgs)
+    {
+        var (render, older) = MergeThread(mails, handleMsgs, BackfillLimit);
+        if (render.Count == 0)
+            return;
+        RunSync(world, state, () =>
+        {
+            if (render.Any(e => e.Handle != null || e.Mail?.To == null))
+                state.AwaitingReply = false;
+            if (older > 0)
+                AppendSystem(state, $"showing the last {render.Count} of {older + render.Count} " +
+                                    "messages in this thread — older mail stays on your desk");
+            foreach (var entry in render)
+            {
+                if (entry.Mail != null)
+                    AppendMail(state, entry.Mail);
+                else if (entry.Handle is { } handle)
+                {
+                    var (body, refCards) = ExtractRefTokens(state, DecodeEntities(handle.Body));
+                    AppendChat(state, handle.By ?? state.AgentLabel, entry.At, body, refCards);
+                }
+            }
+        });
+    }
+
+    /// <summary>One entry of a replayed thread — exactly one of Mail / Handle is set.</summary>
+    internal readonly record struct ThreadEntry(
+        DateTime At, OrgtreeClient.UserMail? Mail, OrgtreeClient.HandleMessage? Handle);
+
+    /// <summary>The ordering half of the backfill, kept PURE and internal so the offline suite
+    /// can exercise it without a world: merge the user's mail with the agent's handle replies
+    /// by timestamp, then keep the newest `limit`. Returns (whatToRender, howManyWereDropped).
+    ///
+    /// Two properties the suite pins, both of which were wrong in the obvious implementation:
+    /// the cap applies to the MERGED sequence (capping each half separately drops one side of
+    /// a lopsided conversation entirely), and a STABLE sort keeps same-timestamp entries in
+    /// the order they were supplied rather than shuffling a question below its answer.</summary>
+    internal static (List<ThreadEntry> Render, int Older) MergeThread(
+        IEnumerable<OrgtreeClient.UserMail> mails,
+        IEnumerable<OrgtreeClient.HandleMessage> handleMsgs, int limit)
+    {
+        var merged = new List<ThreadEntry>();
+        foreach (var m in mails)
+            merged.Add(new ThreadEntry(ParseAt(m.At), m, null));
+        foreach (var h in handleMsgs)
+            merged.Add(new ThreadEntry(ParseAt(h.At), null, h));
+        // OrderBy is a STABLE sort; List.Sort is not. With both halves timestamped to the same
+        // second — routine on a fast exchange — an unstable sort can float a reply above the
+        // message it answers.
+        var ordered = merged.OrderBy(e => e.At).ToList();
+        int older = Math.Max(0, ordered.Count - limit);
+        return (ordered.Skip(older).ToList(), older);
+    }
+
+    /// <summary>Backend timestamps are ISO-8601 UTC. A value we cannot read sorts LAST
+    /// (DateTime.MaxValue), never first — a malformed `at` belongs at the end of a replay,
+    /// not silently at the top of it.</summary>
+    internal static DateTime ParseAt(string? at) =>
+        DateTime.TryParse(at, out var t) ? t.ToLocalTime() : DateTime.MaxValue;
+
+    /// <summary>Does the render path recognise this as a reference token? Exposed so the suite
+    /// can prove the SEND side and the RENDER side agree — the two-sided defect behind item C,
+    /// where each half was individually reasonable and the pair did not compose.</summary>
+    internal static bool ContainsRefToken(string text) => RefToken.IsMatch(text);
+
+    /// <summary>Serialize refs exactly as an outgoing mail body would. Internal + pure for the
+    /// suite (the production path appends into a larger message).</summary>
+    internal static string ComposeRefLines(JsonArray refs)
+    {
+        var sb = new StringBuilder();
+        AppendRefLines(sb, refs);
+        return sb.ToString();
     }
 
     /// <summary>Render one user-mail entry as a chat line: Sent copies as "you", inbound with
@@ -1368,12 +1533,17 @@ internal static class PromptWizard
         string body = DecodeEntities(m.Body);
         foreach (var f in m.Files)
             body += $"\n\n📎 file attachment: {f} — download it from the desk inbox";
+        // ITEM C (user half, render side). Token extraction runs on BOTH directions now. It
+        // used to be reached only by inbound mail — the Sent branch below returned early with
+        // null refCards — so even once the user's own sends carried tokens, replaying them
+        // would have printed the raw [[ref:…]] text instead of a card. The two halves of C
+        // are independent defects and this is the second one.
+        var (stripped, refCards) = ExtractRefTokens(state, body);
         if (m.To != null)
         {
-            AppendChat(state, "you", at, body, null);
+            AppendChat(state, "you", at, stripped, refCards);
             return;
         }
-        var (stripped, refCards) = ExtractRefTokens(state, body);
         string from = m.Kind is "message" or "" ? m.From : $"{m.From} · {m.Kind}";
         AppendChat(state, from, at, stripped, refCards);
     }
@@ -1559,7 +1729,9 @@ internal static class PromptWizard
 
         string body = state.KickoffSent
             ? ComposeFollowUp(text, refs)
-            : BuildKickoff(state, text, refs, state.Peer!);
+            : state.WindowMode
+                ? BuildWindowKickoff(state, text, refs, state.Peer!)
+                : BuildKickoff(state, text, refs, state.Peer!);
         state.Busy = true;
         var world = state.Root.World;
         string slug = state.OrgSlug!, node = state.NodeId!;
@@ -2412,11 +2584,22 @@ internal static class PromptWizard
         var cts = new CancellationTokenSource();
         state.Poll = cts;
         state.Root.Destroyed += _ => cts.Cancel(); // panel closed → stop the long-poll
+        // A BODY panel's agent was hired seconds ago: there is no history to replay, and
+        // starting at "now" is also what stops a recycled peer id resurrecting a stranger's
+        // thread. A WINDOW panel resumes from its backfill cursor instead — see StartInboxLoop.
+        RunHandlePoll(state, cts, OrgtreeClient.NowCursor());
+    }
+
+    /// <summary>The handle long-poll proper, shared by both panel kinds: body panels open it at
+    /// "now", window panels resume it at the cursor their backfill ended on so the live stream
+    /// picks up exactly where the replayed history stopped and nothing renders twice.</summary>
+    private static void RunHandlePoll(WizardState state, CancellationTokenSource cts, string? startCursor)
+    {
         var world = state.Root.World;
         string peer = state.Peer!;
         Task.Run(async () =>
         {
-            string? cursor = OrgtreeClient.NowCursor();
+            string? cursor = startCursor;
             int backoffSeconds = 0;
             while (!cts.Token.IsCancellationRequested)
             {
@@ -2604,12 +2787,29 @@ internal static class PromptWizard
         return refs;
     }
 
+    /// <summary>Serialize the user's attached references into the outgoing mail body.
+    ///
+    /// ITEM C (user half). Each line LEADS with a [[ref:ID|label]] token — the same token an
+    /// agent embeds to attach a card — and carries the descriptive detail after it. Before
+    /// this, the block was prose only, which is why references the user attached came back
+    /// INERT when a panel reopened: the render path builds cards from tokens
+    /// (ExtractRefTokens), the backfill replays the stored mail body, and that body had no
+    /// token in it. Nothing was lost in rendering; the reference was never sent as one.
+    ///
+    /// The token costs the agent nothing — it reads the id either way — and doubles as a
+    /// worked example of the syntax it is asked to use in replies.</summary>
     private static void AppendRefLines(StringBuilder sb, JsonArray refs)
     {
         foreach (var r in refs)
-            sb.AppendLine($"- {r?["id"]} ({r?["type"]})"
+        {
+            string id = r?["id"]?.ToString() ?? "";
+            // label the card the way the user sees the thing in-world: slot name if we have
+            // one, else the bare id (never empty — an unlabelled card is unidentifiable)
+            string label = r?["name"]?.ToString() is { Length: > 0 } n ? n : id;
+            sb.AppendLine($"- [[ref:{id}|{label}]] ({r?["type"]})"
                           + (r?["name"] != null ? $" on slot \"{r["name"]}\" ({r["slotId"]}) path {r["slotPath"]}" : "")
                           + (r?["objectRootId"] != null ? $", object root {r["objectRootName"]} ({r["objectRootId"]})" : ""));
+        }
     }
 
     private const string CharterText =
@@ -2661,6 +2861,57 @@ internal static class PromptWizard
         sb.AppendLine("- The user deleting the panel retires you; when a task is complete, answer to the handle, then orgtree_status done.");
         sb.AppendLine("- The user may instead DETACH the panel: you get a [PANEL DETACHED] mail, you STAY HIRED, "
                       + "and the handle above goes dead — from then on use normal org channels, not the handle.");
+        return sb.ToString();
+    }
+
+    /// <summary>The window panel's first message (ITEM A). Its reader is an ALREADY-HIRED agent
+    /// with its own charter and its own work in flight — not a fresh hire — so this says what
+    /// changed (a panel is now watching, here is how to answer it) and pointedly does NOT
+    /// re-brief it on who it is or restate a wizard contract it never agreed to.
+    ///
+    /// The world-readability warning is deliberate and load-bearing: panels are visible to
+    /// EVERY user in the Resonite session, and the standing user ruling is that content stays
+    /// explicit — presence goes ambient, the transcript does not. An agent that treated its new
+    /// handle as a place to narrate would violate that ruling on the user's behalf, in front of
+    /// whoever else is in the world.</summary>
+    private static string BuildWindowKickoff(WizardState state, string prompt, JsonArray refs, string peer)
+    {
+        var world = state.Root.World;
+        var sb = new StringBuilder();
+        sb.AppendLine($"The user \"{world.LocalUser?.UserName}\" has OPENED AN IN-GAME CHAT PANEL onto you "
+                      + $"from inside the Resonite world \"{world.Name}\" (session {world.SessionId}). "
+                      + "You were not re-hired and nothing about your role has changed — you simply have "
+                      + "a live audience in-world now, and an address to answer it on.");
+        sb.AppendLine();
+        sb.AppendLine("THEIR MESSAGE:");
+        sb.AppendLine(prompt);
+        sb.AppendLine();
+        if (refs.Count > 0)
+        {
+            sb.AppendLine("ATTACHED OBJECT REFERENCES (live engine RefIDs in that world, captured at send):");
+            AppendRefLines(sb, refs);
+            sb.AppendLine("RefIDs are session-scoped: if one no longer resolves, the world was reloaded — re-locate by the slot path.");
+            sb.AppendLine();
+        }
+        sb.AppendLine("HOW TO RESPOND — your reply must reach the panel:");
+        sb.AppendLine($"- orgtree_message to \"@mcp:{peer}\" — every message you send that address appears in "
+                      + "the panel's chat immediately. Markdown renders. Keep lines panel-friendly (~1100 px wide). "
+                      + "This address is already granted to you; no audience is needed for it.");
+        sb.AppendLine("- Ending your turn is NOT a reply. Without a message to that handle the user sees "
+                      + "only your status ticker and is left waiting on an answer that never comes.");
+        sb.AppendLine("- To attach a live IN-WORLD REFERENCE CARD, embed [[ref:ID12345678]] or "
+                      + "[[ref:ID12345678|short label]] anywhere in the body (any live RefID in that world). "
+                      + "The panel strips the token and renders a card the user can grab the reference off of.");
+        sb.AppendLine("⚠ THE PANEL IS WORLD-READABLE — every user in that Resonite session can read it, and it "
+                      + "is not your desk. Send DELIBERATE replies and progress notes, never a running "
+                      + "transcript of your work: content stays explicit, presence stays ambient. Anything "
+                      + "private or long-form belongs in user mail or your status, not the panel.");
+        sb.AppendLine("- Follow-ups arrive as more user mail; they may carry [ATTACHED OBJECT REFERENCES] blocks like the one above.");
+        sb.AppendLine("- Closing this window does NOT retire you — it is a view onto the conversation, not your "
+                      + "employment. If a [PANEL DETACHED] mail arrives, the handle above is dead: stop using it "
+                      + "and work through normal org channels.");
+        sb.AppendLine("- You may also use the mcplink tools against that live world "
+                      + $"(panel slot {state.Root.ReferenceID}) if your work calls for it.");
         return sb.ToString();
     }
 
