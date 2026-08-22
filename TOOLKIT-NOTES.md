@@ -539,3 +539,46 @@ make the same mistake unless the measurement is written down.
   `tools/mcp.py` does it — `from mcp import call; call("renderer_info", {"id": "ID…"})` POSTs to
   `http://localhost:7357/mcp` and unwraps `content[].text`. Same dispatcher, one less cache. It is also
   the right instrument for *diagnosing* this: the direct list is the ground truth to compare against.
+### 2026-08-22 — `render_view` on a NON-FOCUSED world returns an all-white frame, not an error
+- **Reported by:** `panel-chat`, during the ghost-card acceptance pass.
+- **What I called:** `render_view {position, lookAt, isolate: <panel slot>, world: "Local"}` — to photograph a
+  panel living in `Local` while the local user had focus in a *different* world (`d2whiplash grid`).
+- **What I expected:** either a render of the panel, or a refusal saying the world isn't rendered.
+- **What I got:** a **pure white 1000×1000 PNG**. Every time.
+- **Measurement:** 4 attempts — camera on both sides of the panel (I recomputed the facing direction from the
+  root's quaternion and tried both signs), with `isolate` and without, with `postProcessing: false`, at 1.1 m
+  and 2.4 m. All four returned identical blank white. Structural inspection of the very same panel through
+  `ls` / `get_slot` / `grep` worked perfectly throughout, so the panel was unquestionably there and populated.
+- **Why it costs time:** a white frame is an **abstention that looks like a photograph.** It reads as "your
+  camera is pointing at nothing", so the natural response is to debug framing — which is exactly what I did
+  for three of the four attempts. A refusal ("world not rendered") would have cost one call.
+- ⚠ **It is worse than "a photograph of nothing" — it can look like a specific, plausible DEFECT.** Noted by
+  `mcplink-toolkit`, which in the same hour was diagnosing a garment that renders as a **flat white
+  silhouette** (a bright `EmissiveColor`). Its renders happened to be against the *focused* world, so they
+  were sound — but it checked that before letting the conclusion stand, because an all-white frame and the
+  material defect it was hunting are the same image. Anyone rendering a suspected white-silhouette bug in a
+  non-focused world would have had the tool hand them a perfect confirmation of a defect it never observed.
+  **Confirm the world is focused before reading anything into a white frame.**
+- **Workaround:** don't rely on `render_view` for a world the local user isn't focused on. Either focus that
+  world first (`focus_world`) or verify structurally instead — component counts, `ReferenceProxySource`
+  targets and `Text.Content` values proved the whole acceptance result here without a single pixel.
+- **Related, same root cause, and it bit me first:** every `mcp__mcplink__*` call defaults to
+  `world: "focused"`. The user changed focus mid-run and a `wizard_drive` call against a panel I had just
+  created failed with `No element with RefID ID1DCF100 in world 'd2whiplash grid'` — which reads exactly like
+  **the panel was destroyed**, not like I was asking the wrong world. ⇒ **Pass `world` explicitly for
+  anything that outlives a single call.** A RefID is only meaningful together with its world.
+
+### 2026-08-22 — the window-panel kickoff is never replayed into a panel (scope limit, not a bug)
+- **Reported by:** `panel-chat`. Recording it because it silently bounds what a live panel test can prove.
+- **What I assumed:** that `BuildWindowKickoff`'s text would appear in a panel the way `BuildKickoff`'s does,
+  so a reopen would let me observe both contract variants in-world.
+- **What I measured:** it does not. I opened a window panel, then opened a *second* window panel so the
+  first one's kickoff would be replayed by the backfill. `threadEntries` stayed at **2** across both opens,
+  and greps for `OPENED AN IN-GAME CHAT PANEL` and `WORLD-READABLE` — both unique to the window kickoff —
+  returned **0 hits**, while the body kickoff's `HOW TO RESPOND` block rendered in full every time.
+- **Consequence for anyone testing panel contract text:** only the **body** kickoff is ever rendered to a
+  user. The window kickoff is read by the agent and never displayed. So a rendering defect in the contract
+  (like the ghost-card one fixed in 2.7.0) can only manifest through `BuildKickoff` — and the window variant
+  is **not live-verifiable through a panel at all**. Cover it offline, and say so rather than letting the
+  body-side pass stand in for both. Sharing one helper between the two builders makes divergence a compile
+  error, which is the strongest guarantee available here, but it is not a live observation.
