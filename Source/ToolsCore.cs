@@ -233,16 +233,26 @@ internal static class ToolsCore
 
     private static JsonNode SessionInfo(JsonObject args)
     {
+        // ONE attachment point for the build report, deliberately: it used to be attached
+        // separately per branch, and a mutation test showed that deleting it from the
+        // engine-ready branch — the one that actually runs in production — was invisible to
+        // every check, because only the engine-less branch was reachable offline.
+        var result = SessionWorlds();
+        result["build"] = BuildReport();
+        return result;
+    }
+
+    private static JsonObject SessionWorlds()
+    {
         // Build identity does not need the engine, and "which build is this?" is precisely the
-        // question you want answered when nothing else works — so report it even during the
-        // pre-init window rather than throwing the whole call away.
+        // question you want answered when nothing else works — so the caller still gets a report
+        // during the pre-init window rather than having the whole call thrown away.
         var engine = Engine.Current;
         if (engine == null)
             return new JsonObject
             {
                 ["engineReady"] = false,
-                ["note"] = "Engine is not ready yet — world information is unavailable, but the build report below is valid.",
-                ["build"] = BuildReport(),
+                ["note"] = "Engine is not ready yet — world information is unavailable, but the build report is valid.",
             };
 
         var manager = engine.WorldManager;
@@ -263,7 +273,6 @@ internal static class ToolsCore
             ["engineReady"] = true,
             ["focusedWorld"] = manager.FocusedWorld?.Name,
             ["worlds"] = worlds,
-            ["build"] = BuildReport(),
         };
     }
 

@@ -78,10 +78,29 @@ internal static class BuildInfo
     public static string EngineDir =>
         Path.GetDirectoryName(typeof(FrooxEngine.Slot).Assembly.Location) ?? "";
 
+    /// <summary>The DLLs a build deploys to, in the order a reader should think about them.</summary>
+    public static IReadOnlyList<(string role, string path)> DeployCandidates(string engineDir) =>
+    [
+        ("rml_mods", Path.Combine(engineDir, "rml_mods", "McpLink.dll")),
+        ("HotReloadMods", Path.Combine(engineDir, "rml_mods", "HotReloadMods", "McpLink.dll")),
+    ];
+
     /// <summary>
     /// Full build report: what is running, and how each deployable copy on disk compares to it.
     /// </summary>
     public static JsonObject Report()
+    {
+        string engineDir = EngineDir;
+        return Report(DeployCandidates(engineDir), Path.Combine(engineDir, "rml_mods", "McpLink.dll.PENDING"));
+    }
+
+    /// <summary>
+    /// The comparison itself, over an explicit candidate set. Exists as a seam so the offline
+    /// suite can drive deployConsistent and matchesRunning to their FAILING values against real
+    /// files on disk — checks that only assert those keys are present cannot tell a working
+    /// comparison from one hardcoded to "consistent".
+    /// </summary>
+    internal static JsonObject Report(IReadOnlyList<(string role, string path)> candidates, string? pendingStampPath)
     {
         var running = Mvid;
         string location = Location;
@@ -99,16 +118,11 @@ internal static class BuildInfo
         try { report["hotReloads"] = McpLinkMod.HotReloadCount(); }
         catch { /* hot-reload lib absent; the count is a nicety, not the report */ }
 
-        string engineDir = EngineDir;
         var deployed = new JsonArray();
         bool anyStale = false;
         bool anyMatch = false;
 
-        foreach (var (label, path) in new[]
-                 {
-                     ("rml_mods", Path.Combine(engineDir, "rml_mods", "McpLink.dll")),
-                     ("HotReloadMods", Path.Combine(engineDir, "rml_mods", "HotReloadMods", "McpLink.dll")),
-                 })
+        foreach (var (label, path) in candidates)
         {
             var entry = new JsonObject { ["path"] = path, ["role"] = label };
             if (!File.Exists(path))
@@ -146,11 +160,10 @@ internal static class BuildInfo
         // A pending stamp is written by the csproj when a build's copy to rml_mods was blocked by
         // the game's file lock and never retried. Reported as-is; the mvid comparison above is the
         // authority, this is just the note the build left behind.
-        string stamp = Path.Combine(engineDir, "rml_mods", "McpLink.dll.PENDING");
-        if (File.Exists(stamp))
+        if (pendingStampPath != null && File.Exists(pendingStampPath))
         {
-            try { report["pendingDeployNote"] = File.ReadAllText(stamp).Trim(); }
-            catch { report["pendingDeployNote"] = stamp; }
+            try { report["pendingDeployNote"] = File.ReadAllText(pendingStampPath).Trim(); }
+            catch { report["pendingDeployNote"] = pendingStampPath; }
         }
 
         report["deployConsistent"] = !anyStale;

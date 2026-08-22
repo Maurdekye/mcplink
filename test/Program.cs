@@ -1887,6 +1887,77 @@ Check("session_info compares against BOTH deployable paths and states deployCons
         && deployed.All(d => (bool)d!["present"]! == false || d.AsObject().ContainsKey("matchesRunning"));
 });
 
+// The three checks above assert those keys are PRESENT. Presence cannot distinguish a working
+// comparison from one hardcoded to "consistent" — measured: mutants that pinned deployConsistent
+// true, and that collapsed matchesRunning's unreadable case to false, both survived them.
+// These drive the comparison to each outcome against real files and read the verdict back.
+string mvidDir = Path.Combine(Path.GetTempPath(), $"mcplink-mvid-{Environment.ProcessId}");
+Directory.CreateDirectory(mvidDir);
+string sameDll = Path.Combine(mvidDir, "same.dll");
+string otherDll = Path.Combine(mvidDir, "other.dll");
+string junkDll = Path.Combine(mvidDir, "junk.dll");
+File.Copy(typeof(McpLink.Encode).Assembly.Location, sameDll, overwrite: true);
+File.Copy(Path.Combine(ResonitePath, "FrooxEngine.dll"), otherDll, overwrite: true);
+File.WriteAllText(junkDll, "not a PE file at all");
+
+JsonObject ReportOver(params (string role, string path)[] candidates) =>
+    McpLink.BuildInfo.Report(candidates, null);
+
+Check("a matching deployed copy reports matchesRunning:TRUE and deployConsistent:true", () =>
+{
+    var r = ReportOver(("rml_mods", sameDll));
+    var entry = r["deployed"]!.AsArray()[0]!;
+    return (bool)entry["present"]! && (bool)entry["matchesRunning"]! == true
+        && (bool)r["deployConsistent"]! == true && r["deployWarning"] == null;
+});
+
+Check("a DIVERGENT deployed copy reports matchesRunning:FALSE and deployConsistent:FALSE", () =>
+{
+    // The exact production failure: hot-reload path new, restart path old.
+    var r = ReportOver(("rml_mods", otherDll), ("HotReloadMods", sameDll));
+    var byRole = r["deployed"]!.AsArray().ToDictionary(d => d!["role"]!.GetValue<string>(), d => d!);
+    return (bool)byRole["rml_mods"]["matchesRunning"]! == false
+        && (bool)byRole["HotReloadMods"]["matchesRunning"]! == true
+        && (bool)r["deployConsistent"]! == false
+        // and it must SAY so, not merely encode it in a boolean nobody reads
+        && r["deployWarning"]!.GetValue<string>().Contains("does NOT match");
+});
+
+Check("an UNREADABLE copy reports matchesRunning:null — not a false that reads as 'differs'", () =>
+{
+    var r = ReportOver(("rml_mods", junkDll));
+    var entry = r["deployed"]!.AsArray()[0]!.AsObject();
+    return (bool)entry["present"]!
+        && entry.ContainsKey("matchesRunning") && entry["matchesRunning"] is null
+        && entry.ContainsKey("mvidError");
+});
+
+Check("an ABSENT copy reports present:false and does not fake a comparison", () =>
+{
+    var r = ReportOver(("rml_mods", Path.Combine(mvidDir, "nope.dll")));
+    var entry = r["deployed"]!.AsArray()[0]!.AsObject();
+    return (bool)entry["present"]! == false && !entry.ContainsKey("matchesRunning");
+});
+
+Check("the real report covers exactly the two paths a build deploys to", () =>
+{
+    var roles = McpLink.BuildInfo.DeployCandidates(@"C:\game").Select(c => c.role).ToList();
+    var paths = McpLink.BuildInfo.DeployCandidates(@"C:\game").Select(c => c.path).ToList();
+    return roles.SequenceEqual(new[] { "rml_mods", "HotReloadMods" })
+        && paths[0] == @"C:\game\rml_mods\McpLink.dll"
+        && paths[1] == @"C:\game\rml_mods\HotReloadMods\McpLink.dll";
+});
+
+Check("a pending-deploy note left by a blocked build is surfaced in the report", () =>
+{
+    string stamp = Path.Combine(mvidDir, "McpLink.dll.PENDING");
+    File.WriteAllText(stamp, "  rml_mods was NOT updated  ");
+    var r = McpLink.BuildInfo.Report([("rml_mods", sameDll)], stamp);
+    return r["pendingDeployNote"]!.GetValue<string>() == "rml_mods was NOT updated";
+});
+
+try { Directory.Delete(mvidDir, recursive: true); } catch { }
+
 Console.WriteLine();
 Console.WriteLine($"{passed} passed, {failed} failed");
 return failed == 0 ? 0 : 1;
