@@ -39,6 +39,10 @@ pattern collapsed.** As with 2.6.0, each is backed by a job it broke; measuremen
   token regex (it requires `ID` + hex immediately after the prefix). Both kickoff builders now call
   one shared helper: the bug existed as two duplicated copies, so a fix applied to one of them would
   have looked exactly like a fix.
+- **`tools/mcp.py`** added — calls McpLink's HTTP endpoint directly, bypassing the always-up proxy's
+  cached tool list. Needed because a newly shipped tool can be invisible to an already-connected MCP
+  client for several minutes (measured: 96 tools through the client vs 97 direct, at the same instant,
+  with `session_info` confirming the new build was live). See `TOOLKIT-NOTES.md`.
 - **`tools/verify-deploy-artifact.sh` and `tools/pe-mvid.py`** added — the two-phase deploy probe
   (which keeps a byte copy of the outgoing DLL so a marker must be proven *absent* from the old
   build, not merely present in the new one) and a CLR-free PE→`#GUID`-heap MVID reader for

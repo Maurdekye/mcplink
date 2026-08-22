@@ -110,6 +110,13 @@ can't, say so plainly — "unmeasured impression" is a useful label, not a disqu
   appear in the result. The scale was folklore-documented as a "≈1.135 heuristic".
 - **Measurement that proves it:** **0.671, 0.923, 1.062** — three garments, one folder. Not a
   constant. (This is the measurement referenced at the top of this file.)
+- ⚠ **UPDATED 2026-08-22, live: the range is far wider than that, and this kills the practice
+  rather than correcting the number.** `StPatrick Bow fixed.fbx`, imported at a requested
+  `[0, 1, 2]`, came back at **scale 4.3317304** — roughly **4× outside** the 0.671–1.062 band, with a
+  **6.6 metre Y offset** (`[0.0031, -5.6253, 2.3545]`) and the 180° Y rotation. Anyone who assumed
+  "≈1.135" on that asset got a silently mangled bake, and no revised constant would have saved them.
+  **The fix is to MEASURE PER ASSET — never to update the number.** A heuristic here is not a
+  slightly-wrong value, it is a wrong practice.
 - **Cost:** every consumer must already know to read the root transform back and reset it. One that
   doesn't gets a silently skewed bake.
 - **Suggested change:** return `appliedTransform: {position, rotation, scale}`, and/or accept
@@ -120,6 +127,11 @@ can't, say so plainly — "unmeasured impression" is a useful label, not a disqu
   the reminder that the scale is not a constant, carrying these very measurements. `normalizeTransform:
   true` strips it (undo-recorded) and still reports what was removed. Rotation comparison honours
   quaternion double-cover, so `q` and `-q` are not reported as a phantom rotation.
+  **Live-verified 2026-08-22** against `48c6b565…`: the reported `appliedTransform` was confirmed by an
+  INDEPENDENT `get_slot_transform {space:"local"}` read-back, identical to the last digit — a different
+  code path, so the tool is not vouching for itself. `normalizeTransform: true` left the root at exactly
+  the requested `[3, 1, 2]` / identity / scale 1 (also read back independently) while still reporting the
+  4.33 it had removed.
 
 ### 2026-08-22 — missing tool: `renderer_info {slotOrComponentId}`
 - **Reported by:** `clothing-preparer` (via `coordinator`)
@@ -137,6 +149,18 @@ can't, say so plainly — "unmeasured impression" is a useful label, not a disqu
   is what forced the second and third call), and the blend mode. Both named defects are reported as
   `findings`, and an unassigned submesh — which renders as nothing, silently — is reported too.
   Truncation is a sibling `truncated` field; `renderers` only ever holds real entries.
+  **Live-verified 2026-08-22, and it caught a real defect on its first use.** On an imported garment it
+  returned the `SkinnedMeshRenderer`, `PBS_Metallic`, `blendMode Opaque`, the mesh URL, and 9 texture
+  members — `AlbedoTexture` and `NormalMap` resolved to `local://` URLs, the 7 unbound ones reported as
+  `null`. The grey-albedo finding correctly **stayed silent** because a texture *was* bound (the control
+  holding live, not just offline), while the emissive finding fired on `EmissiveColor [1,1,1,1]`.
+  That was checked for false-positivity BEFORE it was believed: `PBS_Material.OnAwake` sets
+  `EmissiveColor = colorX.Black`, so white is *not* the import default (the FBX set it), and
+  `PBS_Material.UpdateKeywords` enables `_EMISSION` when
+  `EmissiveMap.Target != null || MathX.MaxComponent(EmissiveColor.Value.rgb) > 0f` — rgb (1,1,1) ⇒ on.
+  A `render_view` of the isolated garment is a **flat white silhouette with the albedo texture correctly
+  bound** — i.e. the render actively misleads a human toward the albedo while the tool names the right
+  member. That is the case for this tool existing.
 
 ### 2026-08-22 — two reporting papercuts (`spawn_import` paths, undocumented Import Report panel)
 - **Reported by:** `clothing-preparer` (via `coordinator`)
@@ -477,3 +501,41 @@ make the same mistake unless the measurement is written down.
   interval until removed (a `process`/`port:` dog is edge-triggered and fires once). "main is not sha X" has
   no down-edge to hang an edge trigger on, so level-triggering is the right shape here — **remove the dog on
   its first fire.**
+
+### 2026-08-22 — ⚠ `tools/list` THROUGH THE PROXY IS NOT EVIDENCE ABOUT THE DEPLOYED BUILD
+- **Reported by:** `mcplink-toolkit`, minutes after deploying 2.7.0. **This is the single most
+  dangerous instrument in this repo, because it misreads in the direction you are primed to believe.**
+- **What I called:** nothing special — I simply looked at my `mcp__mcplink__*` tools right after a
+  verified deploy, to use the new `renderer_info`.
+- **What I expected:** the tool I had just shipped.
+- **What I got:** **96 tools, NO `renderer_info`, and the OLD `spawn_import` schema** — no
+  `normalizeTransform` property, no `appliedTransform` in the description. Read naively that says
+  *"your change did not ship"* — and you are reading it in the sixty seconds after a deploy, which is
+  exactly when you are most willing to believe that.
+- **The truth:** it HAD shipped. POSTing `tools/list` straight to `http://localhost:7357/mcp` returned
+  **97 tools, `renderer_info` present, `normalizeTransform` in the schema, `appliedTransform` in the
+  description** — from the same dispatcher, with one less cache in front of it.
+- **Measurement that proves it:** 96 (through the client) vs **97** (direct) at the same instant, with
+  `session_info` reporting mvid `48c6b565-4c80-4f6e-92e7-89f3ef90128d` — the value that had been
+  pre-registered from the PE file before launch. Two independent routes said the new build was live
+  while the tool list said otherwise.
+- **Why it happens:** the proxy is deliberately **always up** so `mcp__mcplink__*` exists even with the
+  game closed. That is the whole point of it — and it is exactly what lets its cached tool list outlive
+  the mod it fronts.
+- ⚠ **AND IT SELF-HEALS AT AN UNPREDICTABLE TIME, WHICH IS WORSE, NOT BETTER.** ~5 minutes later the
+  client list had refreshed on its own (`renderer_info` present, `normalizeTransform` in the schema)
+  with no action from me. So the list is a **lagging, unsynchronised cache**: whether it agrees with you
+  is uncorrelated with whether the deploy landed *at the moment you look*. Both readings are available,
+  and which one you get is timing.
+- **The trap in its nastiest form — an agreeing reading is not evidence either.** In the same window
+  `coordinator` recorded that seeing `renderer_info` in *its* proxy tool list corroborated 2.7.0 being
+  live. It happened to point the right way, so it read as confirmation. **It was luck, not evidence**,
+  and had the timing differed it would have "confirmed" the opposite with equal confidence. An
+  instrument that is unreliable in both directions cannot corroborate anything. (`coordinator`
+  corrected its own record on being shown this.)
+- **Rule:** **`session_info`'s `mvid` is the evidence about what is running; `tools/list` is not.**
+  A tool's presence or absence in the proxy-mediated list tells you about a cache, not about the DLL.
+- **Workaround, when you need a just-shipped tool immediately:** call the endpoint directly.
+  `tools/mcp.py` does it — `from mcp import call; call("renderer_info", {"id": "ID…"})` POSTs to
+  `http://localhost:7357/mcp` and unwraps `content[].text`. Same dispatcher, one less cache. It is also
+  the right instrument for *diagnosing* this: the direct list is the ground truth to compare against.
