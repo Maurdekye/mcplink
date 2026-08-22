@@ -83,11 +83,80 @@
     </Reference>
   </ItemGroup>
 
+  <!-- Stamp the git commit into AssemblyInformationalVersion so a running mod can name the source
+       it was built from (session_info reports it). DELIBERATELY NO BUILD TIMESTAMP: the SDK builds
+       deterministically, so the assembly's MVID is a function of its inputs — identical source
+       gives an identical MVID, which is what makes session_info's "does the DLL on disk match the
+       running build" comparison mean "same code" rather than "same build event". Injecting a
+       wall-clock time would make every rebuild look like a different build and turn that check
+       into a permanent false alarm. A commit sha is a function of committed state, so it is safe.
+       Every step is non-fatal: no git, no repo, or a git that errors just yields "nogit". -->
+  <Target Name="StampBuildInfo" BeforeTargets="GetAssemblyAttributes">
+    <Exec Command="git -C &quot;$(MSBuildProjectDirectory)&quot; rev-parse --short=12 HEAD"
+          ConsoleToMSBuild="true" StandardOutputImportance="low" StandardErrorImportance="low"
+          ContinueOnError="true" IgnoreExitCode="true">
+      <Output TaskParameter="ConsoleOutput" PropertyName="_GitSha" />
+      <Output TaskParameter="ExitCode" PropertyName="_GitShaExit" />
+    </Exec>
+    <Exec Command="git -C &quot;$(MSBuildProjectDirectory)&quot; status --porcelain --untracked-files=no"
+          ConsoleToMSBuild="true" StandardOutputImportance="low" StandardErrorImportance="low"
+          ContinueOnError="true" IgnoreExitCode="true">
+      <Output TaskParameter="ConsoleOutput" PropertyName="_GitDirty" />
+    </Exec>
+    <PropertyGroup>
+      <_BuildSource Condition="'$(_GitShaExit)' == '0' AND '$(_GitSha)' != ''">g$(_GitSha.Trim())</_BuildSource>
+      <_BuildSource Condition="'$(_BuildSource)' == ''">nogit</_BuildSource>
+      <_BuildSource Condition="'$(_GitDirty)' != ''">$(_BuildSource).dirty</_BuildSource>
+      <!-- Source id ONLY — deliberately no version number here. $(Version) is the SDK default
+           "1.0.0" while the mod's real version is McpLinkMod.VERSION ("2.5.0"), and duplicating
+           that constant into the csproj just creates something new to drift. session_info reports
+           the version from the constant and this stamp beside it. -->
+      <InformationalVersion>$(_BuildSource)</InformationalVersion>
+    </PropertyGroup>
+  </Target>
+
   <Target Name="DeployToMods" AfterTargets="Build" Condition="'$(CopyToMods)' == 'true'">
-    <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(ResonitePath)\rml_mods" ContinueOnError="true" />
-    <!-- HotReloadLib reads this copy on 'hot_reload'; the file is never locked (loaded from memory) -->
-    <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(ResonitePath)\rml_mods\HotReloadMods" ContinueOnError="true" />
-    <Message Text="McpLink.dll deployed to rml_mods + rml_mods\HotReloadMods (hot_reload tool or restart to load)" Importance="high" />
+    <PropertyGroup>
+      <_ModsDir>$(ResonitePath)\rml_mods</_ModsDir>
+      <_PendingStamp>$(_ModsDir)\McpLink.dll.PENDING</_PendingStamp>
+    </PropertyGroup>
+
+    <!-- HotReloadLib reads this copy on 'hot_reload'; the file is never locked (loaded from
+         memory), so a failure HERE is a genuine fault and is allowed to fail the build. -->
+    <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(_ModsDir)\HotReloadMods" />
+
+    <!-- The restart path. rml_mods\McpLink.dll IS locked while the game runs, so this copy failing
+         is the normal case mid-development — but it must never again be SILENT. Until 2026-08-22
+         this was ContinueOnError with no reporting, so a blocked copy left the hot-reload path new
+         and the restart path old with nothing said; that is precisely how a stale exporter stayed
+         live for hours while its rebuilt tool sat in the tool list looking correct.
+         SkipUnchangedFiles is pinned false on purpose: a skipped file is absent from CopiedFiles
+         and would be indistinguishable from a blocked one. -->
+    <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(_ModsDir)"
+          SkipUnchangedFiles="false" ContinueOnError="true">
+      <Output TaskParameter="CopiedFiles" ItemName="_RestartCopied" />
+    </Copy>
+    <PropertyGroup>
+      <_RestartCopyOk Condition="'@(_RestartCopied)' != ''">true</_RestartCopyOk>
+    </PropertyGroup>
+
+    <!-- Success: both paths agree, and any note left by an earlier blocked build is now false. -->
+    <Delete Condition="'$(_RestartCopyOk)' == 'true'" Files="$(_PendingStamp)" ContinueOnError="true" />
+    <Message Condition="'$(_RestartCopyOk)' == 'true'"
+             Text="McpLink.dll deployed to rml_mods + rml_mods\HotReloadMods (hot_reload tool or restart to load)"
+             Importance="high" />
+
+    <!-- Failure: a real MSBuild warning (counted in the summary, surfaced by every tool that reads
+         build output) plus a note on disk next to the DLL it failed to replace. -->
+    <WriteLinesToFile Condition="'$(_RestartCopyOk)' != 'true'"
+                      File="$(_PendingStamp)" Overwrite="true" ContinueOnError="true"
+                      Lines="McpLink: rml_mods\McpLink.dll was NOT updated by the build at $([System.DateTime]::UtcNow.ToString(&quot;o&quot;)) — the file was locked (game running). The built DLL is at $(TargetPath) and was staged to rml_mods\HotReloadMods only. Close Resonite and rebuild (or copy it by hand) before relying on a restart. This note is deleted by the next build that succeeds in copying." />
+    <Warning Condition="'$(_RestartCopyOk)' != 'true' AND '$(RequireModsDeploy)' != 'true'"
+             Code="MCPLINK001"
+             Text="DEPLOY HALF-DONE: rml_mods\HotReloadMods\McpLink.dll is NEW but rml_mods\McpLink.dll could NOT be replaced (locked — Resonite is running). 'hot_reload' will load the new code; RESTARTING THE GAME WILL LOAD THE OLD CODE. Close Resonite and rebuild to finish. Left a note at $(_PendingStamp). Ask the live mod which build it is with session_info (build.deployConsistent). Use -p:RequireModsDeploy=true to make this an error instead." />
+    <Error Condition="'$(_RestartCopyOk)' != 'true' AND '$(RequireModsDeploy)' == 'true'"
+           Code="MCPLINK001"
+           Text="DEPLOY FAILED: rml_mods\McpLink.dll could not be replaced (locked — Resonite is running), and RequireModsDeploy=true was requested. Close the game and build again." />
   </Target>
 
   <!-- the skip is LOUD: a silent no-deploy reads exactly like a deploy to whoever builds

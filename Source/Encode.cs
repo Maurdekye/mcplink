@@ -66,7 +66,10 @@ internal static class Encode
             {
                 if (count++ >= MaxCollectionItems)
                 {
-                    arr.Add($"... {dictionary.Count - MaxCollectionItems} more");
+                    // An object, not a string: this array's real entries are {key,value} objects,
+                    // so a bare "... N more" string was a value that looked like a value. A
+                    // consumer reading .key/.value off this gets nothing instead of nonsense.
+                    arr.Add(new JsonObject { ["$truncated"] = dictionary.Count - MaxCollectionItems });
                     break;
                 }
                 arr.Add(new JsonObject
@@ -86,7 +89,9 @@ internal static class Encode
             {
                 if (count++ >= MaxCollectionItems)
                 {
-                    arr.Add("... truncated");
+                    // Same reasoning as the dictionary case above: an unmistakable marker object
+                    // rather than a string that could pass for an element.
+                    arr.Add(new JsonObject { ["$truncated"] = true });
                     break;
                 }
                 arr.Add(Value(item, depth - 1));
@@ -113,8 +118,17 @@ internal static class Encode
         return obj;
     }
 
-    /// <summary>Encode a sync member (field/ref/list/object) for component dumps.</summary>
-    public static JsonNode? SyncMember(ISyncMember member, int depth = 2)
+    /// <summary>Default window applied to ISyncList members when a caller does not choose one.</summary>
+    public const int DefaultListLimit = 50;
+
+    /// <summary>
+    /// Encode a sync member (field/ref/list/object) for component dumps.
+    /// <paramref name="listLimit"/> caps how many elements of an ISyncList are returned
+    /// (-1 = all); <paramref name="listOffset"/> skips that many first, so a long list can be
+    /// paged rather than truncated.
+    /// </summary>
+    public static JsonNode? SyncMember(ISyncMember member, int depth = 2,
+        int listOffset = 0, int listLimit = DefaultListLimit)
     {
         switch (member)
         {
@@ -141,18 +155,39 @@ internal static class Encode
             }
             case ISyncList list:
             {
-                var elements = new JsonArray();
+                // 'elements' contains ONLY real elements — never a truncation sentinel.
+                // It used to append the literal string "... N more" as an element, so a consumer
+                // iterating the array got N refs plus one thing that was not a ref while the
+                // array's shape asserted it was one. That silently cost an 80-bone
+                // SkinnedMeshRenderer its leg drivers. Truncation is a sibling field now, and the
+                // window is caller-controlled so long lists can actually be read rather than
+                // merely honestly cut off.
                 int count = list.Count;
-                for (int i = 0; i < count && i < 50; i++)
+                int start = Math.Clamp(listOffset, 0, Math.Max(count, 0));
+                int take = listLimit < 0 ? count - start : Math.Min(listLimit, count - start);
+                if (take < 0) take = 0;
+
+                var elements = new JsonArray();
+                for (int i = start; i < start + take; i++)
                 {
                     var item = list.GetElement(i);
                     elements.Add(item is ISyncMember nested && depth > 0
-                        ? SyncMember(nested, depth - 1)
+                        // Nested lists inherit the limit but never the offset: an offset means
+                        // "skip this many of the list I asked about", and silently applying it to
+                        // every list underneath would drop elements nobody asked to skip.
+                        ? SyncMember(nested, depth - 1, 0, listLimit)
                         : Value(item, depth - 1));
                 }
-                if (count > 50)
-                    elements.Add($"... {count - 50} more");
-                return new JsonObject { ["count"] = count, ["elements"] = elements };
+                return new JsonObject
+                {
+                    ["count"] = count,
+                    ["elements"] = elements,
+                    // Always emitted, both values — a positive marker, so "not truncated" is
+                    // stated rather than inferred from a missing key.
+                    ["truncated"] = start + take < count,
+                    ["listOffset"] = start,
+                    ["returned"] = take,
+                };
             }
             default:
                 return new JsonObject

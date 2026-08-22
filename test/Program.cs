@@ -1715,5 +1715,146 @@ Check("retires-on-close: bound body only — window/fallback/fired/nodeless neve
     && !PromptWizard.RetiresOnClose(false, false, false, false));
 
 Console.WriteLine();
+Console.WriteLine("== list truncation is out-of-band (get_component) ==");
+
+// The defect: 'elements' used to end with the literal string "... N more", so a consumer
+// iterating an 80-bone SkinnedMeshRenderer's list got 50 refs plus one thing that was not a ref.
+JsonObject EncodeList(int count, int offset = 0, int limit = McpLink.Encode.DefaultListLimit) =>
+    (JsonObject)McpLink.Encode.SyncMember(new McpLinkSmoke.FakeSyncList(count), 2, offset, limit)!;
+
+Check("short list: every element is a real element, truncated is stated false", () =>
+{
+    var r = EncodeList(3);
+    var elements = r["elements"]!.AsArray();
+    return (int)r["count"]! == 3 && elements.Count == 3
+        && (bool)r["truncated"]! == false          // POSITIVE marker, not an absent key
+        && (int)r["returned"]! == 3 && (int)r["listOffset"]! == 0
+        && elements.All(e => e is JsonObject);     // no bare strings anywhere
+});
+
+Check("OVERLONG list: elements holds ONLY elements — no '... N more' string among them", () =>
+{
+    var r = EncodeList(80);
+    var elements = r["elements"]!.AsArray();
+    // The precise regression: 80 bones, cap 50. Before the fix elements.Count was 51 and
+    // elements[50] was the string "... 30 more".
+    bool noSentinelString = elements.All(e => e is not JsonValue v || v.GetValueKind() != System.Text.Json.JsonValueKind.String);
+    bool noStringAnywhere = !elements.Any(e => e!.ToJsonString().Contains("more"));
+    return (int)r["count"]! == 80 && elements.Count == 50
+        && (bool)r["truncated"]! == true
+        && (int)r["returned"]! == 50
+        && noSentinelString && noStringAnywhere;
+});
+
+Check("listLimit:-1 returns the whole 80-bone list (the documented workaround is retired)", () =>
+{
+    var r = EncodeList(80, 0, -1);
+    return (int)r["count"]! == 80 && r["elements"]!.AsArray().Count == 80
+        && (bool)r["truncated"]! == false && (int)r["returned"]! == 80;
+});
+
+Check("listOffset pages: offset 60 limit 50 yields the LAST 20, by element identity", () =>
+{
+    var r = EncodeList(80, 60, 50);
+    var elements = r["elements"]!.AsArray();
+    // Identity, not just count: proves the window starts where it says it does.
+    string first = elements[0]!["$string"]!.GetValue<string>();
+    string last = elements[^1]!["$string"]!.GetValue<string>();
+    return elements.Count == 20 && (int)r["listOffset"]! == 60 && (int)r["returned"]! == 20
+        && (bool)r["truncated"]! == false
+        && first == "element#60" && last == "element#79";
+});
+
+Check("listOffset past the end yields an empty window, not an exception or a wrap", () =>
+{
+    var r = EncodeList(10, 99, 50);
+    return r["elements"]!.AsArray().Count == 0 && (int)r["returned"]! == 0
+        && (int)r["listOffset"]! == 10 && (bool)r["truncated"]! == false;
+});
+
+Check("offset+limit mid-list reports truncated:true (there IS more after the window)", () =>
+{
+    var r = EncodeList(80, 10, 5);
+    var elements = r["elements"]!.AsArray();
+    return elements.Count == 5 && (bool)r["truncated"]! == true
+        && elements[0]!["$string"]!.GetValue<string>() == "element#10";
+});
+
+Check("get_component declares listOffset + listLimit in its schema", () =>
+{
+    var tool = tools.First(t => t!["name"]!.GetValue<string>() == "get_component")!;
+    var props = tool["inputSchema"]!["properties"]!.AsObject();
+    return props.ContainsKey("listOffset") && props.ContainsKey("listLimit")
+        && (int)props["listLimit"]!["default"]! == McpLink.Encode.DefaultListLimit;
+});
+
+Console.WriteLine();
+Console.WriteLine("== build identity (session_info build) ==");
+
+Check("MVID read from a DLL on disk equals that assembly's loaded MVID (round trip)", () =>
+{
+    // The whole instrument rests on this: an identity readable BOTH from the loaded assembly and
+    // from a file, so "what is running" and "what is deployed" are the same kind of evidence.
+    var asm = typeof(McpLink.Encode).Assembly;
+    var onDisk = McpLink.BuildInfo.ReadMvid(asm.Location, out string? error);
+    return error == null && onDisk != null && onDisk == asm.ManifestModule.ModuleVersionId;
+});
+
+Check("CONTROL: a different assembly reads a DIFFERENT mvid (the read isn't a constant)", () =>
+{
+    // Without this the check above would also pass if ReadMvid returned the running mvid
+    // unconditionally — i.e. if the comparison could never fail.
+    var mine = typeof(McpLink.Encode).Assembly.ManifestModule.ModuleVersionId;
+    var other = McpLink.BuildInfo.ReadMvid(Path.Combine(ResonitePath, "FrooxEngine.dll"), out string? error);
+    return error == null && other != null && other != mine;
+});
+
+Check("ReadMvid on a missing file reports an error and returns null (no silent default)", () =>
+{
+    var mvid = McpLink.BuildInfo.ReadMvid(Path.Combine(Path.GetTempPath(), "mcplink-no-such.dll"), out string? error);
+    return mvid == null && error != null && error.Length > 0;
+});
+
+Check("ReadMvid on a NON-managed file reports an error rather than a zero guid", () =>
+{
+    string tmp = Path.Combine(Path.GetTempPath(), $"mcplink-notadll-{Environment.ProcessId}.bin");
+    File.WriteAllText(tmp, "this is not a PE file");
+    try
+    {
+        var mvid = McpLink.BuildInfo.ReadMvid(tmp, out string? error);
+        return mvid == null && error != null;
+    }
+    finally { try { File.Delete(tmp); } catch { } }
+});
+
+Check("ReadMvid does not lock the file against writers while reading", () =>
+{
+    // It must never itself cause the MSB3026 locked-copy failure it exists to detect.
+    string tmp = Path.Combine(Path.GetTempPath(), $"mcplink-share-{Environment.ProcessId}.dll");
+    File.Copy(typeof(McpLink.Encode).Assembly.Location, tmp, overwrite: true);
+    try
+    {
+        // Hold a WRITE handle open, then read the mvid: succeeds only with a sharing-friendly open.
+        using var writer = new FileStream(tmp, FileMode.Open, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete);
+        var mvid = McpLink.BuildInfo.ReadMvid(tmp, out string? error);
+        return error == null && mvid != null;
+    }
+    finally { try { File.Delete(tmp); } catch { } }
+});
+
+Check("the build stamp reached the assembly (git sha or an explicit 'nogit')", () =>
+{
+    string? info = McpLink.BuildInfo.InformationalVersion;
+    return info != null && (info.StartsWith('g') || info.StartsWith("nogit"));
+});
+
+Check("session_info's description tells a caller the build report exists", () =>
+{
+    var tool = tools.First(t => t!["name"]!.GetValue<string>() == "session_info")!;
+    string desc = tool["description"]!.GetValue<string>();
+    return desc.Contains("build") && desc.Contains("deployConsistent");
+});
+
+Console.WriteLine();
 Console.WriteLine($"{passed} passed, {failed} failed");
 return failed == 0 ? 0 : 1;

@@ -13,6 +13,11 @@ internal static class ToolsCore
     {
         add(new ToolDef("session_info",
             "Engine and world overview: all open worlds (name, focus, root slot RefID, user count) plus which is focused. " +
+            "Also 'build' — WHICH BUILD OF THE MOD IS ANSWERING: version, the compilation's MVID, where the " +
+            "assembly was loaded from, and the MVID of each McpLink.dll on disk (rml_mods, HotReloadMods) with " +
+            "matchesRunning per copy. A tool appearing in tools/list says nothing about which code backs it; " +
+            "this does. Check 'deployConsistent' after any build — false means the restart path and the " +
+            "hot-reload path have diverged. " +
             "Works with no setup — the server lives inside the game process.",
             "{\"type\":\"object\",\"properties\":{}}",
             SessionInfo));
@@ -66,11 +71,15 @@ internal static class ToolsCore
             "Full dump of one component/worker by RefID: every sync member (values, ref targets, drive state), " +
             "with includeMemberIds=true each member's own RefID (for wiring drives/copies without per-field " +
             "reflect_get), and with includeNonSynced=true also private non-synced fields — state ResoniteLink " +
-            "can never show.",
+            "can never show. List members return {count, elements, truncated, listOffset, returned}: 'elements' " +
+            "holds ONLY real elements (never a truncation string), and listOffset/listLimit page long lists — so " +
+            "an 80-bone SkinnedMeshRenderer can be read with listLimit:-1 instead of via call_method GetElement(i).",
             $"{{\"type\":\"object\",\"properties\":{{{WorldProp}," +
             "\"id\":{\"type\":\"string\",\"description\":\"Component RefID.\"}," +
             "\"includeMemberIds\":{\"type\":\"boolean\",\"default\":false,\"description\":\"Add each sync member's RefID ('id') alongside its value.\"}," +
-            "\"includeNonSynced\":{\"type\":\"boolean\",\"default\":false}}," +
+            "\"includeNonSynced\":{\"type\":\"boolean\",\"default\":false}," +
+            "\"listOffset\":{\"type\":\"integer\",\"default\":0,\"description\":\"Skip this many elements of each list member (paging).\"}," +
+            $"\"listLimit\":{{\"type\":\"integer\",\"default\":{Encode.DefaultListLimit},\"description\":\"Max list elements returned per list member; -1 = all. Check each member's 'truncated'.\"}}}}," +
             "\"required\":[\"id\"]}",
             args =>
             {
@@ -78,8 +87,11 @@ internal static class ToolsCore
                 string id = RequireString(args, "id");
                 bool includeNonSynced = OptBool(args, "includeNonSynced", false);
                 bool includeMemberIds = OptBool(args, "includeMemberIds", false);
+                int listOffset = OptInt(args, "listOffset", 0);
+                int listLimit = OptInt(args, "listLimit", Encode.DefaultListLimit);
                 return WorldRunner.Run(world,
-                    () => ComponentJson(Resolve.Worker(world, id), includeNonSynced, includeMemberIds));
+                    () => ComponentJson(Resolve.Worker(world, id), includeNonSynced, includeMemberIds,
+                        listOffset, listLimit));
             }));
 
         add(new ToolDef("find_slots",
@@ -235,11 +247,16 @@ internal static class ToolsCore
                 ["isAuthority"] = world.IsAuthority,
             }));
         }
-        return new JsonObject
+        var result = new JsonObject
         {
             ["focusedWorld"] = manager.FocusedWorld?.Name,
             ["worlds"] = worlds,
         };
+        // Never let a fault in build reporting take down session_info — it is the tool people
+        // reach for when nothing else works. Report the failure in-place instead.
+        try { result["build"] = BuildInfo.Report(); }
+        catch (Exception e) { result["build"] = new JsonObject { ["error"] = $"{e.GetType().Name}: {e.Message}" }; }
+        return result;
     }
 
     private static JsonNode SlotJson(Slot slot, int depth, bool includeComponents)
@@ -314,7 +331,8 @@ internal static class ToolsCore
         return false;
     }
 
-    internal static JsonNode ComponentJson(Worker worker, bool includeNonSynced, bool includeMemberIds = false)
+    internal static JsonNode ComponentJson(Worker worker, bool includeNonSynced, bool includeMemberIds = false,
+        int listOffset = 0, int listLimit = Encode.DefaultListLimit)
     {
         var obj = new JsonObject
         {
@@ -333,7 +351,7 @@ internal static class ToolsCore
         {
             string name = worker.GetSyncMemberName(i);
             var member = worker.GetSyncMember(i);
-            var encoded = member == null ? null : Encode.SyncMember(member);
+            var encoded = member == null ? null : Encode.SyncMember(member, 2, listOffset, listLimit);
             if (includeMemberIds && member != null && encoded is JsonObject memberObj)
                 memberObj["id"] = member.ReferenceID.ToString();
             members[name] = encoded;
