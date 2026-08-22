@@ -103,6 +103,34 @@ internal static class PromptWizard
 
     private static string NewPeerId() => $"resonite.{Guid.NewGuid():N}"[..17];
 
+    /// <summary>Which of an agent's existing handles may this panel answer on — the bare peer
+    /// id, or null to mint a fresh one. Internal + pure for the suite.
+    ///
+    /// Reopening onto the SAME channel is what lets the backfill find the earlier replies, so
+    /// adopting is preferred. But only a handle of this panel's own kind may be adopted: an
+    /// agent can legitimately hold handles belonging to other clients (an external chat, some
+    /// other tool), and answering on one of those would post this user's conversation into a
+    /// stranger's channel.</summary>
+    internal static string? AdoptPanelHandle(IReadOnlyList<string>? existing)
+    {
+        foreach (var h in existing ?? [])
+            if (h.StartsWith(HandlePrefix, StringComparison.Ordinal) && h.Length > "@mcp:".Length)
+                return h["@mcp:".Length..];
+        return null;
+    }
+
+    /// <summary>The handle set to write when minting a new one. UNION, never replace: the
+    /// backend's attach REPLACES a node's set, so writing ours alone would silently revoke
+    /// every other client's channel. Internal + pure for the suite.</summary>
+    internal static List<string> HandleUnion(IReadOnlyList<string>? existing, string mintedPeer)
+    {
+        var union = new List<string>(existing ?? []);
+        string addr = $"@mcp:{mintedPeer}";
+        if (!union.Contains(addr))
+            union.Add(addr);
+        return union;
+    }
+
     // stage-2 footer orders (chat scroll = 0)
     private const long OrderAttach = 10;
     private const long OrderPresence = 15;     // live-activity ticker between attachments and input
@@ -1281,18 +1309,14 @@ internal static class PromptWizard
             string? windowPeer = null, handleError = null;
             if (r.Error == null && r.Value!.State == "live")
             {
-                var existing = (r.Value.ExternalHandles ?? new List<string>()).ToList();
-                string? mine = existing.FirstOrDefault(
-                    h => h.StartsWith(HandlePrefix, StringComparison.Ordinal));
-                if (mine != null)
-                    windowPeer = mine["@mcp:".Length..];
+                string? adopted = AdoptPanelHandle(r.Value.ExternalHandles);
+                if (adopted != null)
+                    windowPeer = adopted;
                 else
                 {
                     string minted = NewPeerId();
-                    // union, never replace: set_scope REPLACES the set, and an agent may hold
-                    // handles for other clients that must survive this panel opening
-                    existing.Add($"@mcp:{minted}");
-                    var attach = await OrgtreeClient.AttachHandlesAsync(org.Slug, node, existing)
+                    var union = HandleUnion(r.Value.ExternalHandles, minted);
+                    var attach = await OrgtreeClient.AttachHandlesAsync(org.Slug, node, union)
                         .ConfigureAwait(false);
                     if (attach.Error == null)
                         windowPeer = minted;

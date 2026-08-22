@@ -1959,6 +1959,38 @@ Check("a pending-deploy note left by a blocked build is surfaced in the report",
 try { Directory.Delete(mvidDir, recursive: true); } catch { }
 
 Console.WriteLine();
+Console.WriteLine("== a window panel gets a response handle (item A) ==");
+
+// THE DEFECT. A window panel onto an already-hired agent bound with no handle at all, so the
+// agent had no address to answer on and was never told anyone was watching -- it replied by
+// ending its turn. These two pure helpers are the decision points of the fix.
+
+Check("adopt: an existing panel handle is reused, so the reopened thread stays on one channel", () =>
+    PromptWizard.AdoptPanelHandle(["@mcp:resonite.abc123"]) == "resonite.abc123");
+Check("adopt: no handles at all -> null (mint one)", () =>
+    PromptWizard.AdoptPanelHandle([]) == null
+    && PromptWizard.AdoptPanelHandle(null) == null);
+Check("adopt: a STRANGER's handle is never adopted (would post this chat to another client)", () =>
+    PromptWizard.AdoptPanelHandle(["@mcp:someothertool.xyz", "@mcp:chatq.9"]) == null);
+Check("adopt: ours is found even when a stranger's is listed first", () =>
+    PromptWizard.AdoptPanelHandle(["@mcp:other.1", "@mcp:resonite.zz9"]) == "resonite.zz9");
+Check("adopt: a bare prefix with no id is not a usable handle", () =>
+    PromptWizard.AdoptPanelHandle(["@mcp:"]) == null);
+Check("union: minting KEEPS every other client's handle (attach replaces the set)", () =>
+{
+    var u = PromptWizard.HandleUnion(["@mcp:other.1", "@mcp:chatq.9"], "resonite.new1");
+    return u.Count == 3 && u.Contains("@mcp:other.1") && u.Contains("@mcp:chatq.9")
+        && u.Contains("@mcp:resonite.new1");
+});
+Check("union: from nothing yields exactly the new handle", () =>
+{
+    var u = PromptWizard.HandleUnion(null, "resonite.new1");
+    return u.Count == 1 && u[0] == "@mcp:resonite.new1";
+});
+Check("union: does not duplicate a handle that is somehow already present", () =>
+    PromptWizard.HandleUnion(["@mcp:resonite.dup"], "resonite.dup").Count == 1);
+
+Console.WriteLine();
 Console.WriteLine("== reopened panels replay BOTH halves (thread merge) ==");
 
 // THE DEFECT. A reopened window panel showed the user's messages but not the agent's
