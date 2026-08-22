@@ -2608,9 +2608,14 @@ internal static class PromptWizard
         var cts = new CancellationTokenSource();
         state.Poll = cts;
         state.Root.Destroyed += _ => cts.Cancel(); // panel closed → stop the long-poll
-        // A BODY panel's agent was hired seconds ago: there is no history to replay, and
-        // starting at "now" is also what stops a recycled peer id resurrecting a stranger's
-        // thread. A WINDOW panel resumes from its backfill cursor instead — see StartInboxLoop.
+        // ⚠ DELIBERATE POLICY (2026-08-22), not an oversight — do not "fix" this to replay.
+        // Window panels DO backfill their handle channel now (item B), and the obvious tidy-up
+        // is to make body panels match. They must not:
+        //   · a body panel's agent was hired seconds ago — there is no history to replay; and
+        //   · peer ids are recycled, so replaying from the beginning on a fresh id risks
+        //     resurrecting a STRANGER'S thread into this user's panel.
+        // Until this comment existed the same line was merely incidental to the long-poll
+        // design; it is now a decision, and the asymmetry with StartInboxLoop is the point.
         RunHandlePoll(state, cts, OrgtreeClient.NowCursor());
     }
 
