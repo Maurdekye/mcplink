@@ -2224,5 +2224,25 @@ Check("renderer_info reports truncation as a SIBLING field, never in-band", () =
 });
 
 Console.WriteLine();
+Console.WriteLine("== the contract teaches the token syntax without EMITTING one ==");
+
+// Found live 2026-08-22: the kickoff's own worked example was written as a literal
+// [[ref:ID12345678]], and the panel replays the kickoff body through the same extractor as
+// any other message — so the LESSON was parsed as a real reference and every panel rendered
+// two inert "(gone)" cards directly under the contract. The examples must stay legible to the
+// agent and stay unparseable by the renderer, which is what these two checks pin from both
+// sides. Deleting the examples would also make the first two pass, so the third check exists.
+
+Check("body-panel contract: its syntax example is NOT parsed as a token", () =>
+    !PromptWizard.ContainsRefToken(PromptWizard.RefCardBullet(window: false)));
+Check("window-panel contract: its syntax example is NOT parsed as a token", () =>
+    !PromptWizard.ContainsRefToken(PromptWizard.RefCardBullet(window: true)));
+Check("CONTROL: both contracts still TEACH the bracket syntax (not 'fixed' by deletion)", () =>
+    PromptWizard.RefCardBullet(window: false).Contains("[[ref:")
+    && PromptWizard.RefCardBullet(window: true).Contains("[[ref:"));
+Check("CONTROL: the send side still emits a real token (escaping the lesson broke nothing)", () =>
+    PromptWizard.ContainsRefToken(PromptWizard.ComposeRefLines(OneRef())));
+
+Console.WriteLine();
 Console.WriteLine($"{passed} passed, {failed} failed");
 return failed == 0 ? 0 : 1;

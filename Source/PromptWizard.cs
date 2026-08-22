@@ -1539,6 +1539,31 @@ internal static class PromptWizard
     /// where each half was individually reasonable and the pair did not compose.</summary>
     internal static bool ContainsRefToken(string text) => RefToken.IsMatch(text);
 
+    /// <summary>The contract bullet that teaches an agent the reference-token syntax.
+    ///
+    /// ⚠ THE EXAMPLES MUST NOT BE VALID TOKENS. This text is part of the kickoff mail body, and
+    /// the panel replays that body through <see cref="ExtractRefTokens"/> like any other message —
+    /// so a literal `[[ref:ID12345678]]` in the lesson is parsed as a real reference, resolves to
+    /// nothing, and renders as an inert "(gone)" card. Measured in-world 2026-08-22: every panel
+    /// carried two such ghost cards directly under the contract, the first thing a user sees on
+    /// open. Placeholders in angle brackets teach the same syntax and cannot match RefToken
+    /// (which requires `ID` + hex immediately after the prefix).
+    ///
+    /// Both kickoff builders call this ONE method deliberately: the earlier bug shipped because
+    /// the same example was duplicated in two places, and a fix applied to one of them would look
+    /// exactly like a fix.</summary>
+    internal static string RefCardBullet(bool window) =>
+        window
+            ? "- To attach a live IN-WORLD REFERENCE CARD, embed [[ref:<RefID>]] or "
+              + "[[ref:<RefID>|short label]] anywhere in the body — substituting a real RefID from "
+              + "that world (they look like ID12AB34CD). The panel strips the token and renders a "
+              + "card the user can grab the reference off of."
+            : "- To attach a live IN-WORLD REFERENCE CARD to a response, embed the token "
+              + "[[ref:<RefID>]] or [[ref:<RefID>|short label]] anywhere in the message body — "
+              + "substituting a real RefID from that world (they look like ID12AB34CD; slot, "
+              + "component or field all work). The panel strips the token and renders a card the "
+              + "user can grab the reference off of.";
+
     /// <summary>Serialize refs exactly as an outgoing mail body would. Internal + pure for the
     /// suite (the production path appends into a larger message).</summary>
     internal static string ComposeRefLines(JsonArray refs)
@@ -2876,10 +2901,7 @@ internal static class PromptWizard
         sb.AppendLine($"- orgtree_message to \"@mcp:{peer}\" — every message you send that address appears in "
                       + "the panel's chat immediately. Markdown renders. Keep lines panel-friendly (~1100 px wide). "
                       + "Progress notes before the full answer are welcome — the user sees them live.");
-        sb.AppendLine("- To attach a live IN-WORLD REFERENCE CARD to a response, embed the token "
-                      + "[[ref:ID12345678]] or [[ref:ID12345678|short label]] anywhere in the message body "
-                      + "(any live RefID in that world — slot, component or field). The panel strips the token "
-                      + "and renders a card the user can grab the reference off of.");
+        sb.AppendLine(RefCardBullet(window: false));
         sb.AppendLine("- If a handle send is refused (\"only ORG-INBOX audience holders...\"), this backend predates "
                       + "per-node handles: escalate your answer text to your superior and ask them to relay it "
                       + $"to @mcp:{peer} on your behalf.");
@@ -2928,9 +2950,7 @@ internal static class PromptWizard
                       + "This address is already granted to you; no audience is needed for it.");
         sb.AppendLine("- Ending your turn is NOT a reply. Without a message to that handle the user sees "
                       + "only your status ticker and is left waiting on an answer that never comes.");
-        sb.AppendLine("- To attach a live IN-WORLD REFERENCE CARD, embed [[ref:ID12345678]] or "
-                      + "[[ref:ID12345678|short label]] anywhere in the body (any live RefID in that world). "
-                      + "The panel strips the token and renders a card the user can grab the reference off of.");
+        sb.AppendLine(RefCardBullet(window: true));
         sb.AppendLine("⚠ THE PANEL IS WORLD-READABLE — every user in that Resonite session can read it, and it "
                       + "is not your desk. Send DELIBERATE replies and progress notes, never a running "
                       + "transcript of your work: content stays explicit, presence stays ambient. Anything "

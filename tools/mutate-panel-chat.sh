@@ -131,6 +131,33 @@ mutate "C: the label falls back to empty instead of the id" "$PW" \
   'string label = r?["name"]?.ToString() ?? "";' \
   "round trip: holds for a reference with no slot name (label falls back to the id)"
 
+# ---- the contract must TEACH the syntax without EMITTING it --------------
+# The live defect: the kickoff's own worked example was a literal token, the panel
+# replays the kickoff body through the extractor, so every panel rendered two inert
+# "(gone)" cards under the contract. Mutants 1 and 2 restore that bug in each builder
+# separately -- the earlier version of this bug shipped BECAUSE the example was
+# duplicated, so a per-builder mutant is the one that would catch a half-fix.
+
+mutate "CONTRACT: body-panel example reverts to a literal token (the shipped bug)" "$PW" \
+  '[[ref:<RefID>]] or [[ref:<RefID>|short label]] anywhere in the message body' \
+  '[[ref:ID12345678]] or [[ref:ID12345678|short label]] anywhere in the message body' \
+  "body-panel contract: its syntax example is NOT parsed as a token"
+
+mutate "CONTRACT: window-panel example reverts to a literal token" "$PW" \
+  'REFERENCE CARD, embed [[ref:<RefID>]] or ' \
+  'REFERENCE CARD, embed [[ref:ID12345678]] or ' \
+  "window-panel contract: its syntax example is NOT parsed as a token"
+
+# The lazy wrong fix: delete the example instead of escaping it. That silences the two
+# checks above, so the teaching control has to be the thing that dies here.
+mutate "CONTRACT: 'fixed' by deleting the example rather than escaping it" "$PW" \
+  '[[ref:<RefID>]] or [[ref:<RefID>|short label]] anywhere in the message body' \
+  'a reference token anywhere in the message body' \
+  "CONTROL: both contracts still TEACH the bracket syntax (not 'fixed' by deletion)"
+
+mutate "NO-OP CONTROL: reword the contract prose around the example" "$PW" \
+  'component or field all work' 'component or field are all fine' ""
+
 echo
 if [ "$MISSES" -gt 0 ]; then
   echo "$MISSES PROBLEM(S) -- see XX above"; exit 1
