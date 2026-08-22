@@ -215,3 +215,44 @@ make the same mistake unless the measurement is written down.
 - **Suggested change (applied):** stamp the **git sha** (+`.dirty`) only. A commit sha is a
   function of committed state, so it preserves the property. No wall-clock anything.
 - **Disposition:** applied in `McpLink.csproj` (`StampBuildInfo`).
+
+### 2026-08-22 — method: predict the value BEFORE you can see it, by a different route than the code under test
+- **Reported by:** `mcplink-toolkit` (raised to method by `coordinator`)
+- **The problem it solves:** a check you evaluate *after* seeing the answer is a check you can
+  rationalise. "Near enough", "that field was always going to be shaped like that", "the mismatch is
+  explained by X" — all of it is available to you only once the value is on screen.
+- **What to do instead:** write the expected value down **before the observation is possible**, and
+  **derive it by a route independent of the code being tested**. For the 2.6.0 deploy the deployed
+  DLL's MVID was parsed straight out of the PE's `#GUID` heap by a standalone parser and recorded as
+  `d33078a8-a3e4-4836-a9f9-979459ae6480` before the game was ever launched. Had it been read with
+  `BuildInfo.ReadMvid` — the code under test — agreement would have been a tautology: the same
+  function agreeing with itself proves nothing about whether the mod loaded what was deployed.
+- **The general rule:** *independent derivation + prior commitment.* Either alone is weak. A
+  prediction made with the same code is circular; a correct value produced after the fact is
+  unfalsifiable. Also pre-register the version stamp (`g03cb1b70e338`) and the artifact hash
+  (`2f9ce118b06e…`), so a partial match cannot be waved through as a whole one.
+- **Disposition:** standing method for this subtree.
+
+### 2026-08-22 — `cmd /c` from Git Bash is path-mangled, and the failure is VACUOUS, not loud
+- **Reported by:** `mcplink-toolkit`
+- **What I called:** `cmd /c "netstat -an | findstr ..."` from the Bash tool, to control-test a
+  watchdog command before trusting it.
+- **What I expected:** cmd to run the pipeline and print matching lines.
+- **What I actually got:** MSYS/Git-Bash rewrites the bare `/c` argument into the Windows path
+  `C:\`, so `cmd` received a *path* instead of a switch, started **interactively**, read EOF from
+  the null stdin, and exited 0 — printing only its banner. **Zero output, exit code 0.** A probe
+  written this way reports "no match" for every input, forever, and looks perfectly healthy doing it.
+- **Measurement that proves it:** `cmd /c "netstat -an"` returned 3 lines, all of them the cmd
+  copyright banner, while `netstat -an` genuinely has 604 lines with 51 containing `LISTENING`.
+- **Cost:** my first control test of a watchdog produced a confident, entirely vacuous "the pipeline
+  works" — the exact shape this subtree keeps getting caught by, committed while writing a control
+  *for* that shape.
+- **Suggested change (applied):** invoke it as `cmd //c '...'` from Git Bash, or better, run it from
+  **PowerShell** (`& cmd.exe /c '...'`), which does no argument conversion. And **always control-pair
+  a probe**: assert it MATCHES something known-present *and* fails to match something known-absent.
+  Here: port 135 (listening) must produce lines and exit 0; a nonsense port must produce none and
+  exit 1. Only then does "the target port is silent" mean the target is down rather than the probe
+  being broken.
+- **Disposition:** applies to any command watchdog on this machine — those run under **cmd.exe with
+  the backend service's PATH**, where `grep`/`sed`/`tr`/`$(...)`/`/tmp` all silently match nothing.
+  Use `findstr` and native commands only.
