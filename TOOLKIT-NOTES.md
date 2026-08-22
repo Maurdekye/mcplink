@@ -301,3 +301,32 @@ make the same mistake unless the measurement is written down.
   `✓` dies with `UnicodeEncodeError` **mid-run**, after mutating a file. Call
   `sys.stdout.reconfigure(encoding="utf-8", errors="replace")` first — and put the file restore in
   a `finally`, or a print crash leaves the tree mutated.
+
+### 2026-08-22 — a PASSIVE watchdog cannot guard a window that requires action
+- **Reported by:** `panel-chat` (the mistake was mine; `coordinator` caught it)
+- **What I did:** armed a `process` dog on `port:7357` with **`notice: true`** to learn when Resonite
+  closed, so the DLL could be deployed in that window. Passive felt like the polite choice — the event was
+  "worth knowing, not worth a turn".
+- **What I actually got:** the dog fired correctly at 16:33 with `port:7357 went DOWN`. **Nobody acted.**
+  A `notice: true` event lands in the mailbox and is read *at the recipient's next turn* — and I was
+  correctly idle, so **there was no next turn**. The window opened and closed unattended. We only learned
+  it had happened because a *different* agent's dog was `notice: false` and woke it.
+- **Measurement:** window open ≈16:02–16:48, ~46 minutes, zero turns started, zero action taken. The dog's
+  own record showed it working perfectly the whole time.
+- **The rule:** `notice: true` does not mean "quieter". It means **"no one will act on this until they
+  happen to wake for another reason."** For a *notification* that is fine. For a **window that must be
+  acted on while it is open**, it is the wrong tool — and it fails in the shape this repo keeps hitting:
+  the instrument works, reports success, and the outcome still doesn't happen.
+  - **Guarding a window ⇒ `notice: false` (waking).** Being woken IS the point.
+  - **Reporting a fact ⇒ `notice: true`.**
+- **Why it's easy to get wrong:** the tool documents `notice` in terms of **turn cost** ("worth knowing,
+  not worth a turn"), which invites you to weigh politeness. The question that actually decides it is
+  *"if this fires and nobody wakes, does something get lost?"*
+- **Second-order note (from `mcplink-toolkit`, measured the same day):** prefer `process`/`port:` for this
+  job over a `command` dog. A process dog is **edge-triggered** (fires once on the DOWN transition); a
+  matched *command* dog is **level-triggered** and re-fires every interval for as long as the condition
+  stays true — its port dog woke it every 60s until it removed it. Diagnosis ("closed vs crashed") is
+  better done in the *response* to the fire than by trading an edge trigger for a level one.
+- **Disposition:** re-armed as `wd929d336a`, `notice: false`. Its create-time `smoke` returned
+  `port:7357 is UP right now`, which is the positive evidence that the dog can observe its target at all —
+  read that field, because `armed, fired: 0` cannot distinguish a healthy dog from a blind one.
