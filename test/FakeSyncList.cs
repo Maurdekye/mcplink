@@ -40,9 +40,11 @@ internal abstract class FakeSyncMemberBase : ISyncMember
     public bool IsDriven => false;
     public bool IsHooked => false;
     public bool IsLinked => false;
-    public ILinkRef? ActiveLink => null;
-    public ILinkRef? DirectLink => null;
-    public ILinkRef? InheritedLink => null;
+    // null! not ILinkRef?: the interface declares these non-nullable, and matching it keeps the
+    // stub warning-free without pretending the values are meaningful — nothing reads them.
+    public ILinkRef ActiveLink => null!;
+    public ILinkRef DirectLink => null!;
+    public ILinkRef InheritedLink => null!;
     public IEnumerable<ILinkable> LinkableChildren => [];
 
     public void EndInitPhase() => throw new NotSupportedException();

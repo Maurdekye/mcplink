@@ -60,7 +60,7 @@ can't, say so plainly — "unmeasured impression" is a useful label, not a disqu
   only in the fixed writer.
 - **Cost:** shipped broken artifacts twice; hours of debugging correct code.
 - **Suggested change:** `session_info` reports the running mod's version and build identity.
-- **Disposition:** being fixed by `mcplink-toolkit` on `feat/toolkit-honesty`. `session_info` now
+- **Disposition:** **FIXED in 2.6.0** (`feat/toolkit-honesty`). `session_info` now
   returns a `build` object: version, the compilation's **MVID**, the assembly's load location
   (empty ⇒ loaded from memory ⇒ arrived via `hot_reload`), and the MVID read back out of each
   `McpLink.dll` **on disk** (`rml_mods`, `rml_mods\HotReloadMods`) with `matchesRunning` per copy
@@ -80,8 +80,11 @@ can't, say so plainly — "unmeasured impression" is a useful label, not a disqu
   and enumerate via `call_method GetElement(i)` — i.e. the tool's main job.
 - **Suggested change:** `elements` holds only real elements; truncation moves to sibling fields.
   Better still, make large lists paginable rather than merely honestly truncated.
-- **Disposition:** being fixed by `mcplink-toolkit` on `feat/toolkit-honesty`. This is the worst
-  available failure mode — failing silently *and plausibly* — and is the reason that agent exists.
+- **Disposition:** **FIXED in 2.6.0** (`feat/toolkit-honesty`). `elements` holds only real
+  elements; truncation moved to always-emitted siblings `truncated` / `listOffset` / `returned`,
+  and new `listOffset`/`listLimit` arguments page long lists (`listLimit: -1` = all), so the
+  `call_method GetElement(i)` workaround is retired. This was the worst available failure mode —
+  failing silently *and plausibly* — and is the reason that agent exists.
 
 ### 2026-08-22 — `DeployToMods`: a blocked copy to `rml_mods` is silent and never retried
 - **Reported by:** `clothing-preparer` (via `coordinator`)
@@ -94,7 +97,7 @@ can't, say so plainly — "unmeasured impression" is a useful label, not a disqu
 - **Cost:** see entry 1 — it is the delivery mechanism for that whole class of bug.
 - **Suggested change:** make the locked-file case as loud as the existing `CopyToMods=false` skip
   message, plus a stamp so the miss is discoverable later.
-- **Disposition:** being fixed by `mcplink-toolkit` on `feat/toolkit-honesty`. The blocked copy now
+- **Disposition:** **FIXED in 2.6.0** (`feat/toolkit-honesty`). The blocked copy now
   raises a real MSBuild **warning** (`MCPLINK001`, counted in the build summary) naming the exact
   consequence, writes a `rml_mods\McpLink.dll.PENDING` note that the next successful copy deletes,
   and can be escalated to a hard **error** with `-p:RequireModsDeploy=true` — which is what a real

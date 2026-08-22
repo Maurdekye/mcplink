@@ -1,5 +1,47 @@
 # McpLink changelog
 
+## 2.6.0 (2026-08-22)
+
+**Three tools that failed silently and plausibly now tell the truth.** Every item here is backed
+by a job it broke, not a hunch — see `TOOLKIT-NOTES.md` for the measurements.
+
+- **`session_info` reports which build is answering.** There was previously *no way to ask the
+  live mod which code backs its tools* — a tool appearing in `tools/list` proves nothing, and
+  twice a rebuilt-but-undeployed tool sat in that list producing wrong artifacts while the only
+  available evidence was byte-scanning `McpLink.dll` for a string unique to the fix. The new
+  `build` object reports the version, the compilation's **MVID**, whether the assembly was loaded
+  from a file or from memory (i.e. via `hot_reload`), and the MVID read back out of *each*
+  `McpLink.dll` on disk — `rml_mods\` and `rml_mods\HotReloadMods\` — with `matchesRunning` per
+  copy and a top-level **`deployConsistent`**. MVID was chosen over a maintained stamp because the
+  compiler writes one per compilation for free and it is readable from a file as well as from a
+  loaded assembly, so "what is running" and "what is deployed" become the same kind of evidence.
+  `session_info` also no longer throws before engine init — build identity never needed the engine,
+  and it is exactly what you want when nothing else works.
+- **`get_component` stops putting a truncation string inside the data.** A list member used to
+  return 50 elements followed by the literal `"... 30 more"` **as an element of `elements`**, so a
+  consumer iterating an 80-bone `SkinnedMeshRenderer` got 50 refs and one thing that was not a ref
+  while the array's shape asserted otherwise. It cost Vulper Pants its leg drivers. `elements` now
+  holds only real elements; truncation moved to siblings (`truncated`, `listOffset`, `returned` —
+  all always emitted), and new **`listOffset`/`listLimit`** arguments page long lists
+  (`listLimit: -1` = all), retiring the documented `call_method GetElement(i)` workaround. The same
+  in-band sentinel in `Encode.Value`'s dictionary/enumerable paths became marker objects.
+- **A blocked deploy is now loud.** `DeployToMods` copied to both `rml_mods\` and
+  `rml_mods\HotReloadMods\` under `ContinueOnError`; while the game runs the `rml_mods` copy fails
+  on the file lock and nothing ever retried it, leaving the hot-reload path new and the restart
+  path old with no warning — which is how the stale exporter above survived. That case now raises
+  MSBuild warning **`MCPLINK001`** naming the consequence, leaves a `rml_mods\McpLink.dll.PENDING`
+  note that the next successful copy deletes, and escalates to a hard **error** under
+  `-p:RequireModsDeploy=true` (use that in a real deploy window — a warning is still ignorable).
+  The `HotReloadMods` copy is no longer `ContinueOnError`: that path is never locked, so a failure
+  there is a genuine fault. Builds also stamp `AssemblyInformationalVersion` with the git sha,
+  deliberately *without* a timestamp — the SDK builds deterministically, so identical source yields
+  an identical MVID, and a wall-clock stamp would turn the deploy comparison into a false alarm.
+- **`TOOLKIT-NOTES.md`** — a standing friction log. Any agent that uses McpLink for a real job
+  records toolkit friction there afterwards, with the measurement that proves it.
+- Offline suite grows to **184 checks**. `tools/verify-deploy-warning.sh` proves `MCPLINK001`
+  actually fires by blocking the copy for real, against a throwaway `ModsDeployRoot`, and hashes
+  the production DLLs before and after to prove it never touched them.
+
 ## 2.5.0 (2026-08-21)
 
 **Prompt Wizard: detach panels, and no more agents leaked by quitting the game.** Closing a

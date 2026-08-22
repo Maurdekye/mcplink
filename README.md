@@ -17,6 +17,13 @@ only), McpLink trades that sandbox for total access:
   construction — plain-class parameters (`DuplicationSettings`), optional-parameter defaults,
   generic methods, out-params — the exact calls the closed ResoniteLink verb union cannot express.
 
+> **Which build is actually answering?** `session_info` returns a `build` object — version, the
+> compilation's MVID, whether the assembly came from a file or from memory (`hot_reload`), and the
+> MVID of each `McpLink.dll` on disk with `matchesRunning` per copy. **Check `deployConsistent`
+> after any build**: `false` means the restart path and the hot-reload path have diverged, which is
+> what a lock-blocked deploy leaves behind. A tool appearing in `tools/list` says nothing about
+> which code backs it.
+
 > **Used McpLink for a real job? Log the friction in [`TOOLKIT-NOTES.md`](TOOLKIT-NOTES.md)
 > afterwards** — anything a tool made you guess at, work around, or that quietly gave you the wrong
 > answer. Append-only, one short entry, and *put the measurement in it*: the "≈1.135 `spawn_import`

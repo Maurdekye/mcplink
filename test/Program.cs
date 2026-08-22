@@ -1858,7 +1858,7 @@ Check("session_info's description tells a caller the build report exists", () =>
 // The check above matches a DESCRIPTION STRING — it would keep passing if session_info stopped
 // emitting the report entirely. (Measured: a mutant that deleted the call survived the suite.)
 // These CALL the tool and read the value, which is the only thing that can actually fail.
-JsonObject CallSessionInfo() => (JsonObject)JsonNode.Parse(ToolRegistry.Call("session_info", new JsonObject()))!;
+JsonObject CallSessionInfo() => (JsonObject)JsonNode.Parse(ToolRegistry.Call("session_info", new JsonObject())!)!;
 
 Check("session_info ACTUALLY RETURNS a build report, with no engine running", () =>
 {

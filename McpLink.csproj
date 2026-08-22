@@ -11,6 +11,12 @@
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
     <!-- Resonite install; override with -p:ResonitePath=... -->
     <ResonitePath Condition="'$(ResonitePath)' == ''">C:\Program Files (x86)\Steam\steamapps\common\Resonite</ResonitePath>
+    <!-- Where DeployToMods writes its rml_mods\ tree. Defaults to the real install, so behaviour
+         is unchanged. It is separable ONLY so the deploy target itself can be exercised against a
+         throwaway directory — the locked-copy warning below is the kind of thing that must be seen
+         to FIRE, and NO TEST MAY TOUCH PRODUCTION. Overriding this does not bypass the CopyToMods
+         gate; it only redirects where an already-authorised copy lands. -->
+    <ModsDeployRoot Condition="'$(ModsDeployRoot)' == ''">$(ResonitePath)</ModsDeployRoot>
     <!-- Deploying is a DECISION, not a build side effect. rml_mods\McpLink.dll is
          lock-protected while the game runs, but rml_mods\HotReloadMods\ — the path
          hot_reload actually loads — is NEVER locked, so any stray build (the offline
@@ -108,7 +114,7 @@
       <_BuildSource Condition="'$(_BuildSource)' == ''">nogit</_BuildSource>
       <_BuildSource Condition="'$(_GitDirty)' != ''">$(_BuildSource).dirty</_BuildSource>
       <!-- Source id ONLY — deliberately no version number here. $(Version) is the SDK default
-           "1.0.0" while the mod's real version is McpLinkMod.VERSION ("2.5.0"), and duplicating
+           "1.0.0" while the mod's real version is McpLinkMod.VERSION ("2.6.0"), and duplicating
            that constant into the csproj just creates something new to drift. session_info reports
            the version from the constant and this stamp beside it. -->
       <InformationalVersion>$(_BuildSource)</InformationalVersion>
@@ -117,7 +123,7 @@
 
   <Target Name="DeployToMods" AfterTargets="Build" Condition="'$(CopyToMods)' == 'true'">
     <PropertyGroup>
-      <_ModsDir>$(ResonitePath)\rml_mods</_ModsDir>
+      <_ModsDir>$(ModsDeployRoot)\rml_mods</_ModsDir>
       <_PendingStamp>$(_ModsDir)\McpLink.dll.PENDING</_PendingStamp>
     </PropertyGroup>
 
