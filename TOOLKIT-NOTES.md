@@ -140,3 +140,78 @@ can't, say so plainly — "unmeasured impression" is a useful label, not a disqu
 - **Suggested change:** report the world name alongside the path; mention the report panel in the
   result or add `spawnReport: false`.
 - **Disposition:** open.
+
+---
+
+# Harness friction
+
+Not McpLink tools — the *verification tooling* around this repo. Same rule: the next person will
+make the same mistake unless the measurement is written down.
+
+### 2026-08-22 — mutation harness: a `git checkout -- .` revert silently voided half a run
+- **Reported by:** `mcplink-toolkit`
+- **What I called:** a mutation harness — patch one thing, rebuild, run the offline suite, record
+  which named checks failed, `git checkout -- .` to revert, next mutant.
+- **What I expected:** each mutant to be evaluated against the fix it was aimed at.
+- **What I actually got:** one mutant's anchor text had gone stale, the patch step failed, and the
+  failure path still ran `git checkout -- .` — which reverted **my uncommitted fix under test**
+  along with the mutation. Every later mutant then ran against pre-fix code and "SURVIVED",
+  which reads exactly like "this guard proves nothing" when the truth was "this guard was not
+  present".
+- **Measurement that proves it:** the baseline pass-count silently dropped **178 → 175** — the
+  three checks covering the reverted fix had vanished from the run. Nothing else announced it.
+  Re-run after committing: the same mutants were **killed by name**.
+- **Cost:** I nearly reported five guards as worthless. It happened *inside* the tool this subtree
+  uses to catch abstention-shaped failures.
+- **Suggested change (applied):** a mutation harness must (a) **refuse to run on a dirty tree** —
+  it reverts with `git checkout -- .` and will eat uncommitted work; (b) **record the baseline
+  pass-count and assert it before and after every mutant**, because a drifting total is the only
+  signal that the suite itself changed underfoot; (c) treat a **missed anchor as a hard failure of
+  the run**, never as a mutant result. ⇒ **COMMIT BEFORE YOU MUTATE.**
+- **Disposition:** fixed in the harness (`mutate2.sh` / `mutate3.sh`, agent scratch folder).
+
+### 2026-08-22 — file locking: a byte-range lock is NOT how the game holds McpLink.dll
+- **Reported by:** `mcplink-toolkit`
+- **What I called:** a probe that locks `rml_mods\McpLink.dll` and builds, to prove the new
+  `MCPLINK001` locked-copy warning actually fires. First attempt used a Python `msvcrt.locking`
+  byte-range lock.
+- **What I expected:** the copy to fail and leave the destination untouched, as it does when the
+  game holds it.
+- **What I actually got:** MSBuild's `Copy` **opened and truncated the destination first**, then
+  failed on the locked range — so the file was *corrupted*, not preserved. The probe's
+  "destination unchanged" check failed, and had I trusted it I'd have concluded the guard was
+  broken when it was my model of the lock that was wrong.
+- **Measurement that proves it:** destination sha256 differed from the placeholder after a copy
+  that MSBuild reported as failed. With the faithful lock, byte-for-byte identical.
+- **Suggested change (applied):** model it the way a **loaded assembly** is held — opened with
+  `FileShare.Read`, i.e. **readers allowed, writers denied**, where `Copy` fails at *open* and the
+  file is never touched:
+  `[System.IO.File]::Open($path,'Open','Read','Read')`.
+  And assert the lock is genuinely in force (try a write, expect it to fail) **before** drawing any
+  conclusion from a failed copy — otherwise a lock that never took hold scores as a passing guard.
+- **Disposition:** fixed in `tools/verify-deploy-warning.sh`.
+
+### 2026-08-22 — a diagnostic must not cause the failure it diagnoses
+- **Reported by:** `mcplink-toolkit`
+- **What I actually got:** `BuildInfo.ReadMvid` — which exists to *detect* a lock-blocked deploy —
+  was first written with `File.OpenRead`. That takes `FileShare.Read`, which **denies writers** for
+  the duration of the read. A `session_info` call landing while a build was copying could therefore
+  have produced the very MSB3026 the tool reports on.
+- **Measurement that proves it:** covered by a named check — hold a write handle open, then read
+  the mvid; it succeeds only with a sharing-friendly open. A mutant restoring `File.OpenRead` is
+  killed by that check.
+- **Suggested change (applied):** open with `FileShare.ReadWrite | FileShare.Delete`. Generally:
+  **never hold a lock on a file whose lock contention is the thing you are reporting on.**
+- **Disposition:** fixed in `Source/BuildInfo.cs`.
+
+### 2026-08-22 — never stamp a build timestamp into the assembly
+- **Reported by:** `mcplink-toolkit`
+- **Why it matters:** the .NET SDK builds **deterministically**, so identical source produces an
+  identical **MVID**. That is the whole reason `session_info`'s `matchesRunning` means *"the DLL on
+  disk is the same code"* rather than *"the same build event"*. Injecting `UtcNow` into
+  `AssemblyInformationalVersion` would make every rebuild of unchanged source look divergent and
+  turn `deployConsistent` into a permanent false alarm — a guard that cries wolf is a guard nobody
+  reads.
+- **Suggested change (applied):** stamp the **git sha** (+`.dirty`) only. A commit sha is a
+  function of committed state, so it preserves the property. No wall-clock anything.
+- **Disposition:** applied in `McpLink.csproj` (`StampBuildInfo`).
