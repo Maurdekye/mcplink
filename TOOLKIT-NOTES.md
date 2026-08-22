@@ -256,3 +256,48 @@ make the same mistake unless the measurement is written down.
 - **Disposition:** applies to any command watchdog on this machine — those run under **cmd.exe with
   the backend service's PATH**, where `grep`/`sed`/`tr`/`$(...)`/`/tmp` all silently match nothing.
   Use `findstr` and native commands only.
+### 2026-08-22 — a worktree suite can silently test MAIN, because PYTHONPATH points there
+- **Reported by:** `panel-chat`
+- **What I called:** `python tests/<suite>.py` from inside a `claude-orgtree` **worktree**.
+- **What I expected:** the suite imports the `orgtree` package sitting beside it.
+- **Measurement that proves the hazard:** `os.environ["PYTHONPATH"]` on this machine is
+  `E:\Libraries\Desktop\claude-orgtree\backend` — the **main** checkout. A worktree suite therefore
+  imports its own code only by winning the `sys.path` race; it wins because the suites do
+  `sys.path.insert(0, …)`, which lands ahead of PYTHONPATH. That is an **ordering assumption**, not
+  a guarantee, and anything that imports `orgtree` before the insert (a helper, a plugin, an
+  earlier suite in the same process) flips it. Reproduced deliberately by pre-seeding
+  `sys.modules` from main: the suite then runs against main's code.
+- **Why it matters:** this is the exact "confident numbers about the wrong code" shape the team
+  charter names. It fails *green*, because most checks pass on either checkout.
+- **Suggested change (applied to my suite, worth copying):** a **provenance guard** — assert the
+  imported module's `__file__` sits beside the suite, and run it **before** the `from … import`
+  line so a wrong checkout says so in those words instead of raising a puzzling `ImportError`.
+  See `backend/tests/test_extern_handle_attach.py`.
+
+### 2026-08-22 — "10 mutants killed" is not one claim; it depends on whether the suite aborts
+- **Reported by:** `panel-chat`
+- **Measurement:** the same mutation discipline over the two suites in this project reports
+  incomparable numbers. The **Python** backend suites are plain asserts, so the FIRST failure ends
+  the run — a mutant that kills an early check also "kills" every check after it (one mutant scored
+  19 kills; the true count was 1). The **C#** offline suite's `Check()` catches per-check, so every
+  kill is a distinct check that actually noticed — counts there are real coverage.
+- **Why it matters:** a reader comparing "10 mutants, 19 kills" against "11 mutants, 2 kills" would
+  conclude the Python side is better covered. The opposite is closer to true. Cascade inflates.
+- **Suggested change:** when reporting mutation results, state which shape the suite is. Assert
+  only that the **named** check died (`must_kill in killed`) and treat any surplus as cascade until
+  shown otherwise. Both harnesses here do that: `backend/tests/_mutate_handles.py`,
+  `tools/mutate-panel-chat.sh`.
+
+### 2026-08-22 — two small ones that cost real minutes
+- **Reported by:** `panel-chat`
+- `strings` is **not installed** on this machine, so the charter's "byte-probe the deployed
+  artifact" has to be hand-rolled. A probe must scan **both** UTF-16LE and UTF-8 (.NET string
+  literals are UTF-16 in the `#US` heap) and **must carry a known-positive and a known-negative
+  control** — without them a probe that finds nothing is indistinguishable from a probe that
+  cannot work. For a change with **no string marker at all** (e.g. a colour constant), a byte scan
+  cannot answer the question: decompile the **deployed** file instead —
+  `ilspy-mcp decompile_method` against `rml_mods\McpLink.dll` reads the actual constants.
+- Python test scripts here print unicode; this console is cp1252, so any harness that prints a
+  `✓` dies with `UnicodeEncodeError` **mid-run**, after mutating a file. Call
+  `sys.stdout.reconfigure(encoding="utf-8", errors="replace")` first — and put the file restore in
+  a `finally`, or a print crash leaves the tree mutated.
