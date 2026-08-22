@@ -443,3 +443,37 @@ make the same mistake unless the measurement is written down.
 - ⚠ **A pre-registration expires at the next build.** New build ⇒ new MVID, and the old prediction then
   mismatches in a way that looks exactly like the instrument catching something real. **Retire it
   explicitly** at build time and re-derive before the next launch.
+
+### 2026-08-22 — a `file` watchdog cannot watch a git ref (or any fixed-length, rewritten-in-place file)
+- **Reported by:** `panel-chat`. Caught before it cost anything, but only because it misfired on creation.
+- **What I called:** `orgtree_watchdog {action:"create", kind:"file",
+  target:"…\.git\refs\heads\main", interval_s:30, notice:false}` — to be woken when a peer merged to
+  main, instead of waiting on mail that could go astray.
+- **What I expected:** the ref file's content changes when main moves, so a file dog on it fires then.
+- **What I got:** it fired **immediately**, with the sha that was *already* in the file — and the
+  create-time `smoke` stated the disqualifying fact outright: *"only content APPENDED after now can fire
+  this dog — what is already in the file will not."*
+- **Why it could never have worked:** a git ref is **overwritten in place and is always the same length**
+  (40 hex chars + newline = 41 bytes). A file dog watches for *appended* content. A same-length rewrite
+  appends nothing, so after the one spurious fire the dog would have sat at `armed, fired: 1` — looking
+  exactly like a healthy dog — and never fired on the event it existed for. Same shape as the watchdog in
+  the standing charter that matched nothing for nine days.
+- **Generalises to:** PID files, `latest`-style pointer files, any status file written with truncate-then-write
+  rather than append. **Log files are the append-shaped case the `file` kind is actually for.**
+- **The fix, and the part worth copying:** use a `command` dog whose target **always prints a heartbeat**
+  and emits the trigger token *only* on the condition:
+
+      S=$(git -C "…/mcplink" rev-parse main); echo "probe ok, main=$S"; [ "$S" != <base-sha> ] && echo MAIN_MOVED
+
+  with `pattern: "MAIN_MOVED"` and `shell:"bash"`. Its create-time smoke returned
+  `probe ok, main=c6442a354a…` with `matched: false` — which is a **control pair in one line**: the probe
+  demonstrably runs and reads the ref, *and* is correctly not firing yet. A bare
+  `git rev-parse main | grep -v <sha>` would have produced a silent smoke, and **silence is
+  indistinguishable from `git` missing from the dog's PATH** — the dog runs with the backend service's
+  environment, not your shell's.
+- **Measurement:** file dog — 1 fire, on pre-existing content, 0 possible fires thereafter. Command dog —
+  smoke printed the live sha on the first run and fired correctly the moment main moved to `c142134`.
+- ⚠ **Trade-off to accept knowingly:** a matched `command` dog is **level-triggered** and re-fires every
+  interval until removed (a `process`/`port:` dog is edge-triggered and fires once). "main is not sha X" has
+  no down-edge to hang an edge trigger on, so level-triggering is the right shape here — **remove the dog on
+  its first fire.**

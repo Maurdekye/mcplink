@@ -29,6 +29,16 @@ pattern collapsed.** As with 2.6.0, each is backed by a job it broke; measuremen
   silhouette almost indistinguishable from a failed albedo load, sending the debugging to the wrong
   member). A submesh with no material at all — it renders as nothing, silently — is reported too.
   Truncation is a sibling `truncated` field; `renderers` only ever holds real entries.
+- **The prompt panel's response contract no longer emits the reference token it is teaching.** The
+  contract that tells an agent how to attach a grabbable reference card wrote its worked example as
+  a literal `[[ref:ID12345678]]` — and the panel replays the kickoff body through the same token
+  extractor as any other message, so the *lesson* was parsed as a real reference, resolved to
+  nothing, and rendered as an inert "(gone)" card. Measured in-world: **two** ghost cards in every
+  panel, sitting directly under the contract, which is the first thing a user sees on open. The
+  examples now use angle-bracket placeholders, which teach the identical syntax and cannot match the
+  token regex (it requires `ID` + hex immediately after the prefix). Both kickoff builders now call
+  one shared helper: the bug existed as two duplicated copies, so a fix applied to one of them would
+  have looked exactly like a fix.
 - **`tools/verify-deploy-artifact.sh` and `tools/pe-mvid.py`** added — the two-phase deploy probe
   (which keeps a byte copy of the outgoing DLL so a marker must be proven *absent* from the old
   build, not merely present in the new one) and a CLR-free PE→`#GUID`-heap MVID reader for
