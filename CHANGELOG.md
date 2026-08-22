@@ -1,5 +1,39 @@
 # McpLink changelog
 
+## 2.7.0 (2026-08-22)
+
+**Two ergonomics items from the clothing work — one silent transform made explicit, one call
+pattern collapsed.** As with 2.6.0, each is backed by a job it broke; measurements in
+`TOOLKIT-NOTES.md`.
+
+- **`spawn_import` now reports the display transform it applies.** The engine's importer applies a
+  normalising scale, a 180° Y rotation and a Y offset *on top of* the position/rotation you pass,
+  and reported none of it — so every consumer had to already know to read the root transform back
+  and reset it, and one that didn't got a silently skewed bake. The result now carries
+  `appliedTransform`: the root's local TRS, the values you actually requested, a `matchesRequest`
+  boolean to branch on, and a `deviations` array naming each thing the importer did. The scale is
+  **not a constant** — it was folklore-documented as "≈1.135" until three garments from one folder
+  measured **0.671 / 0.923 / 1.062** — so the deviation text says so and carries the number it read.
+  New `normalizeTransform: true` strips the transform (setting the root to exactly the position and
+  rotation you asked for, at scale 1) as an undo-recorded change, and still reports what it removed.
+  Rotation comparison honours quaternion double-cover, so `q` and `-q` are not reported as a
+  phantom rotation.
+- **New `renderer_info {id}`** — one call for what a mesh actually looks like. Takes a
+  MeshRenderer/SkinnedMeshRenderer id, or a slot whose subtree is searched (SkinnedMeshRenderer
+  derives from MeshRenderer, so both are covered). Per submesh: material type, every colour member,
+  each texture ref **resolved to its asset URL**, and blend mode. Resolving the URL is the point —
+  reporting only the ref id is what forced the second and third call per material, 6+ calls across
+  3 garments. It also reports `findings` for the two commonest clothing defects, both of which look
+  like something else: the untextured **0.8 grey albedo** (which reads as "a material", not "a
+  material that never got its texture"), and a **bright `EmissiveColor`** (which renders as a white
+  silhouette almost indistinguishable from a failed albedo load, sending the debugging to the wrong
+  member). A submesh with no material at all — it renders as nothing, silently — is reported too.
+  Truncation is a sibling `truncated` field; `renderers` only ever holds real entries.
+- **`tools/verify-deploy-artifact.sh` and `tools/pe-mvid.py`** added — the two-phase deploy probe
+  (which keeps a byte copy of the outgoing DLL so a marker must be proven *absent* from the old
+  build, not merely present in the new one) and a CLR-free PE→`#GUID`-heap MVID reader for
+  pre-registering what `session_info` should report before you launch.
+
 ## 2.6.0 (2026-08-22)
 
 **Three tools that failed silently and plausibly now tell the truth.** Every item here is backed

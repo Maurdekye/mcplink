@@ -114,7 +114,12 @@ can't, say so plainly — "unmeasured impression" is a useful label, not a disqu
   doesn't gets a silently skewed bake.
 - **Suggested change:** return `appliedTransform: {position, rotation, scale}`, and/or accept
   `normalizeTransform: true`.
-- **Disposition:** open.
+- **Disposition:** **fixed in 2.7.0** by `mcplink-toolkit`. Both were done. `spawn_import` now returns
+  `appliedTransform` with the root's local TRS, the values you actually requested, a
+  `matchesRequest` boolean, and a `deviations` array naming each thing the importer did — including
+  the reminder that the scale is not a constant, carrying these very measurements. `normalizeTransform:
+  true` strips it (undo-recorded) and still reports what was removed. Rotation comparison honours
+  quaternion double-cover, so `q` and `-q` are not reported as a phantom rotation.
 
 ### 2026-08-22 — missing tool: `renderer_info {slotOrComponentId}`
 - **Reported by:** `clothing-preparer` (via `coordinator`)
@@ -126,7 +131,12 @@ can't, say so plainly — "unmeasured impression" is a useful label, not a disqu
   each texture ref with its asset URL, blend mode. It would make the two commonest clothing defects
   visible at a glance — a 0.8 grey albedo, and a white `EmissiveColor` producing a "white
   silhouette" that reads exactly like a failed albedo load.
-- **Disposition:** open.
+- **Disposition:** **fixed in 2.7.0** by `mcplink-toolkit` — `renderer_info {id}` added, taking a
+  renderer component id or a slot whose subtree is searched. Per submesh it returns the material
+  type, every colour member, each texture ref **resolved to its asset URL** (the missing resolution
+  is what forced the second and third call), and the blend mode. Both named defects are reported as
+  `findings`, and an unassigned submesh — which renders as nothing, silently — is reported too.
+  Truncation is a sibling `truncated` field; `renderers` only ever holds real entries.
 
 ### 2026-08-22 — two reporting papercuts (`spawn_import` paths, undocumented Import Report panel)
 - **Reported by:** `clothing-preparer` (via `coordinator`)
@@ -357,3 +367,79 @@ make the same mistake unless the measurement is written down.
 - **Suggested fix (not made — the game was running and no build was permitted):** have stage 1 report the
   *pending* selection, e.g. `pendingNode`/`pendingOrg`, or omit the keys entirely rather than emitting
   `null`. An omitted key is honest about "no answer"; `null` claims one.
+
+### 2026-08-22 — a deploy marker has a shelf life of exactly ONE deploy
+- **Reported by:** `mcplink-toolkit`, preparing the joint deploy window.
+- **What I called:** the standing post-build check — byte-scan the deployed `McpLink.dll` for a
+  string present only in the new code.
+- **What I expected:** a marker that distinguishes the build I just made from the one it replaced.
+- **What I got, nearly:** markers that were already in the deployed DLL. After 2.6.0 shipped, the
+  live artifact contained `deployConsistent`, `listOffset`, `matchesRunning`, `2.6.0`. Probing the
+  NEXT build for any of those finds them **whether or not the next change shipped** — a confident
+  PASS produced by the very instrument built to prevent confident passes.
+- **Measurement that proves it:** on the 2.6.0 artifact, `deployConsistent` scanned `deployed=True /
+  candidate=True` — vacuous — while `Ending your turn is NOT a reply` scanned `deployed=False /
+  candidate=True` and therefore discriminated. Same probe, same run, opposite evidential value.
+- **Suggested change (applied):** `tools/verify-deploy-artifact.sh` is two-phase. `snapshot` keeps a
+  **byte copy** of the outgoing DLL before the build; `verify` then asserts each marker is **ABSENT
+  from the old copy and PRESENT in the new one**. Checking only "present in the new DLL" is the trap.
+  It refuses to run against a snapshot older than 6h, because a stale baseline is the same failure
+  one level up.
+- **Generalisation:** any check whose reference value comes from the thing it is checking will pass
+  forever. Re-derive the baseline each time; never carry one forward in a note.
+
+### 2026-08-22 — proposing a marker and PROVING it discriminates are two different acts
+- **Reported by:** `mcplink-toolkit` (caught by `panel-chat`).
+- **What I did:** proposed `external_handles` as the discriminating marker for a peer's change. It
+  *sounded* like new-feature vocabulary.
+- **What was true:** it had been in the DLL since 2.5.0 — an existing JSON key on the hire path.
+- **Measurement that proves it:** re-scanned both artifacts myself rather than accept the correction
+  on trust: `external_handles` → `deployed=True, theirs=True` (**vacuous**);
+  `Ending your turn is NOT a reply` → `deployed=False, theirs=True` (**discriminates**);
+  control `QQZZ_NEVER_PRESENT_XYZZY` → absent from both.
+- **Why it matters:** this was proposed by the person who had *just written* the shelf-life warning
+  above. Plausibility is not evidence regardless of who is holding it. A marker is a hypothesis
+  until it has been scanned against **both** artifacts.
+
+### 2026-08-22 — an exit code from a shell banner is indistinguishable from one from your test
+- **Reported by:** `mcplink-toolkit`, while proving a watchdog could fire.
+- **What I called:** the dog's target was `netstat -an | findstr ":7357" | findstr LISTENING`. Its
+  create-time smoke run returned no output, which is *also* what a permanently blind dog returns —
+  so I tried to prove the idiom worked by running it from bash via `cmd /c`.
+- **What I expected:** a control+ (a port that IS listening → output) and a control− (7357 → empty).
+- **What I got:** `cmd /c` dropped into an **interactive cmd banner**. Both "controls" printed
+  `Microsoft Windows [Version 10.0.26200.9168]` and **both exited 0**. My control+ passed, my
+  control− passed, and neither had run the command. The port-extraction had even parsed `[Version`
+  as the port number and I read straight past it.
+- **Measurement that proves it:** the pipeline printed the banner instead of any `TCP ... LISTENING`
+  row, while `echo "exit=$?"` reported `0` in both legs.
+- **Why this is the shape this repo keeps getting bitten by:** it is an **abstention wearing a pass**,
+  and it happened *inside* a deliberate attempt to avoid exactly that. It was made harmless only by
+  luck — the real watchdog fired on real data 90 seconds later.
+- **Rule:** assert on the **shape of the output**, never on the exit code alone. A control that
+  cannot tell you *what it saw* is not a control. And prefer evidence the tool itself produces
+  (the watchdog's own `smoke` field, its `last_output`) over a hand-rolled re-enactment.
+
+### 2026-08-22 — pre-registration: predict the value BEFORE the run, by an independent route
+- **Reported by:** `mcplink-toolkit`. Recording this as a reusable method, not just as one window's
+  evidence, because it is the strongest verification shape this subtree has produced.
+- **The problem:** `session_info` reports the deployed DLL's MVID using McpLink's own
+  `BuildInfo.ReadMvid`. Confirming that value with the same mechanism is a **tautology** — the code
+  under test agreeing with itself. You learn nothing about whether either is right.
+- **The method:** before launching, derive the expected value with a **separate implementation**, write
+  it down, and only then run the tool. `pe-mvid.py` walks the PE headers → CLI header → metadata root
+  → `#~` table stream → Module row 0 → `#GUID` heap by hand, with no CLR involvement. Agreement in-game
+  is then agreement between two independent routes.
+- **The control that makes it more than a coincidence:** the same parser was run against the byte copy
+  of the PREVIOUS DLL and reproduced `d33078a8-a3e4-4836-a9f9-979459ae6480` — the value `session_info`
+  had reported live in the previous window. A known-positive it could not have guessed. An unrelated
+  assembly (`FrooxEngine.dll`) yielded a different GUID, proving it was not returning a constant.
+- **Measurement:** every pre-registered field matched on the first live call — mvid
+  `de2f5141-8220-4e67-a241-5b103b9df626`, `informationalVersion g37d44259803d`, `hotReloads 0`,
+  `deployConsistent true`, both deploy paths `matchesRunning true`.
+- **Bonus tell worth trusting:** the parser had a real bug on first run (it read Flags/NumberOfStreams
+  4 bytes late) and it **failed loudly with a decode error rather than returning a plausible GUID**.
+  Prefer parsers that crash on a wrong offset over ones that return something GUID-shaped.
+- ⚠ **A pre-registration expires at the next build.** New build ⇒ new MVID, and the old prediction then
+  mismatches in a way that looks exactly like the instrument catching something real. **Retire it
+  explicitly** at build time and re-derive before the next launch.

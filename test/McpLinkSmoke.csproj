@@ -34,6 +34,12 @@
       <HintPath>$(ResonitePath)\Elements.Assets.dll</HintPath>
       <Private>false</Private>
     </Reference>
+    <!-- colorX's constructors take a ColorProfile, which lives here — needed to construct the
+         material colours the renderer_info diagnostics are tested against. Metadata only. -->
+    <Reference Include="Renderite.Shared">
+      <HintPath>$(ResonitePath)\Renderite.Shared.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
   </ItemGroup>
 
 </Project>

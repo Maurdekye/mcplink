@@ -5,6 +5,7 @@
 
 using System.Reflection;
 using System.Text.Json.Nodes;
+using Elements.Core;
 using McpLink;
 
 const string ResonitePath = @"C:\Program Files (x86)\Steam\steamapps\common\Resonite";
@@ -2101,6 +2102,126 @@ Check("round trip: several attachments each produce a recognised token", () =>
 });
 Check("CONTROL: prose with no token is NOT reported as containing one", () =>
     !PromptWizard.ContainsRefToken("- ID12AB34CD (Slot) on slot \"Cube\" path /Root/Cube"));
+
+// ---------- item 4: spawn_import reports the display transform it applies ----------
+Console.WriteLine("== import transform honesty (item 4) ==");
+
+Check("an untouched import reports matchesRequest TRUE with no deviations", () =>
+{
+    var t = ImportShape.DescribeTransform(
+        new float3(1, 2, 3), floatQ.Identity, float3.One,
+        new float3(1, 2, 3), floatQ.Identity);
+    return t["matchesRequest"]!.GetValue<bool>() && t["deviations"]!.AsArray().Count == 0;
+});
+Check("CONTROL: that TRUE is not just missing fields — every examined value is present", () =>
+{
+    var t = ImportShape.DescribeTransform(
+        float3.Zero, floatQ.Identity, float3.One, float3.Zero, floatQ.Identity);
+    // an empty 'deviations' only means "we looked and found none" if the values we looked at
+    // are in the payload. Without this, dropping the whole block would read as a clean import.
+    return t["position"] != null && t["rotation"] != null && t["scale"] != null
+           && t["requestedPosition"] != null && t["requestedRotation"] != null
+           && t["rotationEulerDegrees"] != null;
+});
+Check("a normalising scale is reported, with the value and the NOT-a-constant warning", () =>
+{
+    var t = ImportShape.DescribeTransform(
+        float3.Zero, floatQ.Identity, new float3(0.671f, 0.671f, 0.671f),
+        float3.Zero, floatQ.Identity);
+    var deviations = t["deviations"]!.AsArray();
+    return !t["matchesRequest"]!.GetValue<bool>()
+           && deviations.Count == 1
+           && deviations[0]!.GetValue<string>().Contains("0.671")
+           && deviations[0]!.GetValue<string>().Contains("NOT a constant");
+});
+Check("the importer's 180 degree Y rotation is reported as 180", () =>
+{
+    var t = ImportShape.DescribeTransform(
+        float3.Zero, floatQ.Euler(0, 180, 0), float3.One, float3.Zero, floatQ.Identity);
+    return !t["matchesRequest"]!.GetValue<bool>()
+           && t["deviations"]!.AsArray().Any(d => d!.GetValue<string>().Contains("180"));
+});
+Check("DOUBLE COVER: q and -q are the same rotation and must NOT be flagged", () =>
+{
+    var q = floatQ.Euler(0, 180, 0);
+    var negated = new floatQ(-q.x, -q.y, -q.z, -q.w);
+    // componentwise comparison would report a spurious 'the importer rotated your model'
+    return ImportShape.DescribeTransform(float3.Zero, negated, float3.One, float3.Zero, q)
+        ["matchesRequest"]!.GetValue<bool>();
+});
+Check("a position offset is reported with its delta", () =>
+{
+    var t = ImportShape.DescribeTransform(
+        new float3(0, 0.03f, 0), floatQ.Identity, float3.One, float3.Zero, floatQ.Identity);
+    return !t["matchesRequest"]!.GetValue<bool>()
+           && t["deviations"]!.AsArray().Any(d => d!.GetValue<string>().Contains("0.03"));
+});
+Check("all three deviations are reported together, not just the first", () =>
+{
+    var t = ImportShape.DescribeTransform(
+        new float3(0, 0.03f, 0), floatQ.Euler(0, 180, 0), new float3(1.062f, 1.062f, 1.062f),
+        float3.Zero, floatQ.Identity);
+    return t["deviations"]!.AsArray().Count == 3;
+});
+Check("spawn_import exposes normalizeTransform and warns the scale is not constant", () =>
+{
+    var (json, _) = dispatcher.HandlePost("""{"jsonrpc":"2.0","id":400,"method":"tools/list"}""");
+    var tools = JsonNode.Parse(json)!["result"]!["tools"]!.AsArray();
+    var tool = tools.First(t => t!["name"]!.GetValue<string>() == "spawn_import")!;
+    // assert the PROPERTY EXISTS at its path, not that the schema text contains the substring —
+    // a key renamed to 'normalizeTransformXX' satisfies a Contains() check and survived a mutant
+    return tool["inputSchema"]!["properties"]!["normalizeTransform"] != null
+           && tool["description"]!.GetValue<string>().Contains("appliedTransform")
+           && tool["description"]!.GetValue<string>().Contains("NOT a constant");
+});
+
+// ---------- item 5: renderer_info ----------
+Console.WriteLine("== renderer_info (item 5) ==");
+
+Check("the untextured 0.8 grey albedo is reported when no albedo texture is bound", () =>
+{
+    var findings = MaterialShape.Diagnose(new colorX(0.8f, 0.8f, 0.8f, 1f), null, hasAlbedoTexture: false);
+    return findings.Count == 1 && findings[0]!.GetValue<string>().Contains("never received its texture");
+});
+Check("CONTROL: the same grey WITH a texture bound is NOT reported", () =>
+    MaterialShape.Diagnose(new colorX(0.8f, 0.8f, 0.8f, 1f), null, hasAlbedoTexture: true).Count == 0);
+Check("CONTROL: a deliberate mid-grey (0.5) is not mistaken for the 0.8 default", () =>
+    MaterialShape.Diagnose(new colorX(0.5f, 0.5f, 0.5f, 1f), null, hasAlbedoTexture: false).Count == 0);
+Check("a bright EmissiveColor is reported as the white-silhouette lookalike", () =>
+{
+    var findings = MaterialShape.Diagnose(null, new colorX(1f, 1f, 1f, 1f), hasAlbedoTexture: true);
+    return findings.Count == 1 && findings[0]!.GetValue<string>().Contains("WHITE SILHOUETTE");
+});
+Check("CONTROL: a healthy material (textured albedo, black emissive) yields NO findings", () =>
+    MaterialShape.Diagnose(new colorX(1f, 1f, 1f, 1f), new colorX(0f, 0f, 0f, 1f), hasAlbedoTexture: true)
+        .Count == 0);
+Check("both defects at once are reported as two separate findings", () =>
+    MaterialShape.Diagnose(new colorX(0.8f, 0.8f, 0.8f, 1f), new colorX(1f, 1f, 1f, 1f), hasAlbedoTexture: false)
+        .Count == 2);
+Check("IsDefaultGrey is exact about alpha — a transparent 0.8 grey is not the default", () =>
+    MaterialShape.IsDefaultGrey(new colorX(0.8f, 0.8f, 0.8f, 1f))
+    && !MaterialShape.IsDefaultGrey(new colorX(0.8f, 0.8f, 0.8f, 0.5f)));
+Check("renderer_info is registered and requires id", () =>
+{
+    var (json, _) = dispatcher.HandlePost("""{"jsonrpc":"2.0","id":401,"method":"tools/list"}""");
+    var tools = JsonNode.Parse(json)!["result"]!["tools"]!.AsArray();
+    var tool = tools.FirstOrDefault(t => t!["name"]!.GetValue<string>() == "renderer_info");
+    if (tool == null) return false;
+    var schema = tool["inputSchema"]!;
+    return schema["required"]!.AsArray().Any(r => r!.GetValue<string>() == "id")
+           && schema["properties"]!["maxRenderers"] != null;
+});
+Check("renderer_info accepts the slotOrComponentId alias from the brief", () =>
+    AliasValidates("renderer_info", new JsonObject { ["slotOrComponentId"] = "ID100" }));
+Check("renderer_info reports truncation as a SIBLING field, never in-band", () =>
+{
+    var (json, _) = dispatcher.HandlePost("""{"jsonrpc":"2.0","id":402,"method":"tools/list"}""");
+    var tools = JsonNode.Parse(json)!["result"]!["tools"]!.AsArray();
+    // the description must not promise an in-band marker, and the schema must offer the limit
+    var tool = tools.First(t => t!["name"]!.GetValue<string>() == "renderer_info")!;
+    return !tool["description"]!.GetValue<string>().Contains("... ")
+           && tool["inputSchema"]!["properties"]!["maxRenderers"] != null;
+});
 
 Console.WriteLine();
 Console.WriteLine($"{passed} passed, {failed} failed");

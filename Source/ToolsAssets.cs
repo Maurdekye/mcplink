@@ -223,13 +223,17 @@ internal static class ToolsAssets
             "conversion. Slow for huge models (this IS the per-node importer; use bulk_build for procedural content). " +
             "silent=true skips import dialogs. Returns the spawned ROOT SLOT and, by default, waits for the imported " +
             "hierarchy to stop growing (the importer's task completes before conversion does) — waitForHierarchy:false " +
-            "returns as soon as the import task finishes.",
+            "returns as soon as the import task finishes. The importer applies its OWN display transform on top of " +
+            "the position/rotation you pass (a normalising scale, a 180° Y rotation, a Y offset); the result reports " +
+            "it as 'appliedTransform' with a 'matchesRequest' flag — the scale is NOT a constant, read it per import. " +
+            "normalizeTransform:true resets the spawned root to exactly the position/rotation you asked for at scale 1.",
             $"{{\"type\":\"object\",\"properties\":{{{WorldProp}," +
             "\"path\":{\"type\":\"string\"}," +
             "\"position\":{\"description\":\"world-space float3, default 0,0,0\"}," +
             "\"rotation\":{\"description\":\"floatQ, default identity\"}," +
             "\"silent\":{\"type\":\"boolean\",\"default\":true}," +
             "\"waitForHierarchy\":{\"type\":\"boolean\",\"default\":true}," +
+            "\"normalizeTransform\":{\"type\":\"boolean\",\"default\":false,\"description\":\"Strip the importer's display transform: set the root to the requested position/rotation at scale 1. 'appliedTransform' still reports what was removed.\"}," +
             "\"timeoutMs\":{\"type\":\"integer\",\"default\":300000}}," +
             "\"required\":[\"path\"]}",
             args =>
@@ -241,6 +245,7 @@ internal static class ToolsAssets
                     throw new FileNotFoundException($"No file at '{path}'");
                 bool silent = OptBool(args, "silent", true);
                 bool waitForHierarchy = OptBool(args, "waitForHierarchy", true);
+                bool normalizeTransform = OptBool(args, "normalizeTransform", false);
                 int timeoutMs = Math.Clamp(OptInt(args, "timeoutMs", 300000), 10000, 600000);
                 var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
                 var position = args["position"] is JsonNode positionNode
@@ -319,10 +324,87 @@ internal static class ToolsAssets
                     result["path"] = Shaping.Path(spawned);
                     result["slots"] = slots;
                     result["components"] = components;
+
+                    // Report the importer's own display transform BEFORE any normalisation, so the
+                    // caller can see what it applied even when asking us to strip it.
+                    result["appliedTransform"] = ImportShape.DescribeTransform(
+                        spawned.LocalPosition, spawned.LocalRotation, spawned.LocalScale,
+                        position, rotation);
+
+                    if (normalizeTransform)
+                    {
+                        UndoUtil.Batch(world, $"Normalize imported '{fileName}' transform", () =>
+                        {
+                            UndoUtil.RecordFieldChange(spawned.Position_Field);
+                            UndoUtil.RecordFieldChange(spawned.Rotation_Field);
+                            UndoUtil.RecordFieldChange(spawned.Scale_Field);
+                            spawned.LocalPosition = position;
+                            spawned.LocalRotation = rotation;
+                            spawned.LocalScale = float3.One;
+                            return true;
+                        });
+                        result["normalized"] = true;
+                    }
+
                     if (waitForHierarchy)
                         result["hierarchyStable"] = stable;
                     if (waitForHierarchy && !stable)
                         result["note"] = "Timed out waiting for the hierarchy to stop growing — counts may still rise.";
+                    return (JsonNode)result;
+                });
+            }));
+
+        add(new ToolDef("renderer_info",
+            "Everything about what a mesh actually LOOKS like, in one call: for each MeshRenderer / " +
+            "SkinnedMeshRenderer under a slot (or one renderer by id), every material submesh with its material " +
+            "type, colour members, each texture ref resolved to its ASSET URL, and blend mode. Replaces the " +
+            "get_component → get_component → export_asset chain the clothing work repeats per garment. Also " +
+            "reports 'findings' per material — the untextured 0.8 grey albedo, and a bright EmissiveColor that " +
+            "renders as a white silhouette looking exactly like a failed albedo load.",
+            $"{{\"type\":\"object\",\"properties\":{{{WorldProp}," +
+            "\"id\":{\"type\":\"string\",\"description\":\"A MeshRenderer/SkinnedMeshRenderer component id, or a slot whose subtree is searched for renderers.\"}," +
+            "\"maxRenderers\":{\"type\":\"integer\",\"default\":25}}," +
+            "\"required\":[\"id\"]}",
+            ArgAliases: ["slotOrComponentId", "componentId", "rendererId", "slotId"],
+            Handler: args =>
+            {
+                var world = GetWorld(args);
+                string id = RequireAny(args, "id", "slotOrComponentId", "componentId", "rendererId", "slotId");
+                int maxRenderers = Math.Clamp(OptInt(args, "maxRenderers", 25), 1, 200);
+
+                return WorldRunner.Run(world, () =>
+                {
+                    var worker = Resolve.Worker(world, id);
+                    List<MeshRenderer> renderers;
+                    if (worker is MeshRenderer direct)
+                    {
+                        renderers = [direct];
+                    }
+                    else if (worker is Slot slot)
+                    {
+                        // SkinnedMeshRenderer derives from MeshRenderer, so this catches both
+                        renderers = slot.GetComponentsInChildren<MeshRenderer>();
+                    }
+                    else
+                    {
+                        throw new ArgumentException(
+                            $"{id} is a {TypeUtil.FriendlyName(worker.GetType())}, not a MeshRenderer or Slot");
+                    }
+
+                    int total = renderers.Count;
+                    var array = new JsonArray();
+                    foreach (var renderer in renderers.Take(maxRenderers))
+                        array.Add(DescribeRenderer(renderer));
+
+                    var result = new JsonObject
+                    {
+                        ["count"] = total,
+                        ["returned"] = array.Count,
+                        // truncation is a SIBLING field and 'renderers' holds only real entries —
+                        // never an in-band "... N more" string masquerading as an element
+                        ["truncated"] = array.Count < total,
+                        ["renderers"] = array,
+                    };
                     return (JsonNode)result;
                 });
             }));
@@ -617,6 +699,127 @@ internal static class ToolsAssets
     // ---------- export_asset helpers ----------
 
     /// <summary>First Uri-typed field with a value, preferring one named "URL".</summary>
+    // ---------- renderer_info helpers ----------
+
+    private static JsonNode DescribeRenderer(MeshRenderer renderer)
+    {
+        var materials = new JsonArray();
+        int index = 0;
+        foreach (IAssetProvider<Material>? material in renderer.Materials)
+        {
+            // a null slot in Materials is a real, common state (an unassigned submesh) and it is
+            // exactly the kind of thing that renders as "invisible" with no error anywhere
+            materials.Add(material is Worker worker
+                ? DescribeMaterial(index, worker)
+                : new JsonObject
+                {
+                    ["submesh"] = index,
+                    ["material"] = null,
+                    ["findings"] = new JsonArray
+                    {
+                        (JsonNode)"this submesh has NO material assigned — it renders as nothing, silently.",
+                    },
+                });
+            index++;
+        }
+
+        return new JsonObject
+        {
+            ["renderer"] = Encode.ElementRef(renderer),
+            ["type"] = TypeUtil.FriendlyName(renderer.GetType()),
+            ["slot"] = Encode.ElementRef(renderer.Slot),
+            ["path"] = Shaping.Path(renderer.Slot),
+            ["enabled"] = renderer.Enabled,
+            ["meshUrl"] = renderer.Mesh.Target is Worker mesh
+                ? FindUriField(mesh)?.BoxedValue?.ToString()
+                : null,
+            ["materialCount"] = materials.Count,
+            ["materials"] = materials,
+        };
+    }
+
+    private static JsonNode DescribeMaterial(int submesh, Worker material)
+    {
+        var colors = new JsonObject();
+        var textures = new JsonArray();
+        string? blendMode = null;
+        colorX? albedo = null, emissive = null;
+        bool hasAlbedoTexture = false;
+
+        int memberCount = material.SyncMemberCount;
+        for (int i = 0; i < memberCount; i++)
+        {
+            var member = material.GetSyncMember(i);
+            string name = material.GetSyncMemberName(i);
+
+            // texture refs: the ref names the member, the TARGET holds the asset URL. Reporting
+            // only the ref id is what forced the second and third call per material.
+            if (member is ISyncRef reference)
+            {
+                if (reference.Target is Worker target && FindUriField(target) is IField urlField)
+                {
+                    string? url = urlField.BoxedValue?.ToString();
+                    textures.Add(new JsonObject
+                    {
+                        ["member"] = name,
+                        ["provider"] = Encode.ElementRef(target),
+                        ["providerType"] = TypeUtil.FriendlyName(target.GetType()),
+                        ["url"] = url,
+                    });
+                    if (name.Contains("Albedo", StringComparison.OrdinalIgnoreCase) ||
+                        name.Contains("BaseColor", StringComparison.OrdinalIgnoreCase))
+                        hasAlbedoTexture = true;
+                }
+                else if (name.Contains("Texture", StringComparison.OrdinalIgnoreCase) ||
+                         name.Contains("Map", StringComparison.OrdinalIgnoreCase))
+                {
+                    textures.Add(new JsonObject
+                    {
+                        ["member"] = name,
+                        ["provider"] = null,
+                        ["url"] = null,
+                    });
+                }
+                continue;
+            }
+
+            if (member is not IField field)
+                continue;
+
+            var valueType = ToolsBuild.FieldValueType(field);
+            if (valueType == typeof(colorX) && field.BoxedValue is colorX color)
+            {
+                colors[name] = Encode.Value(color);
+                if (name.Equals("AlbedoColor", StringComparison.OrdinalIgnoreCase) ||
+                    name.Equals("BaseColor", StringComparison.OrdinalIgnoreCase) ||
+                    name.Equals("Color", StringComparison.OrdinalIgnoreCase))
+                    albedo ??= color;
+                else if (name.Contains("Emissive", StringComparison.OrdinalIgnoreCase) ||
+                         name.Contains("Emission", StringComparison.OrdinalIgnoreCase))
+                    emissive ??= color;
+            }
+            else if (valueType is { IsEnum: true } &&
+                     name.Contains("Blend", StringComparison.OrdinalIgnoreCase))
+            {
+                blendMode = field.BoxedValue?.ToString();
+            }
+        }
+
+        return new JsonObject
+        {
+            ["submesh"] = submesh,
+            ["material"] = Encode.ElementRef(material),
+            ["type"] = TypeUtil.FriendlyName(material.GetType()),
+            ["blendMode"] = blendMode,
+            ["albedoColor"] = albedo is colorX a ? Encode.Value(a) : null,
+            ["emissiveColor"] = emissive is colorX e ? Encode.Value(e) : null,
+            ["colors"] = colors,
+            ["textureCount"] = textures.Count,
+            ["textures"] = textures,
+            ["findings"] = MaterialShape.Diagnose(albedo, emissive, hasAlbedoTexture),
+        };
+    }
+
     private static IField? FindUriField(Worker worker)
     {
         IField? fallback = null;
