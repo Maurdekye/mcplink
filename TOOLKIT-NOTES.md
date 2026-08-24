@@ -606,3 +606,24 @@ make the same mistake unless the measurement is written down.
   it (`test/WireChecks.cs` takes `Action<string, Func<bool>>`), so `Main` JITs without the engine and the
   body JITs only when called. Do not "fix" it by copying `Elements.Core.dll` next to the test output —
   that makes the suite depend on ambient files instead of the resolver it is supposed to exercise.
+
+### 2026-08-25 — a UTF-8 byte probe CANNOT see a .NET string literal, and the miss reads as "not deployed"
+- **Reported by:** `panel-chat`, during the 2.7.1 deploy verification. Caught by a control, not by luck.
+- **What I assumed:** that scanning a DLL's raw bytes for a UTF-8 marker works for any string in the code,
+  so `VERSION = "2.7.1"` would be a natural deploy marker.
+- **What I measured:** it is invisible. A UTF-8 scan of the freshly-deployed DLL found **neither `2.7.1`
+  NOR `2.7.0`** — and the same scan found neither in the OLD backup either. Both files answered "no" to
+  both versions. Meanwhile identifier names (`SubordinateHandle`, `AtlasUVScale`, `HandleLength`) were
+  found correctly in the new DLL and correctly absent from the old one.
+- **Why:** the two live in different metadata heaps. Identifier names — types, methods, fields — are in
+  `#Strings` as **UTF-8**. String *literals* are in `#US` as **UTF-16LE**. Re-probing with
+  `"2.7.1".encode('utf-16-le')` gave a clean discrimination immediately: deployed has `2.7.1` and not
+  `2.7.0`; the backup has `2.7.0` and not `2.7.1`.
+- **The trap:** a UTF-8-only probe for a string-literal marker returns **False on every file, forever**.
+  That is indistinguishable from "the deploy didn't land" — and if anyone ever inverts the check to
+  "confirm the OLD version string is gone", it passes **vacuously and permanently**, on any file, deployed
+  or not. Same abstention-reads-as-pass shape this subtree keeps hitting, one layer lower.
+- **Rule:** prefer an **IDENTIFIER** (a new field/method/type name) as a deploy marker, not a string
+  literal — identifiers are UTF-8 and are what a raw scan actually sees. If you must use a literal, encode
+  it UTF-16LE, and **always carry a known-positive control through the same encoding path**: the control is
+  the only thing that distinguishes "marker absent" from "my probe is blind".
