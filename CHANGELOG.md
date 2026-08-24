@@ -1,5 +1,33 @@
 # McpLink changelog
 
+## 2.7.1 (2026-08-25)
+
+**Two visual defects in the agent-panel hierarchy wire, both reported in-world by the user and
+both traced to a misread of the engine's own wire conventions rather than to the panel code.**
+
+- **The wire now arrives into the subordinate panel from ABOVE.** It left the superior's bottom
+  edge going down and *also* entered the subordinate's top edge going down, sagging below the
+  panel and hooking back up into the top edge from underneath. The cause was a wrong mental model
+  recorded in the code's own comment ("down into the top"): `WireMeshBase` evaluates its curve as
+  `lerp(P0 + T0·t, P1 + T1·(1−t))`, so **both** tangents are handles pointing *out of their own
+  endpoint* — `Tangent1` is not a direction of travel through `P1`. The subordinate handle is now
+  the panel's `Up`. The endpoints were always correct and are unchanged; this is a sign, not an
+  endpoint swap, and those two look identical on a single example.
+- **The wire now uses one wire style instead of all five at once.** It shares the real ProtoFlux
+  wire material, whose texture is the wire *atlas* — `WIRE_ATLAS_IMAGE_COUNT` stacked styles — and
+  it set neither `UVScale` nor `UVOffset`, leaving the `OnAwake` defaults of `(1,1)`/`(0,0)`.
+  `StripeWireMesh` sets `SwapUV` and `SegmentedBuilder` accumulates V as arc length *along* the
+  strip, which makes UV.y the **across-the-width** axis: spanning it `[0,1]` crushed all five
+  styles into the wire's thin width. The rect now mirrors `ProtoFluxWireManager.Setup`'s own
+  arithmetic for atlas offset 0 — the single-value style, per `DatatypeColorHelper
+  .GetWireAtlasOffset`, which returns `dimensions−1` for vectors and 0 for everything else. The
+  count and ratio are read from the engine's statics rather than hardcoded, so a sixth atlas cell
+  would track automatically.
+
+Both fixes are pinned by offline checks that transcribe the engine's curve formula and atlas
+arithmetic, each with a control and a discriminator, and each mutation-verified. **Appearance
+itself is not verifiable offline and remains the user's confirmation after deploy.**
+
 ## 2.7.0 (2026-08-22)
 
 **Two ergonomics items from the clothing work — one silent transform made explicit, one call
