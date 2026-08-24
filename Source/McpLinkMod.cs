@@ -11,7 +11,7 @@ namespace McpLink;
 /// </summary>
 public class McpLinkMod : ResoniteMod
 {
-    public const string VERSION = "2.7.0";
+    public const string VERSION = "2.7.1";
 
     public override string Name => "McpLink";
     public override string Author => "Maurdekye";
