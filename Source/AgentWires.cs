@@ -1,5 +1,6 @@
 using Elements.Core;
 using FrooxEngine;
+using FrooxEngine.ProtoFlux;
 
 namespace McpLink;
 
@@ -32,6 +33,38 @@ internal static class AgentWires
     private const int DashCount = 11;          // coworker dashes: fixed count, length-adaptive
     private const float DashFill = 0.55f;      // fraction of each segment that is dash (rest gap)
     private static readonly colorX CoworkerGrey = new(0.62f, 0.65f, 0.70f, 1f);
+
+    // ---- hierarchy curve shape ----
+    // WireMeshBase evaluates the curve as lerp(P0 + T0·t, P1 + T1·(1−t)) — so BOTH tangents are
+    // handles pointing OUT of their OWN endpoint. Tangent1 is NOT the direction of travel through
+    // P1. The wire therefore has to leave the superior's bottom edge going DOWN and leave the
+    // subordinate's top edge going UP, which is what makes it descend into that top edge from
+    // above. Giving Tangent1 the panel's Down instead sags the wire below the subordinate and
+    // hooks it back up into the top edge from underneath (reported in-world 2026-08-24).
+    internal static readonly float3 SuperiorHandle = float3.Down;      // out of the superior's bottom
+    internal static readonly float3 SubordinateHandle = float3.Up;     // out of the subordinate's top
+
+    /// <summary>Hermite handle length for a hierarchy wire whose endpoints are <paramref name="span"/> apart.</summary>
+    internal static float HandleLength(float span) => MathX.Clamp(span * 0.5f, 0.1f, 0.8f);
+
+    // ---- hierarchy wire texture ----
+    // The shared flux wire material's texture is the ProtoFlux wire ATLAS: WIRE_ATLAS_IMAGE_COUNT
+    // stacked wire styles, one per datatype width. StripeWireMesh sets SwapUV, so UV.y is the
+    // ACROSS-THE-WIDTH axis — left at its default scale of 1 the strip samples the whole atlas and
+    // renders all five styles crushed into the wire's thin width (reported in-world 2026-08-24).
+    // A real flux wire picks exactly one cell; ProtoFluxWireManager.Setup computes that rect from
+    // an atlasOffset, and DatatypeColorHelper.GetWireAtlasOffset returns 0 for any non-IVector
+    // type — i.e. cell 0 is the SINGLE-VALUE style, which is the one an org relationship wants.
+    internal const int SingleValueAtlasOffset = 0;
+
+    /// <summary>UVScale selecting one atlas cell across the strip's width (length still tiles).</summary>
+    internal static float2 AtlasUVScale =>
+        new(1f, ProtoFluxWireManager.WIRE_ATLAS_RATIO);
+
+    /// <summary>UVOffset placing that cell on <see cref="SingleValueAtlasOffset"/>, as Setup does.</summary>
+    internal static float2 AtlasUVOffset =>
+        new(0f, (ProtoFluxWireManager.WIRE_ATLAS_IMAGE_COUNT - 1 - SingleValueAtlasOffset)
+                * ProtoFluxWireManager.WIRE_ATLAS_RATIO);
 
     internal sealed class PanelLink
     {
@@ -184,6 +217,8 @@ internal static class AgentWires
             mesh.Width1.Value = SolidWidth;
             mesh.Color0.Value = from.Tier;
             mesh.Color1.Value = to.Tier;
+            mesh.UVScale.Value = AtlasUVScale;      // one atlas cell, not all five
+            mesh.UVOffset.Value = AtlasUVOffset;
             wire.Mesh = mesh;
         }
         else
@@ -268,9 +303,9 @@ internal static class AgentWires
                 return; // parked — no sync writes
             w.LastP0 = p0;
             w.LastP1 = p1;
-            float tangent = MathX.Clamp((p1 - p0).Magnitude * 0.5f, 0.1f, 0.8f);
-            float3 t0 = w.A.Root.LocalDirectionToGlobal(float3.Down).Normalized * tangent; // out the bottom
-            float3 t1 = w.B.Root.LocalDirectionToGlobal(float3.Down).Normalized * tangent; // down into the top
+            float handle = HandleLength((p1 - p0).Magnitude);
+            float3 t0 = w.A.Root.LocalDirectionToGlobal(SuperiorHandle).Normalized * handle;   // out the bottom
+            float3 t1 = w.B.Root.LocalDirectionToGlobal(SubordinateHandle).Normalized * handle; // out the top
             var wireSlot = w.Slot;
             w.Mesh!.Point0.Value = wireSlot.GlobalPointToLocal(p0);
             w.Mesh.Point1.Value = wireSlot.GlobalPointToLocal(p1);
