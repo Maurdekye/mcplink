@@ -582,3 +582,27 @@ make the same mistake unless the measurement is written down.
   is **not live-verifiable through a panel at all**. Cover it offline, and say so rather than letting the
   body-side pass stand in for both. Sharing one helper between the two builders makes divergence a compile
   error, which is the strongest guarantee available here, but it is not a live observation.
+
+### 2026-08-25 — an engine type in the offline suite's `Main` kills the WHOLE run before check one
+- **Reported by:** `panel-chat`, while adding hierarchy-wire checks. Cost: two failed runs, one of which
+  produced **no output at all** and — piped through a `grep` for PASS/FAIL lines — looked exactly like a
+  clean silent pass.
+- **What I assumed:** that `test/Program.cs` importing `Elements.Core` meant I could use `float3` anywhere
+  in it, including in the top-level statements. Every existing engine-typed value in that 2248-line file
+  happens to sit inside a `Check(...)` lambda, which reads as style rather than as a constraint.
+- **What I measured:** it is a hard constraint. `Program.cs` installs an `AssemblyResolve` hook as its very
+  first statement, and that hook is the *only* reason the engine assemblies load — they are referenced
+  `Private=false` and never copied beside the test binary. But **the JIT compiles `Main` before `Main`'s
+  first statement runs**, so an `Elements.Core` type in one of `Main`'s own locals must resolve before the
+  hook exists. Result: `Unhandled exception. System.IO.FileNotFoundException: Could not load file or
+  assembly 'Elements.Core'` at `Program.<Main>$`, a minidump written to `resonite\crashdumps\`, exit code
+  **127**, and **0 of 238 checks executed**. Lambdas escape it only because they JIT lazily, after the hook.
+- **The dangerous part is the failure SHAPE.** The crash goes to stderr and kills the process before any
+  `PASS`/`FAIL` line is printed, so a filtered run (`dotnet run | grep -E 'PASS|FAIL|passed'`) prints
+  **nothing** — indistinguishable from a run where every check passed quietly. This is the subtree's
+  recurring abstention-reads-as-pass shape, in a new place. **Always assert on the `N passed, M failed`
+  tally, never on the absence of FAIL lines**, and check the exit code.
+- **How to add engine-typed checks:** put them in their own file behind a signature with no engine types in
+  it (`test/WireChecks.cs` takes `Action<string, Func<bool>>`), so `Main` JITs without the engine and the
+  body JITs only when called. Do not "fix" it by copying `Elements.Core.dll` next to the test output —
+  that makes the suite depend on ambient files instead of the resolver it is supposed to exercise.
