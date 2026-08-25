@@ -627,3 +627,28 @@ make the same mistake unless the measurement is written down.
   literal — identifiers are UTF-8 and are what a raw scan actually sees. If you must use a literal, encode
   it UTF-16LE, and **always carry a known-positive control through the same encoding path**: the control is
   the only thing that distinguishes "marker absent" from "my probe is blind".
+
+### 2026-08-25 — `spawn_markdown` places the panel ~9× further than `distance` asks, and `replaceId` beats `position`
+- **Reported by:** `panel-chat`, delivering the 2.7.1 wire-fix reply in-world. Cost: four extra calls and a
+  render before the user could actually read the panel.
+- **What I measured, with the user stationary** (head moved 2 cm across the whole episode, so this is not
+  the user walking away):
+  - `spawn_markdown {distance: 0.85}` → panel landed **7.47 m** from the user's head. Bearing was correct;
+    only the magnitude was wrong. Ratio ≈ **8.8×**. At that range an 860 px panel of 24 px text subtends
+    about 0.18° per line — it renders as an unreadable white speck in the sky, *not* as a missing panel.
+  - Second call passing an explicit `position` **and** `replaceId` → the explicit position was **ignored**;
+    the panel landed 5.80 m away, at neither the requested point nor the replaced panel's old pose. The
+    tool documents `position` as overriding `inFrontOf`, but says nothing about `replaceId`, which wins.
+- **What works:** spawn it, then set the pose yourself with `update_slot` (position **and** rotation). The
+  spawn's *bearing* from the head is reliable, so `head + 0.75 × normalize(panel − head)` puts it at a
+  readable distance without needing the user's facing direction. Verify with `render_view` from the head
+  position with the user's own root slot in `exclude` — otherwise you photograph the inside of their avatar.
+- **⚠ The panel is `Grabbable`, so in a shared world its transform moves under you.** Mine was laser-grabbed
+  and released 18.8 m away mid-verification. The tell that it was a person and not a driver: **the rotation
+  changed between two reads while my write had set position only.** Before concluding your write failed,
+  re-read the transform twice — identical values mean it is parked and something moved it once; changing
+  values mean something is driving it. There is no positioning driver on this panel, so a moving transform
+  is always another user.
+- **Consequence for verification:** the RefID and `blocks: 14` in the return value say the panel was BUILT.
+  They say nothing about whether it is placed where a human can read it. Those are different claims and
+  only a render answers the second.
