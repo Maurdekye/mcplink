@@ -643,12 +643,16 @@ make the same mistake unless the measurement is written down.
   spawn's *bearing* from the head is reliable, so `head + 0.75 × normalize(panel − head)` puts it at a
   readable distance without needing the user's facing direction. Verify with `render_view` from the head
   position with the user's own root slot in `exclude` — otherwise you photograph the inside of their avatar.
-- **⚠ The panel is `Grabbable`, so in a shared world its transform moves under you.** Mine was laser-grabbed
-  and released 18.8 m away mid-verification. The tell that it was a person and not a driver: **the rotation
-  changed between two reads while my write had set position only.** Before concluding your write failed,
-  re-read the transform twice — identical values mean it is parked and something moved it once; changing
-  values mean something is driving it. There is no positioning driver on this panel, so a moving transform
-  is always another user.
+- **⚠ THE PANEL IS `Grabbable`, AND A PANEL THAT MOVED IS THE USER TALKING TO YOU — NOT A BUG TO FIX.**
+  Mine was laser-grabbed and released 18.8 m away mid-verification. The tell that it was a person and not a
+  driver: **the rotation changed between two reads while my write had set position only** (there is no
+  positioning driver on this panel, so a moving transform is always another user). I read that signal
+  correctly and then **repositioned the panel back in front of them anyway**, because I had classified it as
+  a misplacement. The user's verdict: *"it was annoying and interrupted my conversation, i needed it out of
+  my face."* Detecting the signal and overriding it is worse than never detecting it.
+  **Leave a moved panel where the user put it.** If it seems wrong, ask — do not correct it. And do not
+  spawn one into their view unasked in the first place, least of all in a session with other people in it:
+  the panel is world-readable and it interrupts a real conversation. Offer; don't place.
 - **Consequence for verification:** the RefID and `blocks: 14` in the return value say the panel was BUILT.
   They say nothing about whether it is placed where a human can read it. Those are different claims and
   only a render answers the second.
