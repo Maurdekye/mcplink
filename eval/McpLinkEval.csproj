@@ -18,7 +18,19 @@
     <!-- pull the full Roslyn dependency closure into the output dir for deployment -->
     <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
     <ResonitePath Condition="'$(ResonitePath)' == ''">C:\Program Files (x86)\Steam\steamapps\common\Resonite</ResonitePath>
-    <CopyToMods Condition="'$(CopyToMods)' == ''">true</CopyToMods>
+    <!-- Where DeployEvalLibs writes its rml_mods\McpLink_libs tree — same contract as the main
+         csproj's ModsDeployRoot: defaults to the real install, separable ONLY so the deploy
+         target can be exercised against a throwaway directory. NO TEST MAY TOUCH PRODUCTION.
+         Overriding it does not bypass the CopyToMods gate below. -->
+    <ModsDeployRoot Condition="'$(ModsDeployRoot)' == ''">$(ResonitePath)</ModsDeployRoot>
+    <!-- Same decision-not-side-effect gate as McpLink.csproj, and for the same reason with an
+         eval twist: the running mod lazily loads McpLink_libs into an AssemblyLoadContext, so a
+         stray build from another agent's worktree silently replacing those DLLs mixes eval/Roslyn
+         generations under a live game (found as a near-miss during the 2.8.1 release packaging).
+         Default is true ONLY for a direct build of the canonical checkout; -p:CopyToMods=true|false
+         is an explicit decision and always wins. -->
+    <CopyToMods Condition="'$(CopyToMods)' == '' AND '$(MSBuildStartupDirectory)' == '$(MSBuildProjectDirectory)' AND '$(MSBuildProjectDirectory)' == 'E:\Libraries\Desktop\resonite\mcplink\eval'">true</CopyToMods>
+    <CopyToMods Condition="'$(CopyToMods)' == ''">false</CopyToMods>
   </PropertyGroup>
 
   <ItemGroup>
@@ -42,8 +54,14 @@
     <ItemGroup>
       <EvalLibs Include="$(OutDir)*.dll" />
     </ItemGroup>
-    <Copy SourceFiles="@(EvalLibs)" DestinationFolder="$(ResonitePath)\rml_mods\McpLink_libs" ContinueOnError="true" />
-    <Message Text="McpLinkEval + Roslyn deployed to $(ResonitePath)\rml_mods\McpLink_libs" Importance="high" />
+    <Copy SourceFiles="@(EvalLibs)" DestinationFolder="$(ModsDeployRoot)\rml_mods\McpLink_libs" ContinueOnError="true" />
+    <Message Text="McpLinkEval + Roslyn deployed to $(ModsDeployRoot)\rml_mods\McpLink_libs" Importance="high" />
+  </Target>
+
+  <!-- the skip is LOUD, same as the main csproj: a silent no-deploy reads exactly like a
+       deploy to whoever builds and then wonders why eval still runs the old closure -->
+  <Target Name="DeployEvalLibsSkipped" AfterTargets="Build" Condition="'$(CopyToMods)' != 'true'">
+    <Message Text="McpLinkEval: deploy SKIPPED (CopyToMods='$(CopyToMods)') — referenced/worktree/foreign-cwd builds never write rml_mods\McpLink_libs. A direct build in the canonical eval tree, or -p:CopyToMods=true, deploys." Importance="high" />
   </Target>
 
 </Project>
