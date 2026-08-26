@@ -656,3 +656,30 @@ make the same mistake unless the measurement is written down.
 - **Consequence for verification:** the RefID and `blocks: 14` in the return value say the panel was BUILT.
   They say nothing about whether it is placed where a human can read it. Those are different claims and
   only a render answers the second.
+
+### 2026-08-26 — ilspy `get_type_members` hides the `this` modifier, so every extension method looks uncallable in instance form
+- **Reported by:** `mcplink-publish`, while verifying workspace notes for the public `mod-authoring.md`.
+  Caught before it shipped a wrong "correction" — but only because the claim was re-checked a second way.
+- **What I assumed:** that a type's member listing shows enough of a signature to judge whether a call
+  form is valid — so when `EnsureVisual` appeared on no `ProtoFluxNode` listing, `node.EnsureVisual()`
+  (from the workspace notes) had to be folklore.
+- **What I measured** (install build 2026.8.26.1047): `get_type_members` on
+  `FrooxEngine.ProtoFlux.ProtoFluxVisualHelper` renders the method as
+  `public static ProtoFluxNodeVisual EnsureVisual(ProtoFluxNode node)` — while `decompile_method` on the
+  same member shows the true declaration: `public static ProtoFluxNodeVisual EnsureVisual(this
+  ProtoFluxNode node)`. The **`this` modifier is silently dropped from listings**, and with it the fact
+  that `node.EnsureVisual()` is perfectly valid C#. The notes were right; my "disproof" was the tool's
+  rendering.
+- **The trap:** FrooxEngine leans heavily on extension methods (the whole `FrooxEngine.Undo` surface,
+  ProtoFlux helpers, …), so this shape recurs: the method is real, the listing makes the instance-call
+  form look impossible, and "absence from the listing" gets promoted to "does not exist". What it nearly
+  cost here: a false correction written into the org-wide standing notes **under the banner of removing
+  folklore** — the tool can make you *introduce* the very thing you're auditing out.
+- **Rule:** a member listing is an EXISTENCE check, not a CALL-FORM check. Before declaring a call form
+  invalid, `decompile_method` the candidate owner (helper/extension classes included — `ilspy-mcp` has
+  `find_extension_methods` for exactly this). Absence of verification is not disproof.
+- **Verified in passing, same episode** (so nobody re-derives them): none of ~45 live-install signature
+  checks contradicted workspace CLAUDE.md §4; `World.RunSynchronously`'s extra parameters
+  (`IUpdatable updatable`, `bool evenIfDisposed`) are optional, so the 2-arg form stands; and the
+  decompiled `EnsureVisual` body confirms the `<NODE_UI>` visual-slot name and the `0.00093750004f`
+  (≈0.0009375) visual scale as literals in the engine code.
