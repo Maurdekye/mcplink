@@ -1,140 +1,189 @@
-# McpLink — Setup Guide
+# McpLink — Setup Guide, from zero
+
+This is the long-form walkthrough. If you just want the short version, the
+[README's section 1](README.md#1-get-the-mod-set-up) covers a working setup in five steps;
+everything there is repeated here with more detail, plus configuration, troubleshooting,
+updating, and uninstalling.
 
 McpLink is a ResoniteModLoader mod that runs an **MCP (Model Context Protocol) server inside
-the Resonite process**, giving an AI agent (Claude Code or any MCP client) deep read/write
-access to your live worlds: inspect slots and components, read and build ProtoFlux, take
-screenshots, spawn objects, run C# against the engine, and more — 87 tools.
+the Resonite process**, giving an AI agent (Claude Code, or any MCP client) deep read/write
+access to your live worlds — 97 tools.
 
 > ⚠ **Security, up front.** The endpoint binds to **localhost only**, but anything that can
 > reach it has, in effect, the power of the game process itself (arbitrary method invocation ≈
 > arbitrary code in-game). Don't expose the port beyond localhost, and set `allowWrites: false`
 > in the mod config if you want a read-only agent.
 
----
+## 1. What you need
 
-## 1. Requirements
+| Requirement | Needed for | Notes |
+|---|---|---|
+| **Resonite** (Windows) | everything | any install location; the Steam default is assumed by scripts and can be overridden |
+| **[ResoniteModLoader](https://github.com/resonite-modding-group/ResoniteModLoader)** | everything | the mod loader; McpLink does nothing without it |
+| **Python 3.8+** on PATH | the recommended proxy connection (§4) only | the proxy is a single dependency-free script; direct HTTP needs no Python |
+| An **MCP client** | talking to the server | examples use Claude Code; any streamable-HTTP or stdio MCP client works |
+| **[claude-orgtree](https://github.com/Maurdekye/claude-orgtree)** | *optional* — the in-world agent panels only | see [README §2](README.md#2-connecting-mcplink-to-orgtree); everything else works without it |
+| .NET 10 SDK + [ResoniteHotReloadLib](https://github.com/Nytra/ResoniteHotReloadLib) | *building from source only* | release-zip users need neither; see [README "Building from source"](README.md#building-from-source) |
 
-- **Resonite** with **[ResoniteModLoader](https://github.com/resonite-modding-group/ResoniteModLoader)** installed and working.
-- **Python 3.8+** on your PATH — only needed for the recommended proxy connection method (§3).
-- An MCP client — the examples below use **Claude Code**.
+**Install ResoniteModLoader first** if you haven't — follow
+[its install guide](https://github.com/resonite-modding-group/ResoniteModLoader#installation)
+and verify a modded launch works before adding McpLink.
 
 ## 2. Install the mod
 
-The release zip mirrors your Resonite install:
+Download from the [Releases page](https://github.com/Maurdekye/mcplink/releases). The
+`McpLink-x.y.z.zip` bundle mirrors your Resonite install. **With the game closed:**
 
 1. Copy **`rml_mods\McpLink.dll`** into your Resonite `rml_mods` folder
    (e.g. `C:\Program Files (x86)\Steam\steamapps\common\Resonite\rml_mods`).
-2. *(Optional — enables the `eval` C# scripting tool)* copy the **`rml_mods\McpLink_libs\`**
-   folder (McpLinkEval.dll + the Roslyn compiler, ~10 MB) into `rml_mods` as well, so you end
-   up with `rml_mods\McpLink_libs\*.dll`. Every other tool works without it. RML does not load
-   these as mods — McpLink lazy-loads them on the first `eval` call.
-3. Start Resonite. Confirm in the log
-   (`Logs\` in the install dir, or the in-game log):
+2. *(Optional — enables the `eval` C# scripting tool)* copy the zip's
+   **`rml_mods\McpLink_libs\`** folder in beside it, so you end up with
+   `rml_mods\McpLink_libs\*.dll` (McpLinkEval + the Roslyn compiler, ~10 MB). RML does not load
+   these as mods — McpLink lazy-loads them on the first `eval` call. Every other tool works
+   without them.
 
-   ```
-   [McpLink] Tool registry built: 87 tools.
-   [McpLink] MCP server listening on http://localhost:7357/mcp
-   ```
+Scripted alternative from a clone of this repo:
+`powershell -File tools\install.ps1` (add `-ResonitePath "D:\path\to\Resonite"` for non-Steam
+installs). It checks RML is present, downloads the latest release, refuses loudly if the game
+is running (the DLL is file-locked then), and hash-verifies the copy.
 
-## 3. Connect your MCP client
+## 3. Verify the mod loads
+
+Start Resonite and check the newest log in `Logs\` (in the install dir):
+
+```
+[McpLink] Tool registry built: 97 tools.
+[McpLink] MCP server listening on http://localhost:7357/mcp
+```
+
+Both lines present = the server is up. Neither present = RML didn't load the mod
+(re-check §1's RML install).
+
+## 4. Connect your MCP client
 
 ### Recommended: the always-up proxy (Claude Code)
 
 McpLink lives inside the game process, so its HTTP endpoint only exists while Resonite runs —
-and an MCP server that is down when a Claude session starts contributes **zero tools** to that
-session. The bundled proxy fixes this: it is a small dependency-free Python script that Claude
-Code spawns itself, so the `mcplink` server is *always* connected. Tool calls made while the
-game is closed return a clear "Resonite is not running" error instead of a dead connection,
-and the proxy transparently reconnects when the game (re)starts — even mid-session.
+and an MCP server that is down when a session starts contributes **zero tools** to it. The
+bundled proxy fixes this: a small dependency-free Python script your client spawns over stdio,
+so `mcplink` is *always* connected. Calls made while the game is closed return a clear
+"Resonite is not running" error, and the proxy reconnects by itself when the game (re)starts —
+even mid-session.
 
-1. Copy the **`proxy\`** folder somewhere permanent (it can live anywhere; the proxy writes a
-   small `tools_cache.json` next to itself).
+1. Copy the zip's **`proxy\`** folder somewhere permanent (anywhere; the proxy writes a small
+   `tools_cache.json` next to itself).
 2. Register it:
 
    ```
    claude mcp add mcplink -- python "C:\path\to\proxy\mcplink_proxy.py"
    ```
 
-3. `claude mcp list` should now show `mcplink: ✓ Connected` — **even with the game closed**.
+3. `claude mcp list` should show `mcplink: ✓ Connected` — **even with the game closed**.
 
-*One-time bootstrap:* the tool cache starts empty, so start one Claude session while the game
-is running (or run `/mcp` → reconnect with the game up); after that, the tools are present in
-every session regardless of game state.
+*One-time bootstrap:* the tool cache starts empty, so run one Claude session (or `/mcp` →
+reconnect) while the game is running; after that the tools are present in every session
+regardless of game state.
 
-Proxy environment overrides (set in the `claude mcp add` environment if needed):
-`MCPLINK_HOST` / `MCPLINK_PORT` / `MCPLINK_PATH` (default `localhost` / `7357` / `/mcp`),
-`MCPLINK_CONNECT_TIMEOUT` (default 3 s — how quickly a closed game is detected),
-`MCPLINK_READ_TIMEOUT` (default 600 s — ceiling for long tool runs such as world scans and renders).
+Environment overrides, if you need them: `MCPLINK_HOST` / `MCPLINK_PORT` / `MCPLINK_PATH`
+(default `localhost` / `7357` / `/mcp`), `MCPLINK_CONNECT_TIMEOUT` (default 3 s — how quickly a
+closed game is detected), `MCPLINK_READ_TIMEOUT` (default 600 s — ceiling for long tool runs
+such as world scans and renders).
 
 ### Alternative: direct HTTP
 
-Works with Claude Code and any client that speaks MCP streamable HTTP, but the server only
+Works with any client that speaks MCP streamable HTTP, with the caveat that the server only
 connects if Resonite is already running when the client session starts:
 
 ```
 claude mcp add --transport http mcplink http://localhost:7357/mcp
 ```
 
-## 4. Teach Claude how to use it — add the usage guide to your CLAUDE.md
+### Other MCP clients
+
+Nothing in McpLink is Claude-specific. Configure your client with either transport:
+
+- **HTTP**: endpoint `http://localhost:7357/mcp` (streamable HTTP).
+- **stdio**: command `python`, args `["C:\\path\\to\\proxy\\mcplink_proxy.py"]` — the usual
+  `mcpServers` JSON shape in most clients' config files.
+
+## 5. Teach the agent how to use it
 
 The tools are self-describing, but the *craft* — how to read big ProtoFlux graphs cheaply,
-which footguns the engine hides, when to checkpoint before mutating — is documented in
-**`CLAUDE-MCPLINK.md`** (bundled in this release). Wire it into your project so Claude reads
-it automatically:
+which engine footguns silently no-op, when to checkpoint before mutating — is documented in
+**[CLAUDE-MCPLINK.md](CLAUDE-MCPLINK.md)** (also bundled in the release zip). For Claude Code:
 
-1. Copy `CLAUDE-MCPLINK.md` into the project folder where you run Claude Code (or any
-   subfolder, e.g. `docs\`).
-2. Add an import line to that project's `CLAUDE.md` (create the file if you don't have one):
+1. Copy `CLAUDE-MCPLINK.md` into the project folder where you run Claude Code.
+2. Add an import line to that project's `CLAUDE.md` (create it if needed):
 
    ```markdown
    # Resonite / McpLink
    @CLAUDE-MCPLINK.md
    ```
 
-   The `@path` import makes Claude Code inline the guide into its context each session.
-   Adjust the path if you placed it elsewhere (e.g. `@docs/CLAUDE-MCPLINK.md`).
+For other agents, provide the file as standing context by whatever mechanism your client uses.
 
-3. Alternatively — if you prefer a single file — paste the contents of `CLAUDE-MCPLINK.md`
-   directly into your `CLAUDE.md`. The `@`-import keeps upgrades easier (just replace the file
-   with the next release's copy).
+## 6. Configuration
 
-For clients other than Claude Code, provide `CLAUDE-MCPLINK.md` to the agent by whatever
-mechanism your client uses for standing instructions/system context.
+Via ResoniteModLoader's config file **`rml_config\McpLink.json`** (created on first modded
+launch), or a settings-UI mod. Keys and defaults are in the
+[README's Configuration table](README.md#configuration).
 
-## 5. Configuration (mod settings)
+Two rules that will save you confusion, both consequences of how RML persists config:
 
-Via ResoniteModLoader's config (`rml_config\McpLink.json`, or a settings UI mod):
+- **Edit the file only while the game is closed.** RML rewrites it at every game shutdown from
+  the *running* mod's known keys — a key you hand-add mid-session is silently erased on quit.
+- **Leave the file's `"version"` field at `"1.0.0"`.** It's the config-format version, not the
+  mod version; changing it gets the whole file rejected to a `.bak`.
 
-| Key | Default | Effect |
-|---|---|---|
-| `enabled` | `true` | Start the server on engine init (change requires restart) |
-| `port` | `7357` | TCP port for the endpoint (localhost only; change requires restart) |
-| `allowWrites` | `true` | Set `false` for a **read-only** agent: every mutating tool (set/call/attach/destroy/spawn/…) is refused while reads keep working |
-| `enableHooks` | `true` | Allow the impulse-stream tools to Harmony-patch the ProtoFlux dispatcher (applied only while a watch is active, fully removed after). `false` disables that capability entirely; nothing else uses Harmony |
+## 7. Updating
 
-## 6. Troubleshooting
+From a clone: `powershell -File tools\update.ps1`. It asks the *running server* its version
+over MCP `initialize` (file timestamps prove nothing — builds aren't byte-reproducible),
+downloads the latest release if newer, refuses plainly while the game holds the file lock,
+hash-verifies the swap, and only updates the eval companion where you'd installed it.
+
+By hand: game closed, overwrite `rml_mods\McpLink.dll` (+ the `McpLink_libs` contents if you
+use `eval`).
+
+Either way, afterwards **restart your MCP client / Claude session too** — clients cache tool
+schemas per session and would keep showing the previous version's tools until they reconnect.
+To confirm what's actually running, call the `session_info` tool: it reports the version, the
+running build's MVID, and whether the on-disk copies match it (`deployConsistent`).
+
+## 8. Troubleshooting
 
 - **`mcplink` shows "Failed to connect" (direct HTTP)** — Resonite wasn't running when the
-  session started. Use the proxy (§3), or start the game and reconnect via `/mcp`.
-- **Proxy connected but zero tools** — the one-time cache bootstrap hasn't happened yet; run
-  one session (or `/mcp` reconnect) while the game is up.
-- **Port already in use** — change `port` in the mod config and either re-register the HTTP
-  URL or set `MCPLINK_PORT` for the proxy.
-- **`eval` fails with "companion not found"** — the `McpLink_libs` folder (step 2.2) isn't
+  session started. Use the proxy (§4), or start the game and reconnect via `/mcp`.
+- **Proxy connected but zero tools** — the one-time cache bootstrap hasn't happened; run one
+  session (or `/mcp` reconnect) while the game is up.
+- **Tools look stale after an update** — same cache: restart the client session so schemas
+  refresh.
+- **Port already in use** — change `port` in the mod config (game closed!), then re-register
+  the HTTP URL or set `MCPLINK_PORT` for the proxy.
+- **`eval` fails with "companion not found"** — the `McpLink_libs` folder (§2 step 2) isn't
   installed.
 - **`eval` fails with an `InvalidCastException` mentioning `EvalGlobals`** — known limitation
-  after a `hot_reload` (developer feature): the eval companion's pinned load context went
-  stale. Restart Resonite; all other tools are unaffected.
+  after a `hot_reload` (developer feature): restart Resonite; all other tools are unaffected.
 - **A tool call froze the game** — synchronous work (e.g. an `eval` infinite loop) runs on the
-  world update thread by design. The engine's ProtoFlux watchdog aborts runaway *graphs* after
-  ~10 s, but `eval` has no watchdog. See the safety notes in `CLAUDE-MCPLINK.md`.
+  world update thread by design; there is no watchdog for `eval`. See the safety notes in
+  `CLAUDE-MCPLINK.md`.
+- **A `McpLink.dll.PENDING` file appeared in rml_mods** — a *developer build* tried to deploy
+  while the game was running and was blocked by the file lock; the note says exactly that. A
+  successful install/update (scripts or a rebuild with the game closed) removes it.
+- **A config key you added vanished** — you edited `McpLink.json` while the game was running;
+  see §6.
+- **The Prompt Agent menu entry is missing / `open_prompt_wizard` says "not set up"** — those
+  surfaces need the optional orgtree companion:
+  [README §2](README.md#2-connecting-mcplink-to-orgtree).
 
-## 7. For developers
+## 9. Uninstall
 
-Source layout, building (`dotnet build -c Release`, `-p:ResonitePath=...` to point at your
-install), the offline smoke suite, and the optional
-[ResoniteHotReloadLib](https://github.com/Nytra/ResoniteHotReloadLib)-based `hot_reload`
-iteration loop are covered in `README.md` in the source repository. `CHANGELOG.md` has the
-full version history.
+Game closed: delete `rml_mods\McpLink.dll`, the `rml_mods\McpLink_libs\` folder if present,
+and (optionally) `rml_config\McpLink.json`. Deregister the client side with
+`claude mcp remove mcplink` (or your client's equivalent). The proxy folder you copied in §4
+is self-contained — delete it too if you're done with it.
 
-MIT licensed — see `LICENSE`.
+---
+
+MIT licensed — see [LICENSE](LICENSE). Building from source, the offline test suite, and the
+developer iteration loop: [README "Building from source"](README.md#building-from-source).

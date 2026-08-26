@@ -31,7 +31,7 @@ New-Item -ItemType Directory -Force "$stage\proxy" | Out-Null
 Copy-Item "$root\bin\Release\McpLink.dll" "$stage\rml_mods\"
 Copy-Item "$root\eval\bin\Release\*.dll" "$stage\rml_mods\McpLink_libs\"
 Copy-Item "$root\proxy\mcplink_proxy.py" "$stage\proxy\"
-Copy-Item "$root\INSTALL.md", "$root\CLAUDE-MCPLINK.md", "$root\CHANGELOG.md", "$root\LICENSE" $stage
+Copy-Item "$root\README.md", "$root\INSTALL.md", "$root\CLAUDE-MCPLINK.md", "$root\CHANGELOG.md", "$root\LICENSE" $stage
 
 $zip = "$root\release\McpLink-$version.zip"
 if (Test-Path $zip) { Remove-Item $zip -Force -Confirm:$false }

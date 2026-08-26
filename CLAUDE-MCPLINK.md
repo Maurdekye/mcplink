@@ -1,7 +1,7 @@
 # McpLink — using Resonite from Claude
 
 This project has **McpLink** connected: an MCP server running *inside* the Resonite process
-(`mcp__mcplink__*` tools, 89 of them). It gives you deep read/write access to the user's live
+(`mcp__mcplink__*` tools, 97 of them). It gives you deep read/write access to the user's live
 Resonite worlds: slots, components, ProtoFlux, assets, screenshots, C# eval. This guide is how
 to use it well. The tool schemas describe arguments; this describes **craft and hazards**.
 
