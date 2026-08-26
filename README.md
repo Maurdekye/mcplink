@@ -196,6 +196,25 @@ The two combine: use the live MCP server to work out *what* a fix needs to do by
 file interactively, then land it as a headless script once it's proven, and run that script over
 the rest of the batch.
 
+### Documentation already bundled in this repo
+
+Some of the groundwork for the companions above is already written and checked into this repo —
+point an agent at it directly instead of re-deriving the same facts:
+
+- **[`CLAUDE-MCPLINK.md`](CLAUDE-MCPLINK.md)** — craft and hazards for interfacing with a *live*
+  Resonite session through McpLink itself: the connection model, RefID addressing, footguns that
+  silently no-op, when to checkpoint before mutating. See
+  [INSTALL §5, "Teach the agent how to use it"](INSTALL.md#5-teach-the-agent-how-to-use-it) for
+  wiring it into your client.
+- **[`docs/engine-reference/`](docs/engine-reference/)** — reference for the engine's *own code*:
+  data model, execution internals, hard limits, localization, networking/users, particles,
+  persistence, ProtoFlux, rendering/assets, transforms/math. See
+  ["Pair with a C# decompiler"](#pair-with-a-c-decompiler) above for how it was produced.
+
+There's no equivalent bundled reference yet for the Blender/asset side (rig, bind pose, and
+scale gotchas when preparing content for Resonite) — only the tool setup above. If that gets
+written up, it belongs here too.
+
 ---
 
 ## What's in the toolbox
