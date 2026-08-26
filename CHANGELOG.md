@@ -1,5 +1,27 @@
 # McpLink changelog
 
+## 2.8.0 (2026-08-26)
+
+**`promptDefaultOrg` — optional config key naming the org slug the Prompt Agent wizard
+preselects on new panels.** The wizard always defaulted to whatever org the backend listed
+first; with more than one org registered that choice is arbitrary (today it lands new panels
+in `orgtree`, not `resonite`).
+
+- Matched against the fetched org list, trimmed and case-insensitively. Empty (the default)
+  keeps the pre-2.8.0 behavior exactly: first-listed org, no warning.
+- A configured slug the backend doesn't have falls back to the first org and **says so in the
+  panel's status line** (amber) instead of silently routing elsewhere; the org row still shows
+  the selected org either way, and the row stays cyclable.
+- Resolution is `PromptWizard.DefaultOrgIndex`, an internal static pinned by the offline suite:
+  unset/null/whitespace legs, match leg, case + trim legs, first-org-match-vs-fallback
+  discriminator, miss-reporting leg, empty-list totality.
+
+⚠ **Deploy/config note:** the value cannot be hand-added to `McpLink.json` while the game is
+running — RML's shutdown hook rewrites that file from the *running* mod's known keys and would
+erase it (ilspy: `ModConfiguration.ShutdownHook` saves when `AutoSave` (default true) &&
+`AnyValuesSet()`; `SaveInternal` serializes known keys only). Write it after game close (the
+deploy copier seeds it if absent), or set it in-game once 2.8.0 is live.
+
 ## 2.7.1 (2026-08-25)
 
 **Two visual defects in the agent-panel hierarchy wire, both reported in-world by the user and

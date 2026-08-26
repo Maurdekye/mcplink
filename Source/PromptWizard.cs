@@ -846,9 +846,11 @@ internal static class PromptWizard
                     return;
                 }
                 state.Orgs = r.Value!;
-                state.OrgIndex = 0;
+                state.OrgIndex = DefaultOrgIndex(state.Orgs, McpLinkMod.PromptDefaultOrg, out string? missing);
                 SetButtonLabel(state.OrgButton, OrgLabel(state));
-                SetStatus(state, "Ready.");
+                SetStatus(state, missing == null
+                    ? "Ready."
+                    : $"<color=#fc6>configured default org \"{Escape(missing)}\" isn't on the backend — using \"{Escape(state.Orgs[state.OrgIndex].Slug)}\".</color>");
                 RefreshNodes(state);
             });
         });
@@ -856,6 +858,24 @@ internal static class PromptWizard
 
     private static string OrgLabel(WizardState state) =>
         state.Orgs.Count == 0 ? "(backend offline)" : state.Orgs[state.OrgIndex].Slug;
+
+    /// <summary>Index of the configured default org in the fetched list — the promptDefaultOrg
+    /// slug, trimmed and case-insensitive. Empty config = 0 (the backend's first-listed org,
+    /// the wizard's only behavior before 2.8.0). A non-empty value that matches nothing also
+    /// yields 0 but reports the rejected slug via <paramref name="missing"/> so the caller
+    /// warns instead of silently landing panels in an arbitrary org.</summary>
+    internal static int DefaultOrgIndex(List<OrgtreeClient.OrgInfo> orgs, string? configured, out string? missing)
+    {
+        missing = null;
+        string want = configured?.Trim() ?? "";
+        if (want.Length == 0 || orgs.Count == 0)
+            return 0;
+        for (int i = 0; i < orgs.Count; i++)
+            if (string.Equals(orgs[i].Slug, want, StringComparison.OrdinalIgnoreCase))
+                return i;
+        missing = want;
+        return 0;
+    }
 
     private static void CycleOrg(WizardState state)
     {

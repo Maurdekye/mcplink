@@ -11,7 +11,7 @@ namespace McpLink;
 /// </summary>
 public class McpLinkMod : ResoniteMod
 {
-    public const string VERSION = "2.7.1";
+    public const string VERSION = "2.8.0";
 
     public override string Name => "McpLink";
     public override string Author => "Maurdekye";
@@ -52,6 +52,12 @@ public class McpLinkMod : ResoniteMod
                              "(the game folder rides along read-only). Empty = game folder only.",
             () => @"E:\Libraries\Desktop\resonite");
 
+    [AutoRegisterConfigKey]
+    private static readonly ModConfigurationKey<string> PromptDefaultOrgKey =
+        new("promptDefaultOrg", "Org slug the Prompt Agent wizard preselects on new panels " +
+                                "(trimmed, case-insensitive). Empty or unmatched = the backend's " +
+                                "first-listed org; an unmatched value warns in the panel.", () => "");
+
     internal static ModConfiguration? Config;
     internal static bool AllowWrites => Config?.GetValue(AllowWritesKey) ?? true;
     internal static bool EnableHooks => Config?.GetValue(EnableHooksKey) ?? true;
@@ -68,6 +74,10 @@ public class McpLinkMod : ResoniteMod
     internal static string PromptHireDir
     {
         get { try { return Config?.GetValue(PromptHireDirKey) ?? ""; } catch { return ""; } }
+    }
+    internal static string PromptDefaultOrg
+    {
+        get { try { return Config?.GetValue(PromptDefaultOrgKey) ?? ""; } catch { return ""; } }
     }
 
     private static McpHttpServer? _server;

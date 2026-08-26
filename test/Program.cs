@@ -2244,6 +2244,35 @@ Check("CONTROL: the send side still emits a real token (escaping the lesson brok
     PromptWizard.ContainsRefToken(PromptWizard.ComposeRefLines(OneRef())));
 
 Console.WriteLine();
+Console.WriteLine("== prompt wizard default org (2.8.0) ==");
+List<OrgtreeClient.OrgInfo> Orgs(params string[] slugs)
+{
+    var list = new List<OrgtreeClient.OrgInfo>();
+    foreach (var s in slugs) list.Add(new OrgtreeClient.OrgInfo(s, s.ToUpperInvariant()));
+    return list;
+}
+Check("default org: empty config keeps the pre-2.8.0 behavior — first org, no complaint", () =>
+    PromptWizard.DefaultOrgIndex(Orgs("orgtree", "resonite"), "", out var m) == 0 && m == null);
+Check("default org: null config is the same unset leg", () =>
+    PromptWizard.DefaultOrgIndex(Orgs("orgtree", "resonite"), null, out var m) == 0 && m == null);
+Check("default org: whitespace-only config is unset, not a miss", () =>
+    PromptWizard.DefaultOrgIndex(Orgs("orgtree", "resonite"), "   ", out var m) == 0 && m == null);
+Check("default org: a matching slug selects that org", () =>
+    PromptWizard.DefaultOrgIndex(Orgs("orgtree", "resonite"), "resonite", out var m) == 1 && m == null);
+Check("default org: the match is case-insensitive", () =>
+    PromptWizard.DefaultOrgIndex(Orgs("orgtree", "resonite"), "Resonite", out var m) == 1 && m == null);
+Check("default org: surrounding whitespace is trimmed before matching", () =>
+    PromptWizard.DefaultOrgIndex(Orgs("orgtree", "resonite"), " resonite ", out var m) == 1 && m == null);
+Check("default org: matching the first org is a clean match, not a fallback", () =>
+    PromptWizard.DefaultOrgIndex(Orgs("orgtree", "resonite"), "orgtree", out var m) == 0 && m == null);
+Check("default org: an unknown slug falls back to first AND reports what it rejected", () =>
+    PromptWizard.DefaultOrgIndex(Orgs("orgtree", "resonite"), "vrchat", out var m) == 0 && m == "vrchat");
+Check("default org: the reported miss is the trimmed form the user can grep for", () =>
+    PromptWizard.DefaultOrgIndex(Orgs("orgtree"), " gone ", out var m) == 0 && m == "gone");
+Check("default org: an empty org list never throws, even with a value configured", () =>
+    PromptWizard.DefaultOrgIndex(Orgs(), "resonite", out var m) == 0 && m == null);
+
+Console.WriteLine();
 Console.WriteLine("== hierarchy wire: curve handles and atlas cell ==");
 // Bodies live in WireChecks.cs, NOT here — see the note at the top of that file: an Elements.Core
 // type in one of Main's own locals resolves before the AssemblyResolve hook can run and kills the
