@@ -2,3 +2,6 @@ bin/
 obj/
 release/
 proxy/tools_cache.json
+rml_libs/
+test/rml_libs/
+.vs/
