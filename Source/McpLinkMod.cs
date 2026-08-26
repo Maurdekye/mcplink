@@ -11,7 +11,7 @@ namespace McpLink;
 /// </summary>
 public class McpLinkMod : ResoniteMod
 {
-    public const string VERSION = "2.8.0";
+    public const string VERSION = "2.8.1";
 
     public override string Name => "McpLink";
     public override string Author => "Maurdekye";
@@ -50,7 +50,7 @@ public class McpLinkMod : ResoniteMod
     private static readonly ModConfigurationKey<string> PromptHireDirKey =
         new("promptHireDir", "Folder granted read-write to agents hired from the Prompt Agent wizard " +
                              "(the game folder rides along read-only). Empty = game folder only.",
-            () => @"E:\Libraries\Desktop\resonite");
+            () => "");
 
     [AutoRegisterConfigKey]
     private static readonly ModConfigurationKey<string> PromptDefaultOrgKey =

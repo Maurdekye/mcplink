@@ -1,5 +1,22 @@
 # McpLink changelog
 
+## 2.8.1 (2026-08-26)
+
+**Public-release preparation — the first version published to GitHub
+([Maurdekye/mcplink](https://github.com/Maurdekye/mcplink)).** No tool-behavior changes.
+
+- **`promptHireDir` now defaults to empty** (= game folder only) instead of a folder path from
+  the original development machine. The empty-value behavior already existed and is unchanged;
+  only the out-of-the-box default moved. Existing installs keep whatever their config file says.
+- **The offline smoke suite's Resonite path is overridable**: `test/Program.cs` reads the
+  `RESONITE_PATH` environment variable before falling back to the default Steam install path
+  (previously a hardcoded const).
+- **Repo restructured for a public audience**: internal engineering notes moved to `docs/dev/`;
+  README and INSTALL rewritten as a zero-to-install path that assumes nothing about the reader's
+  machine; end-user `tools/install.ps1` and `tools/update.ps1` added (lock-aware — a blocked
+  copy under a running game is reported, never silent); `.gitignore` covers the machine-local
+  `rml_libs/` reference-DLL folders.
+
 ## 2.8.0 (2026-08-26)
 
 **`promptDefaultOrg` — optional config key naming the org slug the Prompt Agent wizard

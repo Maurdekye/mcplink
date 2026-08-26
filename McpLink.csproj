@@ -22,9 +22,11 @@
          hot_reload actually loads — is NEVER locked, so any stray build (the offline
          suite's ProjectReference, a worktree branch build) would silently restage it
          with unreviewed code (found live 2026-08-21). Default is therefore true ONLY
-         for a DIRECT build of the canonical checkout. -p:CopyToMods=true forces a
-         deploy (an explicit decision); -p:CopyToMods=false forces off. The offline
-         suite's ProjectReference additionally pins it false from its side. -->
+         for a DIRECT build of the maintainer's canonical checkout (the literal path
+         below — deliberately not "wherever this builds", so clones and worktrees never
+         deploy by surprise). On your own machine, deploy explicitly: -p:CopyToMods=true,
+         or use tools\install.ps1. -p:CopyToMods=false forces off. The offline suite's
+         ProjectReference additionally pins it false from its side. -->
     <CopyToMods Condition="'$(CopyToMods)' == '' AND '$(MSBuildStartupDirectory)' == '$(MSBuildProjectDirectory)' AND '$(MSBuildProjectDirectory)' == 'E:\Libraries\Desktop\resonite\mcplink'">true</CopyToMods>
     <CopyToMods Condition="'$(CopyToMods)' == ''">false</CopyToMods>
   </PropertyGroup>

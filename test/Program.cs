@@ -8,7 +8,10 @@ using System.Text.Json.Nodes;
 using Elements.Core;
 using McpLink;
 
-const string ResonitePath = @"C:\Program Files (x86)\Steam\steamapps\common\Resonite";
+// Where the game's assemblies are read from (metadata only). Override with the
+// RESONITE_PATH environment variable when your install isn't at the Steam default.
+string ResonitePath = Environment.GetEnvironmentVariable("RESONITE_PATH")
+    ?? @"C:\Program Files (x86)\Steam\steamapps\common\Resonite";
 
 AppDomain.CurrentDomain.AssemblyResolve += (_, e) =>
 {
