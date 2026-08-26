@@ -3,7 +3,9 @@
 ## 2.8.1 (2026-08-26)
 
 **Public-release preparation — the first version published to GitHub
-([Maurdekye/mcplink](https://github.com/Maurdekye/mcplink)).** No tool-behavior changes.
+([Maurdekye/mcplink](https://github.com/Maurdekye/mcplink)).** Unchanged behavior for installs
+with orgtree set up; the one functional change is the first bullet — installs *without* it now
+get hidden surfaces and a clean refusal instead of a dead panel.
 
 - **orgtree surfaces now hide until the companion is actually set up.** The Dev Tool →
   Create New → Editor → "Prompt Agent" entry registers only once the claude-orgtree backend

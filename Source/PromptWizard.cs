@@ -207,6 +207,7 @@ internal static class PromptWizard
     // backend started after the game works on the first call).
 
     private static CancellationTokenSource? _gateCts;
+    private static readonly object _gateLock = new();
 
     /// <summary>Latched true once orgtree surfaces were exposed this mod generation.</summary>
     internal static bool OrgtreeExposed { get; private set; }
@@ -235,6 +236,8 @@ internal static class PromptWizard
             {
                 bool reachable = (await OrgtreeClient.ListOrgsAsync(timeoutSeconds: 3)
                     .ConfigureAwait(false)).Error == null;
+                if (cts.IsCancellationRequested)
+                    return; // torn down while the probe was in flight — never act for a dead generation
                 if (ShouldExpose(McpLinkMod.PromptOutbox, reachable))
                 {
                     ExposeOrgtreeSurfaces(reachable ? "backend reachable" : "promptOutbox configured");
@@ -252,17 +255,27 @@ internal static class PromptWizard
         _gateCts = null;
     }
 
-    /// <summary>Idempotent; called from the gate task or an on-demand tool probe. RegisterMenu
-    /// mutates DevCreateNewForm's static tree from whatever thread calls it — the same contract
-    /// as the pre-gate code, which ran it from the engine-init thread or a world thread depending
-    /// on path; the tree is only read when a user opens the Create New dialog.</summary>
+    /// <summary>Idempotent; two writers exist by design (the gate task and the on-demand tool
+    /// probe), so the latch is taken under a lock. The RegisterMenu call itself is marshaled onto
+    /// the Userspace update thread: cold-start exposure happens while the engine is fully live,
+    /// and DevCreateNewForm's static tree must not be mutated while a user's Create New dialog
+    /// enumerates it — the update thread serializes both. The null fallback (engine still
+    /// initializing, Userspace not up yet) registers directly, which is the old RunPostInit
+    /// timing where nothing can be reading the tree.</summary>
     internal static void ExposeOrgtreeSurfaces(string why)
     {
-        if (OrgtreeExposed)
-            return;
-        OrgtreeExposed = true;
+        lock (_gateLock)
+        {
+            if (OrgtreeExposed)
+                return;
+            OrgtreeExposed = true;
+        }
         StopAvailabilityGate();
-        RegisterMenu();
+        var userspace = Userspace.UserspaceWorld;
+        if (userspace != null)
+            userspace.RunSynchronously(RegisterMenu);
+        else
+            RegisterMenu();
         McpLinkMod.LogInfo($"orgtree set up ({why}) — Prompt Agent surfaces enabled.");
     }
 
