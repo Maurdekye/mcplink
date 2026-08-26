@@ -28,7 +28,7 @@ function Test-FileLocked([string]$path) {
 $modsDir = Join-Path $ResonitePath "rml_mods"
 $targetDll = Join-Path $modsDir "McpLink.dll"
 if (-not (Test-Path $targetDll)) {
-    throw "McpLink is not installed at '$modsDir' — run tools\install.ps1 instead."
+    throw "McpLink is not installed at '$modsDir' -- run tools\install.ps1 instead."
 }
 
 # --- what version is actually running (only answerable while the game is up) ---
@@ -56,13 +56,13 @@ if ($null -ne $runningVersion -and $runningVersion -eq $latest) {
 # --- the swap needs the file unlocked, i.e. the game closed ---
 if (Test-FileLocked $targetDll) {
     Write-Host ""
-    Write-Host ("UPDATE PENDING: $latest is available but rml_mods\McpLink.dll is locked — " +
+    Write-Host ("UPDATE PENDING: $latest is available but rml_mods\McpLink.dll is locked -- " +
                 "Resonite is running. Nothing was changed. Close the game and run this again.") -ForegroundColor Yellow
     exit 2
 }
 
 $zipAsset = $release.assets | Where-Object { $_.name -like "McpLink-*.zip" } | Select-Object -First 1
-if ($null -eq $zipAsset) { throw "Release $($release.tag_name) has no McpLink-*.zip asset — report this as a bug." }
+if ($null -eq $zipAsset) { throw "Release $($release.tag_name) has no McpLink-*.zip asset -- report this as a bug." }
 
 $stage = Join-Path $env:TEMP ("mcplink-update-" + [IO.Path]::GetRandomFileName())
 New-Item -ItemType Directory -Force $stage | Out-Null
@@ -72,7 +72,7 @@ try {
     Invoke-WebRequest -Uri $zipAsset.browser_download_url -OutFile $zipPath
     Expand-Archive -Path $zipPath -DestinationPath $stage
     $srcDll = Join-Path $stage "rml_mods\McpLink.dll"
-    if (-not (Test-Path $srcDll)) { throw "Downloaded zip is missing rml_mods\McpLink.dll — report this as a bug." }
+    if (-not (Test-Path $srcDll)) { throw "Downloaded zip is missing rml_mods\McpLink.dll -- report this as a bug." }
 
     Copy-Item $srcDll $targetDll -Force
     if ((Get-FileHash $srcDll).Hash -ne (Get-FileHash $targetDll).Hash) {
@@ -87,7 +87,7 @@ try {
         Write-Host "Updated the eval companion (McpLink_libs)."
     }
 
-    # a stale PENDING note (left by a lock-blocked developer build) is now false — remove it
+    # a stale PENDING note (left by a lock-blocked developer build) is now false -- remove it
     $pending = "$targetDll.PENDING"
     if (Test-Path $pending) { Remove-Item $pending -Force -Confirm:$false }
 

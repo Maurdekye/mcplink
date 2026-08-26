@@ -4,7 +4,7 @@
 #
 #   checks   VERSION bumped vs the latest published release, a matching CHANGELOG entry,
 #            HEAD == main, clean tree, gh authenticated with push access
-#   builds   package.ps1 (offline smoke suite is the gate) with deploys pinned OFF —
+#   builds   package.ps1 (offline smoke suite is the gate) with deploys pinned OFF --
 #            releasing never touches the live game install; local deploys stay the
 #            separate existing machinery
 #   ships    tag v<version> -> push main + tag -> GitHub Release with McpLink-<v>.zip
@@ -42,12 +42,12 @@ Write-Host "Releasing McpLink $version from $root"
 
 $changelog = Get-Content "$root\CHANGELOG.md" -Raw
 if ($changelog -notmatch [regex]::Escape("## $version")) {
-    throw "CHANGELOG.md has no '## $version' entry. A release without its changelog section is not a release — write it first."
+    throw "CHANGELOG.md has no '## $version' entry. A release without its changelog section is not a release -- write it first."
 }
 
 $head = (git -C $root rev-parse HEAD).Trim()
 $mainSha = (git -C $root rev-parse main).Trim()
-if ($head -ne $mainSha) { throw "HEAD ($($head.Substring(0,12))) is not main ($($mainSha.Substring(0,12))). Releases cut from main only — merge first." }
+if ($head -ne $mainSha) { throw "HEAD ($($head.Substring(0,12))) is not main ($($mainSha.Substring(0,12))). Releases cut from main only -- merge first." }
 $dirty = git -C $root status --porcelain --untracked-files=no
 if ($dirty) { throw "Working tree is dirty. Commit or stash before releasing:`n$dirty" }
 
@@ -57,7 +57,7 @@ cmd /c "`"$gh`" auth status >nul 2>&1"
 if ($LASTEXITCODE -ne 0) { throw "gh is not authenticated. Run: gh auth login (as the repo owner)." }
 
 $existingTag = git -C $root tag -l ("v" + $version)
-if ($existingTag) { throw "Tag v$version already exists locally — this version looks already released. Bump VERSION in McpLinkMod.cs first." }
+if ($existingTag) { throw "Tag v$version already exists locally -- this version looks already released. Bump VERSION in McpLinkMod.cs first." }
 try {
     $latest = & $gh release view --repo $repoSlug --json tagName --jq .tagName 2>$null
     if ($LASTEXITCODE -eq 0 -and ($latest -replace '^v', '') -eq $version) {
@@ -69,7 +69,7 @@ try {
 # --- build + gate (package.ps1 runs the offline smoke suite; deploys pinned off) ---
 $env:CopyToMods = "false"
 powershell -NoProfile -File "$root\package.ps1"
-if ($LASTEXITCODE -ne 0) { throw "package.ps1 failed — nothing was tagged or published." }
+if ($LASTEXITCODE -ne 0) { throw "package.ps1 failed -- nothing was tagged or published." }
 $zip = "$root\release\McpLink-$version.zip"
 $dll = "$root\bin\Release\McpLink.dll"
 if (-not (Test-Path $zip)) { throw "Expected artifact missing: $zip" }
@@ -84,7 +84,7 @@ $section
 ---
 **Install**: see [INSTALL.md](https://github.com/$repoSlug/blob/main/INSTALL.md). ``McpLink.dll`` is the bare mod (drop into ``rml_mods``); the zip is the full bundle (eval companion, Claude Code proxy, docs).
 
-**Which build am I running?** MCP ``initialize`` → ``serverInfo.version`` = ``$version``; the ``session_info`` tool → ``build.informationalVersion`` = ``g$stamp``. Trust those, never file timestamps — and restart your MCP client after updating so cached tool schemas refresh.
+**Which build am I running?** MCP ``initialize`` -> ``serverInfo.version`` = ``$version``; the ``session_info`` tool -> ``build.informationalVersion`` = ``g$stamp``. Trust those, never file timestamps -- and restart your MCP client after updating so cached tool schemas refresh.
 "@
 $notesFile = Join-Path $env:TEMP "mcplink-relnotes-$version.md"
 Set-Content -Path $notesFile -Value $notes -Encoding utf8
@@ -100,18 +100,18 @@ if ($DryRun) {
 $ghSh = "'" + ($gh -replace '\\', '/') + "'"
 git -C $root tag ("v" + $version)
 git -C $root -c credential.helper= -c "credential.helper=!$ghSh auth git-credential" push origin main
-if ($LASTEXITCODE -ne 0) { git -C $root tag -d ("v" + $version); throw "Push of main failed — tag rolled back, nothing published." }
+if ($LASTEXITCODE -ne 0) { git -C $root tag -d ("v" + $version); throw "Push of main failed -- tag rolled back, nothing published." }
 git -C $root -c credential.helper= -c "credential.helper=!$ghSh auth git-credential" push origin ("v" + $version)
-if ($LASTEXITCODE -ne 0) { throw "Tag push failed — main is pushed but v$version is not; re-run after fixing." }
+if ($LASTEXITCODE -ne 0) { throw "Tag push failed -- main is pushed but v$version is not; re-run after fixing." }
 
 # --- the Release itself, then VERIFY it (a create that half-worked must not read as done) ---
 & $gh release create ("v" + $version) --repo $repoSlug --title "McpLink $version" --notes-file $notesFile `
     $zip "$dll#McpLink.dll (bare mod DLL)"
-if ($LASTEXITCODE -ne 0) { throw "gh release create failed — tag v$version is pushed; create the release manually or re-run." }
+if ($LASTEXITCODE -ne 0) { throw "gh release create failed -- tag v$version is pushed; create the release manually or re-run." }
 
 $assets = & $gh release view ("v" + $version) --repo $repoSlug --json assets --jq '[.assets[].name] | join(", ")'
 if ($assets -notmatch "McpLink-$version.zip" -or $assets -notmatch "McpLink.dll") {
-    throw "VERIFY FAILED: release exists but assets are [$assets] — expected the zip and the bare DLL. Fix on the Releases page."
+    throw "VERIFY FAILED: release exists but assets are [$assets] -- expected the zip and the bare DLL. Fix on the Releases page."
 }
 Write-Host ""
 Write-Host "Released McpLink $version -> https://github.com/$repoSlug/releases/tag/v$version" -ForegroundColor Green

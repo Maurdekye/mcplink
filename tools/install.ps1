@@ -1,4 +1,4 @@
-# Installs McpLink into a Resonite install — from the latest GitHub release by default,
+# Installs McpLink into a Resonite install -- from the latest GitHub release by default,
 # or from a local build with -FromBuild. Loud about everything that can go silently wrong:
 # a missing ResoniteModLoader, and the game's file lock on rml_mods\McpLink.dll.
 #
@@ -30,7 +30,7 @@ if (-not (Test-Path (Join-Path $ResonitePath "Resonite.exe"))) {
     throw "No Resonite install at '$ResonitePath'. Pass -ResonitePath 'C:\path\to\Resonite'."
 }
 if (-not (Test-Path (Join-Path $ResonitePath "Libraries\ResoniteModLoader.dll"))) {
-    throw ("ResoniteModLoader is not installed at '$ResonitePath' — McpLink is an RML mod and " +
+    throw ("ResoniteModLoader is not installed at '$ResonitePath' -- McpLink is an RML mod and " +
            "does nothing without it. Install it first: " +
            "https://github.com/resonite-modding-group/ResoniteModLoader")
 }
@@ -55,20 +55,20 @@ try {
         $release = Invoke-RestMethod -Uri $apiLatest
         $version = $release.tag_name
         $zipAsset = $release.assets | Where-Object { $_.name -like "McpLink-*.zip" } | Select-Object -First 1
-        if ($null -eq $zipAsset) { throw "Release $version has no McpLink-*.zip asset — report this as a bug." }
+        if ($null -eq $zipAsset) { throw "Release $version has no McpLink-*.zip asset -- report this as a bug." }
         $zipPath = Join-Path $stage $zipAsset.name
         Write-Host "Downloading $($zipAsset.name) ($([math]::Round($zipAsset.size / 1MB, 1)) MB)..."
         Invoke-WebRequest -Uri $zipAsset.browser_download_url -OutFile $zipPath
         Expand-Archive -Path $zipPath -DestinationPath $stage
         $srcDll = Join-Path $stage "rml_mods\McpLink.dll"
-        if (-not (Test-Path $srcDll)) { throw "Downloaded zip is missing rml_mods\McpLink.dll — report this as a bug." }
+        if (-not (Test-Path $srcDll)) { throw "Downloaded zip is missing rml_mods\McpLink.dll -- report this as a bug." }
         $srcLibs = Join-Path $stage "rml_mods\McpLink_libs"
         $haveLibs = Test-Path $srcLibs
     }
 
     # --- 3. the file lock: a copy blocked by a running game must NEVER be silent ---
     if (Test-FileLocked $targetDll) {
-        throw ("rml_mods\McpLink.dll is LOCKED — Resonite is running. Nothing was changed. " +
+        throw ("rml_mods\McpLink.dll is LOCKED -- Resonite is running. Nothing was changed. " +
                "Close the game and run this again.")
     }
 
@@ -82,12 +82,12 @@ try {
         $libsDir = Join-Path $modsDir "McpLink_libs"
         New-Item -ItemType Directory -Force $libsDir | Out-Null
         Copy-Item (Join-Path $srcLibs "*.dll") $libsDir -Force
-        Write-Host "Installed eval companion (McpLink_libs) — the C# 'eval' tool is available."
+        Write-Host "Installed eval companion (McpLink_libs) -- the C# 'eval' tool is available."
     } elseif ($SkipEval) {
-        Write-Host "Skipped the eval companion (-SkipEval) — every tool except 'eval' works."
+        Write-Host "Skipped the eval companion (-SkipEval) -- every tool except 'eval' works."
     }
 
-    # a stale PENDING note (left by a lock-blocked developer build) is now false — remove it
+    # a stale PENDING note (left by a lock-blocked developer build) is now false -- remove it
     $pending = "$targetDll.PENDING"
     if (Test-Path $pending) { Remove-Item $pending -Force -Confirm:$false }
 
