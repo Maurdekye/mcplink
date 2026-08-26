@@ -24,6 +24,7 @@ access to your live worlds — 97 tools.
 | An **MCP client** | talking to the server | examples use Claude Code; any streamable-HTTP or stdio MCP client works |
 | **[claude-orgtree](https://github.com/Maurdekye/claude-orgtree)** | *optional* — the in-world agent panels only | see [README §2, "Connect to orgtree"](README.md#connect-to-orgtree); everything else works without it |
 | A **decompiler MCP server** (e.g. [ILSpy-Mcp](https://github.com/gentledepp/ILSpy-Mcp)) | *optional* — grounding engine questions in decompiled source | see [README §2, "Pair with a C# decompiler"](README.md#pair-with-a-c-decompiler); McpLink itself needs neither |
+| **Blender** (+ a Blender MCP server, e.g. the [Blender Lab add-on](https://www.blender.org/lab/mcp-server/)) | *optional* — fixing/preparing meshes before import | see [README §2, "Pair with Blender"](README.md#pair-with-blender); McpLink's own import/export tools need neither |
 | .NET 10 SDK + [ResoniteHotReloadLib](https://github.com/Nytra/ResoniteHotReloadLib) | *building from source only* | release-zip users need neither; see [README "Building from source"](README.md#building-from-source) |
 
 **Install ResoniteModLoader first** if you haven't — follow
@@ -141,7 +142,12 @@ For other agents, provide the file as standing context by whatever mechanism you
 
 Want the agent to ground engine-behavior questions in decompiled source too? See
 [README §2, "Pair with a C# decompiler"](README.md#pair-with-a-c-decompiler) — an optional
-second MCP server, not a McpLink feature.
+second MCP server, not a McpLink feature. Ready-made engine reference notes are also included
+under [`docs/engine-reference/`](docs/engine-reference/).
+
+Want it to fix meshes before importing them? See
+[README §2, "Pair with Blender"](README.md#pair-with-blender) — covers both a live Blender MCP
+server and running Blender headless from a script.
 
 ## 6. Configuration
 

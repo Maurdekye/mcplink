@@ -81,10 +81,10 @@ troubleshooting, updating, and uninstalling — see **[INSTALL.md](INSTALL.md)**
 
 ## 2. Recommended ways to enhance your McpLink installation
 
-McpLink works standalone, but two optional companions round it out: **claude-orgtree** for
-in-world agent panels, and a **C# decompiler MCP server** for grounding engine-behavior questions
-in source. Neither is required — set up whichever is useful to you; the rest of McpLink works
-without either.
+McpLink works standalone, but a few optional companions round it out: **claude-orgtree** for
+in-world agent panels, a **C# decompiler MCP server** for grounding engine-behavior questions in
+source, and **Blender** for preparing/fixing meshes before they go into the game. None of these
+are required — set up whichever is useful to you; the rest of McpLink works without any of them.
 
 ### Connect to orgtree
 
@@ -150,6 +150,51 @@ client connects to alongside McpLink.
 
 Once both are registered, an agent can cross-reference: ask McpLink what a live component's
 field actually contains, then ask the decompiler what the component's code does with it.
+
+A set of engine-behavior notes already written this way — grounded in decompiled
+`FrooxEngine`/`Elements.Core`/`ProtoFlux` source rather than guessed — is included in this repo
+under **[`docs/engine-reference/`](docs/engine-reference/)**: data model, execution order, hard
+limits, localization, networking/users, particles, persistence, ProtoFlux, rendering/assets, and
+transforms/math. Point an agent at them instead of (or alongside) re-deriving the same facts from
+a live decompiler session.
+
+### Pair with Blender
+
+McpLink can import a mesh straight into a world (`spawn_import`, `import_file`) and export one
+back out (`export_asset`, `export_skinned_gltf`), but it isn't a modeling tool — it doesn't fix a
+bad rig, a wrong scale, or a broken UV. For that, pair it with **Blender**, driven two ways
+depending on whether you want the agent to work in a live scene or run unattended:
+
+**Live, interactive editing** — a Blender MCP server gives an agent the running Blender GUI:
+scene inspection, arbitrary `bpy` execution, rendering, docs lookup. Any Blender MCP
+implementation works; the one in use here is the official
+**[Blender Lab MCP add-on](https://www.blender.org/lab/mcp-server/)**:
+
+1. `pip install git+https://projects.blender.org/lab/blender_mcp.git`
+2. In Blender, add the Blender Lab extensions repository
+   (`https://lab.blender.org/` — see the
+   [extensions-repository docs](https://docs.blender.org/manual/en/latest/editors/preferences/extensions.html#repositories)),
+   find the MCP add-on, install and enable it, then connect.
+3. Register the server with your MCP client as you would McpLink — it's a separate server, not
+   a McpLink feature.
+
+**Headless, scripted fixes** — for a repeatable transform (rig repair, scale/roll correction,
+FBX re-export) you don't need the GUI open at all: Blender runs the same Python API from the
+command line with no window and exits when the script finishes.
+
+```
+blender --background --factory-startup --python fix_mesh.py -- <src.fbx> <dst.fbx>
+```
+
+`--background` skips the UI, `--factory-startup` ignores your local preferences/add-ons so the
+result doesn't depend on one machine's setup, and everything after the bare `--` is `sys.argv`
+inside the script (`bpy` is available exactly as it is in the GUI's Python console). This is the
+better fit for an agent batch-processing many files, or for a step wired into a larger pipeline,
+where launching and babysitting the GUI would be pure overhead.
+
+The two combine: use the live MCP server to work out *what* a fix needs to do by inspecting one
+file interactively, then land it as a headless script once it's proven, and run that script over
+the rest of the batch.
 
 ---
 
