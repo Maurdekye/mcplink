@@ -228,6 +228,9 @@ point an agent at it directly instead of re-deriving the same facts:
 - **[`docs/engine-reference/blender-asset-pipeline.md`](docs/engine-reference/blender-asset-pipeline.md)**
   — the Blender/asset side: bind poses, rig defects invisible at rest, FBX export gotchas, and
   the supported route for getting skinned meshes back out of the game.
+- **[`docs/engine-reference/mod-authoring.md`](docs/engine-reference/mod-authoring.md)** — writing
+  ResoniteModLoader mods in C#: lifecycle, config, Harmony patterns, thread marshaling, undo, and
+  in-world UI, with McpLink's own project files as the worked example.
 
 ---
 

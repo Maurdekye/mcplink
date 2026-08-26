@@ -29,3 +29,4 @@ Two companion guides in this folder are *method* rather than engine facts:
 |---|---|
 | [`decompiler-workflow.md`](decompiler-workflow.md) | How to read Resonite's source with a decompiler MCP server: which assembly holds what, the discover→survey→decompile-last loop, combining source with a live McpLink session, learning from installed mods |
 | [`blender-asset-pipeline.md`](blender-asset-pipeline.md) | Preparing skinned assets in Blender for Resonite and exporting them back out: bind poses as ground truth, the four invisible rig defects, FBX export gotchas, why `export_skinned_gltf` exists |
+| [`mod-authoring.md`](mod-authoring.md) | Writing ResoniteModLoader mods: project setup, the OnEngineInit lifecycle, config, Harmony patterns, thread marshaling, undo recording, in-world UI, ProtoFlux manipulation — API names decompiler-verified |
