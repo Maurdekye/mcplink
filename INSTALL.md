@@ -111,7 +111,8 @@ Nothing in McpLink is Claude-specific. Configure your client with either transpo
 If MCP registration isn't working for whatever reason — a client whose config can't be
 changed, tool schemas cached stale after a mod update, a session that started without the
 server — an agent with shell access can drive McpLink directly over plain HTTP with the
-bundled helper (`tools\mcp.py` in this repo and in the release zip; Python 3.8+, stdlib only):
+bundled helper (`tools\mcp.py` in this repo, attached standalone to each Release, and inside
+release zips going forward; Python 3.8+, stdlib only):
 
 ```
 python tools\mcp.py --list                        # live tool names from the server

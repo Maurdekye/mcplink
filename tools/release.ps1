@@ -106,12 +106,12 @@ if ($LASTEXITCODE -ne 0) { throw "Tag push failed -- main is pushed but v$versio
 
 # --- the Release itself, then VERIFY it (a create that half-worked must not read as done) ---
 & $gh release create ("v" + $version) --repo $repoSlug --title "McpLink $version" --notes-file $notesFile `
-    $zip "$dll#McpLink.dll (bare mod DLL)"
+    $zip "$dll#McpLink.dll (bare mod DLL)" "$root\tools\mcp.py#mcp.py (agents' no-registration helper)"
 if ($LASTEXITCODE -ne 0) { throw "gh release create failed -- tag v$version is pushed; create the release manually or re-run." }
 
 $assets = & $gh release view ("v" + $version) --repo $repoSlug --json assets --jq '[.assets[].name] | join(", ")'
-if ($assets -notmatch "McpLink-$version.zip" -or $assets -notmatch "McpLink.dll") {
-    throw "VERIFY FAILED: release exists but assets are [$assets] -- expected the zip and the bare DLL. Fix on the Releases page."
+if ($assets -notmatch "McpLink-$version.zip" -or $assets -notmatch "McpLink.dll" -or $assets -notmatch "mcp.py") {
+    throw "VERIFY FAILED: release exists but assets are [$assets] -- expected the zip, the bare DLL, and mcp.py. Fix on the Releases page."
 }
 Write-Host ""
 Write-Host "Released McpLink $version -> https://github.com/$repoSlug/releases/tag/v$version" -ForegroundColor Green
