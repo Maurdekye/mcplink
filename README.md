@@ -213,9 +213,24 @@ On a non-Steam install it needs *both* halves pointed over: `-p:ResonitePath=...
 references) *and* the `RESONITE_PATH` environment variable (runtime assembly resolution). The
 test project also expects ResoniteHotReloadLib present (`test\rml_libs`).
 
-`powershell -File package.ps1` is the release pipeline: Release build → smoke suite as a gate →
+`powershell -File package.ps1` is the packaging pipeline: Release build → smoke suite as a gate →
 `release\McpLink-<version>.zip`. The dev iteration loop, deploy-verification tooling, and the
 engineering diary live under [`docs/dev/`](docs/dev/) and [`tools/dev/`](tools/dev/).
+
+**Releasing (maintainers) — every version increase ships a GitHub Release.** That's a standing
+rule, not a nicety: a `VERSION` bump isn't finished until the
+[Releases page](https://github.com/Maurdekye/mcplink/releases) carries it with both assets
+(the zip and the bare DLL), because installs and `tools\update.ps1` feed from there. The
+standard task is one command from a clean main:
+
+```
+powershell -File tools\release.ps1        (-DryRun rehearses everything but the publish)
+```
+
+It refuses loudly unless the version is bumped, the matching `CHANGELOG.md` section exists,
+HEAD is a clean main, and `gh` is authenticated — then packages (suite-gated, deploys pinned
+off so releasing never touches a live install), tags `v<version>`, pushes, publishes the
+Release with notes auto-extracted from the changelog, and verifies both assets actually landed.
 
 ## Project history
 
