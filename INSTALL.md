@@ -140,16 +140,15 @@ For other agents, provide the file as standing context by whatever mechanism you
 
 ## 6. Configuration
 
-Via ResoniteModLoader's config file **`rml_config\McpLink.json`** (created on first modded
-launch), or a settings-UI mod. Keys and defaults are in the
+The comfortable route is the in-game
+**[ResoniteModSettings](https://github.com/badhaloninja/ResoniteModSettings)** mod: a settings
+page for every RML mod, McpLink included — edits apply and persist while you play.
+
+Editing the file by hand also works: **`rml_config\McpLink.json`** (created on first modded
+launch), with the game closed — RML rewrites the file at shutdown from the running mod's known
+keys, so a mid-session hand-edit is lost. Leave the file's `"version"` field at `"1.0.0"`
+(it's the config-format version, not the mod version). Keys and defaults are in the
 [README's Configuration table](README.md#configuration).
-
-Two rules that will save you confusion, both consequences of how RML persists config:
-
-- **Edit the file only while the game is closed.** RML rewrites it at every game shutdown from
-  the *running* mod's known keys — a key you hand-add mid-session is silently erased on quit.
-- **Leave the file's `"version"` field at `"1.0.0"`.** It's the config-format version, not the
-  mod version; changing it gets the whole file rejected to a `.bak`.
 
 ## 7. Updating
 
@@ -174,8 +173,9 @@ running build's MVID, and whether the on-disk copies match it (`deployConsistent
   session (or `/mcp` reconnect) while the game is up.
 - **Tools look stale after an update** — same cache: restart the client session so schemas
   refresh.
-- **Port already in use** — change `port` in the mod config (game closed!), then re-register
-  the HTTP URL or set `MCPLINK_PORT` for the proxy.
+- **Port already in use** — change `port` in the mod config (ResoniteModSettings, or the file
+  with the game closed; a port change takes effect on restart), then re-register the HTTP URL
+  or set `MCPLINK_PORT` for the proxy.
 - **`eval` fails with "companion not found"** — the `McpLink_libs` folder (§2 step 2) isn't
   installed.
 - **`eval` fails with an `InvalidCastException` mentioning `EvalGlobals`** — known limitation
@@ -186,8 +186,9 @@ running build's MVID, and whether the on-disk copies match it (`deployConsistent
 - **A `McpLink.dll.PENDING` file appeared in rml_mods** — a *developer build* tried to deploy
   while the game was running and was blocked by the file lock; the note says exactly that. A
   successful install/update (scripts or a rebuild with the game closed) removes it.
-- **A config key you added vanished** — you edited `McpLink.json` while the game was running;
-  see §6.
+- **A config value you hand-edited vanished** — the file was edited while the game was running
+  (RML rewrites it at shutdown). Use ResoniteModSettings in-game, or edit with the game closed
+  (§6).
 - **MCP registration won't work at all** — agents (or you) can bypass registration entirely:
   `python tools\mcp.py <tool> '<json args>'` speaks plain HTTP to the same server (see §4,
   "the no-registration fallback").

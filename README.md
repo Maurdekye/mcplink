@@ -143,7 +143,12 @@ Values encode the way in-game data reads: typed literals
 
 ## Configuration
 
-Via ResoniteModLoader's config file `rml_config\McpLink.json`, or a settings UI mod:
+The comfortable route is the in-game
+**[ResoniteModSettings](https://github.com/badhaloninja/ResoniteModSettings)** mod — a settings
+page for every RML mod, McpLink included, with persistent editing while you play. Editing
+`rml_config\McpLink.json` by hand also works; do that with the game closed (ResoniteModLoader
+rewrites the file at shutdown from the running mod's known keys, so mid-session hand-edits are
+lost — and leave its `"version"` field at `"1.0.0"`, the config-format version).
 
 | Key | Default | Effect |
 |---|---|---|
@@ -155,11 +160,6 @@ Via ResoniteModLoader's config file `rml_config\McpLink.json`, or a settings UI 
 | `promptDefaultOrg` | *(empty)* | Org slug the Prompt Agent wizard preselects (empty = backend's first-listed) |
 | `promptHireDir` | *(empty)* | Folder granted read-write to panel-hired agents (empty = game folder only) |
 | `promptOutbox` | *(empty)* | Offline-queue fallback file for wizard submissions when no backend answers |
-
-> ⚠ **Edit the config only while the game is closed.** ResoniteModLoader rewrites
-> `McpLink.json` on every game shutdown from the *running* mod's known keys — a key you add by
-> hand mid-session is silently erased. Also leave the file's `"version"` field at `"1.0.0"`
-> (it's the config-format version, not the mod version; changing it gets the file rejected).
 
 ## Updating
 
