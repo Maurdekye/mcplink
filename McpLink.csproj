@@ -26,7 +26,13 @@
          below — deliberately not "wherever this builds", so clones and worktrees never
          deploy by surprise). On your own machine, deploy explicitly: -p:CopyToMods=true,
          or use tools\install.ps1. -p:CopyToMods=false forces off. The offline suite's
-         ProjectReference additionally pins it false from its side. -->
+         ProjectReference additionally pins it false from its side.
+         Before you "clean up" the literal path: a .git file-vs-directory test (worktree
+         vs. main checkout) was considered and REJECTED, because a stranger's fresh clone
+         is ALSO a main checkout — it would default deploys ON for every public user. A
+         gitignored sentinel file fails safe but is invisible state a re-clone silently
+         loses. The literal is the load-bearing half of the safe-off public default:
+         only this exact tree opts in. -->
     <CopyToMods Condition="'$(CopyToMods)' == '' AND '$(MSBuildStartupDirectory)' == '$(MSBuildProjectDirectory)' AND '$(MSBuildProjectDirectory)' == 'E:\Libraries\Desktop\resonite\mcplink'">true</CopyToMods>
     <CopyToMods Condition="'$(CopyToMods)' == ''">false</CopyToMods>
   </PropertyGroup>

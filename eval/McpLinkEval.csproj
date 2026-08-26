@@ -28,7 +28,12 @@
          stray build from another agent's worktree silently replacing those DLLs mixes eval/Roslyn
          generations under a live game (found as a near-miss during the 2.8.1 release packaging).
          Default is true ONLY for a direct build of the canonical checkout; -p:CopyToMods=true|false
-         is an explicit decision and always wins. -->
+         is an explicit decision and always wins.
+         Before you "clean up" the literal path (same rationale as McpLink.csproj): a .git
+         file-vs-directory test was rejected because a stranger's fresh clone is ALSO a main
+         checkout — it would default deploys ON for every public user; a gitignored sentinel
+         fails safe but is invisible state a re-clone silently loses. Only this exact tree
+         opts in. -->
     <CopyToMods Condition="'$(CopyToMods)' == '' AND '$(MSBuildStartupDirectory)' == '$(MSBuildProjectDirectory)' AND '$(MSBuildProjectDirectory)' == 'E:\Libraries\Desktop\resonite\mcplink\eval'">true</CopyToMods>
     <CopyToMods Condition="'$(CopyToMods)' == ''">false</CopyToMods>
   </PropertyGroup>
