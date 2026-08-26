@@ -1,261 +1,231 @@
 # McpLink
 
-A standalone **MCP (Model Context Protocol) server that runs inside the Resonite process** as a
-ResoniteModLoader mod. The poweruser counterpart to [resomcp](../resomcp/): where resomcp speaks
-the official ResoniteLink protocol (safe, distributable, per-session opt-in, synced data model
-only), McpLink trades that sandbox for total access:
+**An MCP server that runs inside Resonite.** McpLink is a
+[ResoniteModLoader](https://github.com/resonite-modding-group/ResoniteModLoader) mod that embeds
+a [Model Context Protocol](https://modelcontextprotocol.io/) server in the game process, so an
+AI agent — Claude Code, or any MCP-capable client — can inspect and modify your live Resonite
+worlds: slots, components, ProtoFlux, assets, physics, screenshots, event streams, and (optionally)
+C# against the running engine. **97 tools**, no per-session setup, works in any world including
+Userspace.
 
-- **No per-session setup.** The server starts with the engine on a fixed port — no
-  "Enable ResoniteLink" dance, no changing port numbers.
-- **Any world**, including **Userspace**, which ResoniteLink can never target.
-- **Real RefIDs** as addresses (`ID1A2B00...`) — the same identifiers in-game inspectors show,
-  valid for the world's lifetime (not per-connection synthetic ids).
-- **Private state.** `reflect_get` reads any field/property, private included
-  (`_dynamicValues`, `handler._currentSpace`, ...). `get_component includeNonSynced:true`
-  dumps non-synced engine state ResoniteLink cannot see.
-- **Unrestricted method calls.** `call_method` invokes anything with full argument
-  construction — plain-class parameters (`DuplicationSettings`), optional-parameter defaults,
-  generic methods, out-params — the exact calls the closed ResoniteLink verb union cannot express.
+Because the server lives *inside* the engine, it sees what in-game inspectors see: real RefIDs as
+addresses, private/non-synced state via reflection, unrestricted method calls. Every mutating tool
+registers with the engine's undo system, so an agent's mistake is one Ctrl+Z in-game.
 
-> **Which build is actually answering?** `session_info` returns a `build` object — version, the
-> compilation's MVID, whether the assembly came from a file or from memory (`hot_reload`), and the
-> MVID of each `McpLink.dll` on disk with `matchesRunning` per copy. **Check `deployConsistent`
-> after any build**: `false` means the restart path and the hot-reload path have diverged, which is
-> what a lock-blocked deploy leaves behind. A tool appearing in `tools/list` says nothing about
-> which code backs it.
+> ⚠ **Security, before anything else.** The endpoint binds to **localhost only**, but anything
+> that can reach it has, in effect, the power of the game process itself (arbitrary method
+> invocation ≈ arbitrary code in-game). Don't expose the port beyond localhost. Set
+> `allowWrites: false` in the mod config if you want a strictly read-only agent.
 
-> **Used McpLink for a real job? Log the friction in [`TOOLKIT-NOTES.md`](TOOLKIT-NOTES.md)
-> afterwards** — anything a tool made you guess at, work around, or that quietly gave you the wrong
-> answer. Append-only, one short entry, and *put the measurement in it*: the "≈1.135 `spawn_import`
-> scale" survived as folklore until someone measured 0.671 / 0.923 / 1.062 on three garments from
-> one folder.
+---
 
-## Distribution / releases
+## 1. Get the mod set up
 
-`powershell -File package.ps1` produces `release\McpLink-<version>.zip` — the full release
-pipeline: Release build of the mod + eval companion → **offline smoke suite as a gate** (89
-tools, no game needed) → zip. The version is read from `McpLinkMod.VERSION` (single source of
-truth; bump it + add a `CHANGELOG.md` entry before packaging). The zip is what end users get:
+**You need:** Resonite (Windows; Steam path assumed by defaults, any install works) with
+**[ResoniteModLoader](https://github.com/resonite-modding-group/ResoniteModLoader)** installed
+and working — that's the one hard prerequisite, and its README covers installing it from scratch.
 
-```
-rml_mods\McpLink.dll              the mod (drop into rml_mods)
-rml_mods\McpLink_libs\*.dll       optional eval companion (Roslyn closure)
-proxy\mcplink_proxy.py            always-up stdio proxy for Claude Code
-INSTALL.md                        user-facing setup guide
-CLAUDE-MCPLINK.md                 Claude-facing usage guide (users @-import it into CLAUDE.md)
-CHANGELOG.md · LICENSE            (MIT)
-```
-
-`INSTALL.md` is the document to hand a new user; it covers install, the proxy, mod config,
-adding `CLAUDE-MCPLINK.md` to their CLAUDE.md, and troubleshooting. Keep `CLAUDE-MCPLINK.md`
-**user-agnostic** (no workspace paths, no session ids) — it ships into other people's context.
-
-## Install / connect
-
-1. Build: `dotnet build -c Release` (auto-copies `McpLink.dll` into `rml_mods`; requires
-   [ResoniteModLoader](https://github.com/resonite-modding-group/ResoniteModLoader)).
-2. Restart Resonite. The log line `[McpLink] MCP server listening on http://localhost:7357/mcp`
-   confirms it's up.
-3. Connect Claude Code — **preferred: via the always-up proxy** (survives the game being closed):
+1. **Download** the latest release from the
+   [Releases page](https://github.com/Maurdekye/mcplink/releases) — either the full
+   `McpLink-x.y.z.zip` bundle (recommended) or the bare `McpLink.dll`.
+2. **Install** — the zip mirrors your Resonite install; with the game closed:
+   - copy `rml_mods\McpLink.dll` into your Resonite `rml_mods` folder
+     (e.g. `C:\Program Files (x86)\Steam\steamapps\common\Resonite\rml_mods`);
+   - *(optional — enables the `eval` C# scripting tool)* copy the zip's
+     `rml_mods\McpLink_libs\` folder in beside it. Every other tool works without it.
+   - Or run `tools\install.ps1` from a clone of this repo — it finds your install, downloads the
+     latest release, and does the above with the file locking handled loudly.
+3. **Start Resonite** and confirm in the log (`Logs\` in the install dir):
 
    ```
-   claude mcp add mcplink -- python "<repo>\mcplink\proxy\mcplink_proxy.py"
+   [McpLink] Tool registry built: 97 tools.
+   [McpLink] MCP server listening on http://localhost:7357/mcp
    ```
 
-   Direct HTTP also works, but the server then only connects if Resonite is already
-   running when the Claude session starts:
+4. **Connect your agent.** For **Claude Code**, the recommended route is the bundled always-up
+   proxy (a dependency-free Python 3.8+ script — the one extra requirement of this route). Copy
+   the zip's `proxy\` folder somewhere permanent, then:
+
+   ```
+   claude mcp add mcplink -- python "C:\path\to\proxy\mcplink_proxy.py"
+   ```
+
+   The proxy keeps the `mcplink` server registered even while the game is closed (calls then
+   return a clean "Resonite is not running" error and recover on their own when the game starts —
+   even mid-session). Without Python you can register the endpoint directly, with the caveat that
+   the server only connects if Resonite is already running when your session starts:
 
    ```
    claude mcp add --transport http mcplink http://localhost:7357/mcp
    ```
 
-### The stdio proxy (`proxy/mcplink_proxy.py`)
+   **Any other MCP client:** point it at the streamable-HTTP endpoint
+   `http://localhost:7357/mcp`, or run `python mcplink_proxy.py` as a stdio server — both are
+   standard MCP; nothing here is Claude-specific.
 
-McpLink lives inside the game process, so its HTTP endpoint vanishes whenever Resonite is
-closed — and an HTTP-registered MCP server that's down at session start contributes zero
-tools to that session. The proxy (stdlib-only Python, spawned by Claude Code per session
-over stdio) makes `mcplink` permanently "up":
+5. **Teach the agent the craft.** The tools are self-describing, but the hazards and idioms
+   (reading big ProtoFlux graphs cheaply, checkpointing before risky mutations, what silently
+   no-ops) live in **[CLAUDE-MCPLINK.md](CLAUDE-MCPLINK.md)**. For Claude Code, copy it next to
+   your project's `CLAUDE.md` and add `@CLAUDE-MCPLINK.md` to it; for other agents, feed it in as
+   standing context.
 
-- `initialize`/`ping` are answered locally and always succeed.
-- `tools/list` is forwarded to `localhost:7357` when the game is up, and the result is
-  cached to `proxy/tools_cache.json`; when the game is down, the cache is served, so the
-  tools still register. (Bootstrap: the cache is empty until the first `tools/list` with
-  the game running — after that one session, tools are always present.)
-- `tools/call` is forwarded live; if the game is closed it returns an `isError` result
-  saying "Resonite is not running" instead of a dead connection.
-- If the game **restarts mid-session**, the proxy detects the stale backend session
-  (HTTP 404), re-initializes against the new instance, and retries the call transparently.
+*First-session note:* the proxy caches the tool list. Run one session (or reconnect via `/mcp`)
+while the game is up, and the tools are present in every session after that, game running or not.
+After **updating** the mod, restart your MCP client / session so cached tool schemas refresh.
 
-Env overrides: `MCPLINK_HOST`/`MCPLINK_PORT`/`MCPLINK_PATH`, `MCPLINK_CONNECT_TIMEOUT`
-(default 3 s — how fast a closed game is detected), `MCPLINK_READ_TIMEOUT` (default 600 s —
-ceiling for long tool runs like world scans/renders).
+That's the whole setup. For the slower path with every step spelled out — plus configuration,
+troubleshooting, updating, and uninstalling — see **[INSTALL.md](INSTALL.md)**.
 
-Config (via RML settings): `port` (default 7357), `enabled`, and `allowWrites` — set false to
-gate every mutating tool (`reflect_set`, `set_member`, `call_method`, `add_slot`,
-`attach_component`, `destroy`) while keeping reads.
+## 2. Connecting McpLink to orgtree
 
-## Beyond resomcp (v0.3–v1.0)
+McpLink pairs with **[claude-orgtree](https://github.com/Maurdekye/claude-orgtree)** — a custom
+orchestrator that organizes Claude Code agents into an authority hierarchy — and the integration
+runs deep: an in-world **Prompt Agent** panel lets you hire an agent from inside VR by clicking a
+node in your live org chart, name it, pick its model tier and thinking effort, and then *chat with
+it* in a floating panel that embodies the agent — presence ticker showing what it's doing right
+now, its status reports as system lines, drag-and-drop reference attachments, interactive question
+cards, and 3D wires drawn between panels of related agents. Deleting a panel retires its agent;
+a detach button keeps it working headless instead.
 
-**1.0.0** is the first stable release: 85 tools, every wave live-verified (see
-`VERIFICATION.md`), full history in `CHANGELOG.md`. The 1.0 verification pass also fixed three
-long-standing bugs: `{"$ref":...}` reference writes through `set_member`/`update_component`/
-`bulk_build` (the field case swallowed refs — bare `"ID..."` strings had masked it), `colorX`
-from `[r,g,b,a]` arrays (constructor-arity fallback), and a `history` crash on undo entries
-whose targets were destroyed.
+**None of this appears unless orgtree is actually set up.** On an install without the companion,
+McpLink never mentions it: the menu entry stays hidden and `open_prompt_wizard` returns a clear
+"not set up" error naming this section. Set it up and the surfaces appear on their own:
 
-| Tool | What it does |
-|---|---|
-| `render_view` / `orbit_render` isolation (v1.6) | **`isolate` + `exclude` args on both camera tools**: pass a slot/component id (or array) and the render shows ONLY those hierarchies (`isolate`) or hides them (`exclude`) — occluding walls/props no longer interfere when inspecting one object. Engine-native (`RenderTask.renderObjects`/`excludeObjects`, the same mechanism as `Camera.SelectiveRender`); explicit args override a `cameraId` camera's own lists. `orbit_render targetId:X isolate:X` = walk around an object with the world stripped away |
-| `move_component` (v1.5) | **move a component onto another slot** — the exact semantics of the in-game flow (grab a component reference → drop on another inspector's component view → "Move Component"): engine `ContainerWorker.MoveComponent`, world-wide reference retarget (`World.ReplaceReferenceTargets` — drives, bone refs, list elements all follow), original destroyed, new RefID returned. `copy:true` = the menu's "Copy Component" (plain copy, original kept). Not undoable |
-| `bake_skinned_mesh` (v1.5) | **the inspector's "Bake to Static Mesh" button as a tool** (the button handler needs a live IButton): bakes the SMR's current pose + blendshape weights to a new static mesh asset (same MeshX bake + LocalDB save path as the button), attaches the baked StaticMesh beside the source mesh provider and a MeshRenderer with the same materials on the renderer's slot. Default KEEPS the SkinnedMeshRenderer (no duplicate-first dance); `destroyOriginal:true` replicates the button exactly |
-| `flux_ports` (v1.3) | **port discovery for one node**: every data input, impulse (incl. list elements — `Calls[2]`), reference, and globalRef with the exact names `flux_connect`/`flux_splice` accept, plus the node's own connectable targets (operations, outputs) — each port with its value/target type and current target (RefID + owning node + member). Shares the enumeration with flux_connect, so names always agree |
-| `flux_splice` (v1.3) | **insert a node into an existing wire** in one call + one undo batch: nodeId's impulse (a ContinuationRelay's `Next`, a Sequence `Calls[i]`) or data-input port is re-aimed at the inserted node, and the inserted node's continuation/input is wired to the original target — both via the engine's type-checked connect APIs. `insertOutPort`/`insertInPort` override the defaults (first free port) |
-| `eval_output` probe (v1.3) | **computed ProtoFlux pins now evaluate**: pure value nodes, `LocalValue`, multi-output members — evaluated through the group's own ExecutionRuntime (BorrowContext → stack frame → `EvaluateValue/Object` on the mapped output — the exact `EvaluateImmediatelly` mechanics, aimed at an output). No probe objects spawned, no world mutation, synchronous. `probe:false` keeps the stored-only fast path |
-| `flux_build` globals + near (v1.3) | node specs take `globals:{"VariableName":"scope/name"}` — GlobalRef members set via the engine idiom (a `GlobalValue<T>` on the node's slot, `T` inferred from the ref's `IGlobalValueProxy<T>` target type; clear error if the member isn't a GlobalRef or the value doesn't decode) — and `near:"<id>"` auto-placement: free spot beside that node, matching neighbor spacing + rotation (collision-free scan, not a layout engine). `flux_connect` gains `disconnect:true` (sever a port undoably, list elements included) |
-| `fire` feedback (v1.3) | primary arg is now `id` (`operationId` still accepted); result carries an `execution` report — whether the rig actually flipped, the target group's `LastImpulseFlowError`, and error-level engine log lines captured during the settle window (empty = no observed throw). Arg-name unification across ALL tools: single-element tools accept `id` (aliases resolved centrally; legacy names — `rootId`, `targetId`, `slotId`, `target`, ... — keep working; passing both is an error) |
-| `save_object` fix (v1.3) | `dependencies` accepts a bool again without exploding (`false`→`BreakAll`, `true`→`CollectAssets`) alongside the mode strings `CollectAssets`/`CollectAll`/`BreakAll` |
-| `spawn_markdown` (v1.2) | **markdown → in-world RadiantUI panel** (title bar, pin/close, scrollable) — THE way to hand the user a readable report/note in-game. Headers, bold/italic/strike, inline + fenced code, lists, blockquotes, best-effort tables, rules; literal `<` is noparse-safe. Placement: in front of the local user by default (`inFrontOf` = another user, `distance`), explicit `position`+`lookAt`, or `replaceId` to update a previous panel in place (same pose). `markdownPath` for long docs; `canvasScale` default 0.001 (800 px ≈ 0.8 m). Returns the panel RefID — keep it for `replaceId` |
-| `export_package` / `import_package` (v0.10) | **portable .resonitepackage round-trip** — the game's own item-export format (identical to the in-world Export dialog): object graph + every referenced local/cloud asset bundled into one self-contained file, reimportable here (`import_package`, undoable spawn) or by drag-and-drop into any Resonite install. The share/backup layer above `save_object`, which stores asset URLs only. `includeVariants:true` also bundles precomputed asset variants. Import pre-validates the package and surfaces failures the engine's importer normally swallows |
-| `user_avatar` (v0.10) | what a user **looks like and is carrying**: the equipped avatar (object root + occupied body nodes), other worn attachments (per body node), and per hand the equipped tool + grabbed object roots. Complements `user_pointer` (aim/laser); feed the avatar root to `export_package` to snapshot it |
-| `edit_list` (v0.10) | **sync-list editing** (SyncList/SyncFieldList/SyncRefList/SyncAssetList — `MeshRenderer.Materials`, ProtoFlux variadic inputs, ...): add/insert/set/remove/move/clear ops in order, or `values` for wholesale replace — the member kind `set_member` rejects, without the reflect_get→call_method("Add") dance. Structural ops register engine list undo points (move excepted); one undo batch per call |
-| `impulse_watch` / `impulse_events` / `impulse_unwatch` (v0.9.1) | **live ProtoFlux activity streams** at node-GROUP granularity: externally-invoked executions (dynamic-impulse receivers, CallInput fires, the `fire` tool) and event dispatch (FireOnTrue, buttons) per group with ms timing, plus a dynamic-impulse bus tap (tag, target hierarchy, receiver count; untyped sends only). The dynamic truth static wiring can't show: "pull the trigger, read the trace" — pair with `get_protoflux_subgraph` flowTrace for intra-group order. The only Harmony-patched feature: patches `DynamicImpulseHelper` + `ProtoFluxNodeGroup` (non-generic methods only — see below) **lazily on the first watch, unpatches completely when the last stops**; hot path fast-exits on a flag; hook bodies are exception-proofed. Opt out entirely with the `enableHooks` mod config. Group map is a snapshot — re-watch after graph edits. **⚠️ Never patch a constructed generic method: it won't intercept organic calls (shared canonical body) and executing the stub crashes the process — v0.9.0 learned this the hard way; `ResolvePatchTargets()` now refuses generic targets.** |
-| `diff` (v0.8) | structural diff of two slot subtrees: slots/components on only one side + member-level value differences on paired ones. **Reference-remap aware** — refs to targets INSIDE each subtree compare by relative path, not RefID, so a healthy copy vs a broken copy of the same gadget surfaces only real divergence. Compose with `load_object` (restore a checkpoint beside the live object, diff, destroy) for checkpoint-vs-live |
-| `xargs` (v0.8) | find + apply: match slots (namePattern/tag) or components (typePattern), run any tool once per match with `$id`/`$slotId`/`$name` substituted into an args template — one atomic hop, ONE undo batch. `dryRun:true` previews the matches. "Retint every UnlitMaterial under this root" in one call |
-| `at` / `jobs` / `cancel_job` (v0.8) | schedule a run_batch to fire after a delay in world time, optionally repeating — "flip this bool in 5 s while I watch", timed choreography, delayed cleanup. In-memory registry with status + last-result |
-| `top` (v0.8) | hotspot ranking: the N heaviest slots in a subtree by components / ProtoFlux nodes / mesh renderers / colliders / children, plus subtree totals for all metrics — "where is the weight in this world" |
-| `history` (v0.8) | read the undo/redo stacks (descriptions, validity) without performing anything — see what `undo` would roll back first |
-| `mv` (v0.8) | reparent/rename slots with keepGlobalTransform:true default (objects stay where they are — unlike update_slot's parentId, which keeps local values); multi-slot moves in one undo batch |
-| `orbit_render` (v0.8) | N renders orbiting a target (auto-framed from its bounds) — the "walk around it and look" inspection pass a single viewpoint can't give |
-| `bookmark` / `bookmarks` (v0.8) | name a RefID once, then use `@gun` / `@trigger` anywhere an id argument is accepted — readable handles for long sessions. Session-scoped (RefIDs die with the world) |
-| `tar chunked:true` (v0.8) | whole-world exports walked a few thousand slots per tick — no game hitch; snapshot is then not atomic (the default single-tick mode still is) |
-| aliases (v0.8) | `rm`→destroy, `cat`→get_component, `ps`→perf, `schedule`→at |
-| `eval` (v0.7) | **run C# against the live engine** — the escape hatch for anything no tool covers. Globals: `world`, `engine`, `resolve("ID...")`, `log(x)`, `vars` (persists across calls); statements or a final expression as result; `await` supported; all loaded engine assemblies referenced. Roslyn (~9.5 MB) is NOT in McpLink.dll — the `McpLinkEval` companion + closure sit in `rml_mods\McpLink_libs\` and lazy-load into an isolated `AssemblyLoadContext` on first call (build `mcplink/eval` to deploy). Compiles off-thread; **executes on the update thread — an infinite loop freezes the game, no watchdog** |
-| `inventory` (v0.7) | browse cloud inventory records (items/folders/links) at a path; items carry the `resrec` URI `spawn_object` accepts. Works for group inventories via `owner:"G-..."` |
-| `spawn_object` (v0.7) | now resolves **record URIs** (`resrec:///U-.../R-...`) through the cloud — inventory → spawn in two calls (previously needed the raw asset URI) |
-| `find_assets` (v0.7) | asset inventory of a subtree: every Uri-valued field grouped by URL — what meshes/textures/audio a creation uses, use counts, sample holder components. Pairs with `export_asset` |
-| `logs` (v0.6) | read the engine log (UniLog ring buffer, captured from startup): component exceptions, asset failures, mod errors — filter by level/regex, poll incrementally with `sinceSeq`. The place to look when an in-world action misbehaves silently |
-| `watch_changes` / `changes` / `unwatch` (v0.6) | **event-driven** change subscriptions (vs the polling `watch`): Changed / child + component add/remove / transform / destroy events on a slot, component, or single field, **coalesced per (element, member, kind) with counts** — a driven field changing every frame is one entry. `fields:true` records which sync member changed with its new value; `changes waitMs` long-polls ("fire, then see what happened" in one round trip) |
-| `save_object` / `load_object` (v0.6) | **checkpoint / restore** any slot subtree via the engine's real object serializer (same DataTree format as inventory items; `.brson`/`.lz4bson`/`.json`). The disaster-recovery layer beyond the 50-step undo cap: checkpoint before risky mutations of user creations, restore after a world reload. `.json` doubles as an offline structure dump |
-| `undo` / `redo` (v0.6) | perform engine undo/redo steps directly — the agent rolls back its own mistakes instead of asking the user to Ctrl+Z |
-| `dynamic_impulse` (v0.6) | send a dynamic impulse (optionally with a typed payload) into a hierarchy — the engine's own receiver dispatch, identical to a trigger node firing. With `impulse_map` this makes every in-world gadget's RPC surface directly callable; also fires async receivers |
-| `user_pointer` (v0.6) | what a user is interacting with right now: per hand the laser's current hit (slot/path/object root/point/distance), grabbed objects, equipped tool, head view pose. "Point at it and I'll look at it" object designation |
-| `marker` (v0.6) | temporary unlit sphere + floating label at a point/element, self-destroys after `ttlSeconds` — lets the in-world user SEE what the agent means |
-| `jump_user` (v0.6) | teleport the local user next to a point/element (engine `JumpToPoint`) — "take me to what you built" |
-| `notify` (v0.6) | toast on the user's dash (visible in VR) — completion pings for long tasks |
-| `export_asset` (v0.6) | asset URL (or asset component) → file on disk, via the engine's gatherer (cloud assets download). Reverse of `import_file`: round-trip textures/meshes through Blender or an editor |
-| `render_view` (v0.6: pose sources) | now also renders from `cameraId` (a Camera component uses its full settings — FOV/clip/selective-render; any slot = its pose) or `user` (that user's head view — see what they see) |
-| `raycast` (v0.5) | physics ray returning **all** colliders along it sorted by distance (the target may be behind a railing); pose from `origin`+`direction`/`lookAt`/`rotation` or `cameraId` (a Camera/slot RefID — its position + forward); hits carry slot, path, and object root |
-| `view_scan` (v0.5) | "what is this viewpoint looking at" for things a physics ray can't hit: slots whose **rendered** mesh bounds fall in a view cone, sorted by angle off-axis then distance; same pose args as `raycast`; `maxSize` filters out walls/roofs when hunting props |
-| `bounds` (v0.5) | world-space bbox of a slot subtree via the engine's `BoundsHelper` (the inspector box); `children:true` = per-direct-child breakdown |
-| `mesh_info` (v0.5) | mesh asset stats for a slot / MeshRenderer / mesh provider: vertex/triangle/submesh counts, channels, bones, blendshapes, local bounds, `degenerate` flag for broken 0-triangle meshes |
-| `render_view` (v0.4) | off-screen screenshot of a world from any viewpoint → image file on disk (PNG default); aim via `lookAt` point or `rotation` quat; uses the engine's `RenderTask` queue (same path as `Camera.RenderToBitmap` / world thumbnails), creates nothing in the world |
-| `bulk_build` | thousands of slots/components/cross-refs (`"@id"` placeholders) in ONE update tick — bypasses the importer's ~1.5-frames-per-object scheduling; inline spec or `specPath` file |
-| `flux_build` / `flux_connect` | declarative ProtoFlux construction with the engine's type-checked `TryConnect*` APIs (can't produce broken graphs); optional visuals |
-| `import_file` | file → localdb:// asset URL (the ResoniteLink import path); aliases `import_texture`/`import_audio` |
-| `spawn_import` | full standard import pipeline for models/images/audio at a world position; returns the spawned **root slot** and (v0.5) waits for the imported hierarchy to stop growing — the engine's import task completes before conversion does |
-| `spawn_object` | spawn a saved object by asset URI under a holder slot |
-| `users` / `perf` / `focus_world` | who's here + head positions; per-world frame delta; switch focus |
+1. Install and run [claude-orgtree](https://github.com/Maurdekye/claude-orgtree) on the same
+   machine (its own README covers setup). McpLink expects the backend's admin API on
+   `http://127.0.0.1:7360` — configurable via the `orgtreeBase` mod setting.
+2. That's it. McpLink probes the backend cheaply in the background; within a minute of it coming
+   up (immediately, if it's already running when the game starts), **Dev Tool → Create New →
+   Editor → Prompt Agent** appears, and the `open_prompt_wizard` / `wizard_drive` tools go live.
+   Agents you hire from the panel act with your user's authority on the orgtree side.
+3. Optional settings (see [Configuration](#configuration)): `promptDefaultOrg` preselects which
+   organization new panels open on; `promptHireDir` names a folder that panel-hired agents get
+   read-write access to (empty = game folder only).
 
-**Undo-aware writes:** every mutating tool registers with the engine's undo system (batches named
-"McpLink: …", field/reference undo points, spawn/destroy undo points) — agent mistakes are
-Ctrl+Z-able in-game. Opt out per call with `undoable:false`. Since v0.5 a whole `run_batch` is
-**one** undo batch: a 300-op mistake is a single Ctrl+Z instead of 300 entries against the
-engine's 50-step undo cap.
+**Offline queue (advanced):** with no backend but a `promptOutbox` file path configured, the
+panel still works in a degraded mode — each submission appends one JSON line
+(`type/id/timestampUtc/prompt/refs/placement/agentName/tier/effort/world/submitter/wizardSlotId/statusTextId`)
+for an external orchestrator to consume. The default `placement` value is the authors'
+orchestrator convention; your consumer is free to ignore it.
 
-**v0.5 fixes/quality:** `Uri` values decode from bare strings and from the
-`{"$type":"Uri","$string":...}` shape the encoder itself emits (previously the latter silently
-wrote **null** — the dangerous one); `find_slots` takes `near` + `radius` for spatial lookups
-("what's within 2 m of this point"); `tar includeBounds:true` embeds per-slot world-space renderer
-bounds so offline spatial analysis needs no transform math.
+---
 
-**Chunked scans:** `grep`, `find_slots`, `find_components`, `find_referrers` walk a few thousand
-slots per update tick (`slotsPerTick`) — whole-world scans no longer hitch the game. (`tar`, `du`,
-`sed` and the subgraph export remain single-tick by design: atomic snapshot / atomic mutation.)
+## What's in the toolbox
 
-## Tools (v0.2 — full resomcp replacement surface)
+All 97 tools, grouped. Every tool takes `world` (`"focused"` default, `"userspace"`, or a world
+name) and `maxBytes` (oversized results return a truncation notice); `id` addresses any element by
+its real RefID, and `@name` bookmarks work anywhere an id does.
 
 | Area | Tools |
 |---|---|
-| Orientation | `session_info`, `get_slot`, `tree`, `ls`, `ls_components`, `stat`, `du`, `get_slot_transform` |
-| Search | `find_slots`, `find_components`, `grep` (**all** value types, not just strings), `find_referrers` |
-| ProtoFlux | `get_protoflux_subgraph` (relay collapse, summary/flowTrace with cross-entry dedupe, **constants inlined into edges**), `impulse_map` (the dynamic-impulse RPC surface as a routing table), `eval_output` (v1.3: computed pins evaluate through the runtime), `fire` (v1.3: execution feedback), `flux_ports`, `flux_splice` (v1.3) |
-| Deep access | `get_component` (+`includeNonSynced` private fields), `reflect_get`, `reflect_set`, `call_method`, `dynvar_space`, `dynvar_users` (who declares/drives/reads/writes a variable), `env` |
-| Writes | `set_member`, `update_slot`, `update_component`, `add_slot`, `attach_component`, `destroy`, `cp` (real `Slot.Duplicate`), `sed` (dry-run by default) |
-| Meta | `run_batch` (atomic single update hop, `"$N.path"` result refs), `describe_type`, `list_component_types`, `watch` (polling), `tar` (subtree → JSON file for offline analysis) |
-| Observation (v0.6) | `logs`, `watch_changes`/`changes`/`unwatch` (event subscriptions) |
-| Recovery (v0.6) | `save_object`/`load_object` (file checkpoints), `undo`/`redo` |
-| Interaction (v0.6) | `dynamic_impulse`, `user_pointer`, `marker`, `jump_user`, `notify` |
-| Escape hatch & cloud (v0.7) | `eval` (C# scripting), `inventory`, `find_assets`, resrec-aware `spawn_object` |
-| Shell idioms (v0.8) | `mv`, `diff`, `top`, `history`, `at`/`jobs`/`cancel_job`, `xargs`, `orbit_render`; aliases `rm`/`cat`/`ps` |
-| Impulse streams (v0.9.1) | `impulse_watch`, `impulse_events`, `impulse_unwatch` (Harmony, lazy-patched, per-group) |
-| Packages, avatar & lists (v0.10) | `export_package`/`import_package` (.resonitepackage round-trip), `user_avatar`, `edit_list` |
+| Orientation | `session_info` (worlds + **which build is answering** — version, MVID, deploy consistency), `get_slot`, `tree`, `ls`, `ls_components`, `stat`, `du`, `get_slot_transform`, `users`, `perf`, `focus_world`, `env` |
+| Search | `find_slots` (name/tag/spatial `near`+`radius`), `find_components`, `grep` (every value type, chunked world scans), `find_referrers`, `find_assets` |
+| Reading deep | `get_component` (incl. non-synced private state), `reflect_get`, `describe_type`, `list_component_types`, `dynvar_space` (phantom variables included), `dynvar_users`, `mesh_info`, `renderer_info` (materials with resolved texture URLs + common-defect findings), `bounds` |
+| Writing | `set_member`, `update_slot`, `update_component`, `add_slot`, `attach_component`, `destroy`, `cp`, `mv`, `sed` (dry-run by default), `edit_list` (sync-list ops), `reflect_set`, `move_component`, `bake_skinned_mesh` |
+| Batch & meta | `run_batch` (one atomic update-tick hop, `"$N.path"` result refs, single undo batch), `bulk_build` (thousands of slots/components in one tick), `xargs` (find + apply as one undo batch), `at`/`jobs`/`cancel_job` (scheduled batches), `wait_for` |
+| ProtoFlux | `get_protoflux_subgraph` (relay collapse, flow traces), `flux_build`, `flux_connect`, `flux_ports`, `flux_splice`, `flux_trace`, `eval_output` (computed pins evaluate through the real runtime), `fire` (with execution feedback), `impulse_map` |
+| Live observation | `logs` (engine log from startup), `watch`/`watch_changes`/`changes`/`unwatch` (event-driven, coalesced), `impulse_watch`/`impulse_events`/`impulse_unwatch` (live ProtoFlux execution streams; the only Harmony-patched feature, patched only while a watch is active) |
+| Recovery | `save_object`/`load_object` (real-serializer checkpoints), `undo`/`redo`, `history`, `diff` (reference-remap-aware subtree compare) |
+| Seeing the world | `render_view` (off-screen render from any pose/camera/user view; `isolate`/`exclude` hierarchies), `orbit_render`, `view_scan`, `raycast` |
+| In-world interaction | `marker`, `notify`, `jump_user`, `user_pointer`, `user_avatar`, `dynamic_impulse`, `spawn_markdown` (markdown → scrollable in-world panel) |
+| Assets & import/export | `import_file`, `spawn_import` (full import pipeline, reports the transform it applied), `spawn_object` (incl. `resrec://` cloud records), `inventory`, `export_asset`, `export_package`/`import_package` (portable `.resonitepackage` round-trip), `export_skinned_gltf`, `tar` (subtree → JSON snapshot) |
+| Escape hatches | `eval` (C# against the live engine; needs the optional `McpLink_libs` companion), `call_method` (any method, full argument construction), `hot_reload` (developer feature) |
+| orgtree companion | `open_prompt_wizard`, `wizard_drive` (see [section 2](#2-connecting-mcplink-to-orgtree)) |
+| Session sugar | `bookmark`/`bookmarks`, aliases `rm`/`cat`/`ps`/`schedule` + the resomcp-compatible names |
 
-resomcp aliases are accepted (`add_component`, `remove_slot`/`remove_component`, `call_static_method`,
-`get_type_definition`/`get_component_definition`/`get_enum_definition`/`get_generic_type_definition`).
-Deliberately **not** ported: `connect`/`connection_status`/`disconnect` (no connection to manage) and
-`resolve_reference` (member ids are real RefIDs here — `stat` answers "what is this id" directly).
-Not yet ported: `import_cubemap`/`import_mesh` (raw-data codecs), `diff`, `ln`/`readlink`.
+Values encode the way in-game data reads: typed literals
+(`{"$type":"float3","value":{"x":0,"y":1,"z":0}}`), bare JSON coerced to the target type,
+`[x,y,z]` arrays for math structs, `{"$ref":"ID..."}` element references, enums by name, and
+`{"$new":"TypeName","args":[...]}` for arbitrary construction.
 
-**The original "later" list has fully shipped:** C# eval (v0.7, Roslyn-weight concern solved by
-lazy isolated-ALC loading from `rml_mods\McpLink_libs\`), resrec:// resolution (v0.7
-`spawn_object`), in-mod `diff` (v0.8, reference-remap aware), chunked `tar` (v0.8, opt-in), and
-impulse streams (v0.9, user-approved Harmony — lazily patched, fully unpatched between uses).
+## Configuration
 
-## Building
+Via ResoniteModLoader's config file `rml_config\McpLink.json`, or a settings UI mod:
 
-`dotnet build -c Release` in `mcplink/` deploys `McpLink.dll` to `rml_mods` (skipped if the game
-holds the lock) **and** to `rml_mods\HotReloadMods\` (always succeeds); the same in
-`mcplink/eval/` deploys `McpLinkEval.dll` + the Roslyn closure to `rml_mods\McpLink_libs\`
-(optional — every tool except `eval` works without it).
+| Key | Default | Effect |
+|---|---|---|
+| `enabled` | `true` | Start the server on engine init (change requires restart) |
+| `port` | `7357` | TCP port for the endpoint (localhost only; change requires restart) |
+| `allowWrites` | `true` | `false` = read-only agent: every mutating tool refuses, reads keep working |
+| `enableHooks` | `true` | Allow the impulse-stream tools to Harmony-patch the ProtoFlux dispatcher (applied only while a watch is active, fully removed after); `false` disables that capability — nothing else uses Harmony |
+| `orgtreeBase` | `http://127.0.0.1:7360` | Where the optional orgtree companion's admin API answers |
+| `promptDefaultOrg` | *(empty)* | Org slug the Prompt Agent wizard preselects (empty = backend's first-listed) |
+| `promptHireDir` | *(empty)* | Folder granted read-write to panel-hired agents (empty = game folder only) |
+| `promptOutbox` | *(empty)* | Offline-queue fallback file for wizard submissions when no backend answers |
 
-**Iteration loop (no game restart, v1.1+):** with
-[ResoniteHotReloadLib](https://github.com/Nytra/ResoniteHotReloadLib) in `rml_libs`, the cycle is
-edit → `dotnet build -c Release` → call the **`hot_reload`** tool → test. The server tears itself
-down (port, watches, Harmony patches, jobs), the new DLL loads from memory, and the server is back
-on the same port in ~1 s. Session state (bookmarks/watches/jobs/eval vars) resets; the eval
-companion is the one piece that still needs a restart to swap. Verify a reload took via `logs`.
+> ⚠ **Edit the config only while the game is closed.** ResoniteModLoader rewrites
+> `McpLink.json` on every game shutdown from the *running* mod's known keys — a key you add by
+> hand mid-session is silently erased. Also leave the file's `"version"` field at `"1.0.0"`
+> (it's the config-format version, not the mod version; changing it gets the file rejected).
 
-`mcplink/test/` holds the offline smoke
-suite (`dotnet run -c Release`, 88 checks) — run it after changes; it exercises the dispatcher,
-every schema, type resolution, codecs, real Roslyn eval, a real Harmony patch/unpatch cycle of the
-impulse-stream hooks, the invariant that no impulse patch target is a constructed generic (the
-2026-07-07 crash guard), and the v1.3 wave (arg-name aliasing, disconnect/splice validation,
-GlobalRef T-inference, free-position scan, and an engine-drift guard over the eval_output
-evaluation path) — all without a running game.
+## Updating
 
-Every tool takes `world`: `"focused"` (default), `"userspace"`, or a world name, and an optional
-`maxBytes` budget (oversized results return a truncation notice; `get_protoflux_subgraph` degrades
-to its summary instead). All world access is marshaled to that world's update thread with a timeout.
+Run `tools\update.ps1` from a clone — it downloads the latest release, swaps the DLL (telling you
+plainly if the game's file lock blocked it, and cleaning up the leftover `.PENDING` note a blocked
+build leaves), and verifies the copy. Or do the same by hand: game closed, overwrite
+`rml_mods\McpLink.dll` (+ `McpLink_libs` if you use `eval`).
 
-`dynvar_space` uses the technique from Banane9's DynVarSpaceTree mod: it reads the space's private
-`_dynamicValues` registry (so **phantom variables** — read but never declared — appear) and
-classifies declaring components by their own `handler._currentSpace` (the engine's actual binding,
-not name-prefix guessing), also reporting unbound declarations and ones bound to other spaces.
+Version truth: builds are not byte-reproducible, so never trust file timestamps. Ask the running
+server — MCP `initialize` reports the version, and `session_info` reports the build's MVID, per
+on-disk copy, with `deployConsistent` telling you whether a restart would load the same code.
+Then restart your MCP client so cached tool schemas refresh.
 
-## Value encoding
+## Limitations and safety notes
 
-Compatible with resomcp muscle memory: `{"$type":"float3","value":{"x":0,"y":1,"z":0}}` typed
-literals (assembly-bracketed type names tolerated), plus `{"$ref":"ID..."}` element references,
-enums by name, bare JSON coerced to the parameter type, `[x,y,z]` arrays for math structs, and
-`{"$new":"TypeName","args":[...]}` for constructing arbitrary objects.
+- **Writes are live.** Mutations go straight into the data model. They're undo-aware, but
+  Userspace writes can still crash the engine — the safety rails are you (and
+  `save_object` checkpoints).
+- A write to a **driven** field is a silent engine no-op (`set_member` warns you).
+- **`eval` runs on the world update thread** — an infinite loop freezes the game; there is no
+  watchdog. Compile happens off-thread; execution doesn't.
+- **`hot_reload`** (developer feature) needs
+  [ResoniteHotReloadLib](https://github.com/Nytra/ResoniteHotReloadLib) in `rml_libs`. Known
+  issue: after a hot reload, `eval` fails with a stale-load-context error until the game
+  restarts; every other tool survives reloads.
+- RefIDs die with the world: after a world reload, re-find objects by name/path.
+- The engine's undo stack caps at 50 steps; `run_batch`/`xargs` deliberately batch to one entry.
 
-## Architecture notes
+## Building from source
 
-- **Zero dependencies** — the MCP streamable-HTTP surface a tools-only server needs
-  (`initialize`, `tools/list`, `tools/call`, `ping`) is hand-implemented over `HttpListener`
-  (localhost-only, no URL ACL needed). Pulling the official MCP SDK + ASP.NET Core hosting into
-  the game process would invite dependency conflicts in `rml_mods`.
-- **Harmony only when observing impulses** — everything else hosts a server, reflects, and
-  (v0.6) subscribes to the engine's public events (UniLog, Changed, ChildAdded, ...). The v0.9
-  impulse streams patch the ProtoFlux dispatcher while a watch is active and unpatch when the
-  last watch stops; `enableHooks:false` in the mod config disables the capability entirely.
-- Threading, undo, drive semantics: writes go straight into the live data model. A driven field
-  write is a silent engine no-op (`set_member` warns when the target is driven). Mutations are
-  undo-aware (and `undo`/`redo` can roll them back), but Userspace writes can still crash the
-  whole engine — the safety rails are you.
+Prereqs: **.NET 10 SDK**, internet for one NuGet restore (the eval companion pulls Roslyn), a
+**Resonite install** (for reference DLLs) with **ResoniteModLoader** installed, and
+**[ResoniteHotReloadLib](https://github.com/Nytra/ResoniteHotReloadLib)**'s DLL in the install's
+`rml_libs\` — it's optional at *runtime* but required to *compile*.
 
-## Security
+```
+dotnet build -c Release -p:ResonitePath="C:\path\to\Resonite"
+```
 
-The endpoint binds to localhost only and is as powerful as the game process itself (arbitrary
-method invocation ≈ arbitrary code in-game). Don't raise the surface beyond localhost, and use
-resomcp instead where the sandbox matters.
+(`ResonitePath` defaults to the Steam location.) A build **never deploys into your game folder
+from a clone** — that's deliberate; deploy explicitly with `-p:CopyToMods=true`, or use
+`tools\install.ps1 -FromBuild`. While the game runs, `rml_mods\McpLink.dll` is file-locked: a
+deploying build then emits warning `MCPLINK001` and stages only the hot-reload copy — never
+trust "it built" as "it's installed"; ask `session_info`.
+
+The offline smoke suite — dispatcher, every schema, type resolution, codecs, real Roslyn eval, a
+real Harmony patch/unpatch cycle, 255 checks, no game needed — is the gate for every change:
+
+```
+dotnet run --project test\McpLinkSmoke.csproj -c Release
+```
+
+On a non-Steam install it needs *both* halves pointed over: `-p:ResonitePath=...` (compile-time
+references) *and* the `RESONITE_PATH` environment variable (runtime assembly resolution). The
+test project also expects ResoniteHotReloadLib present (`test\rml_libs`).
+
+`powershell -File package.ps1` is the release pipeline: Release build → smoke suite as a gate →
+`release\McpLink-<version>.zip`. The dev iteration loop, deploy-verification tooling, and the
+engineering diary live under [`docs/dev/`](docs/dev/) and [`tools/dev/`](tools/dev/).
+
+## Project history
+
+McpLink was built AI-first: the mod is developed, tested, and maintained by Claude Code agents
+(coordinated through [claude-orgtree](https://github.com/Maurdekye/claude-orgtree)) working
+against the live game, with the human owner directing and verifying in-world — the commit
+history and the engineering notes in [`docs/dev/`](docs/dev/) show that process honestly,
+friction and all. [`CHANGELOG.md`](CHANGELOG.md) has the full version-by-version story from
+the first 0.3 tool surface to today.
+
+## License
+
+[MIT](LICENSE) © 2026 Maurdekye

@@ -12,7 +12,7 @@ The distinction is the point. Do not read an untested claim as a tested one.
 Exports a `SkinnedMeshRenderer` to spec-correct glTF 2.0 with the full rig: bone hierarchy derived
 from `MeshX` bind poses, `JOINTS_0`/`WEIGHTS_0`, morph targets with POSITION **and** NORMAL deltas
 plus `extras.targetNames`, all UV channels, one primitive per submesh. Blender is the intended
-consumer; `tools/blender/gltf2fbx.py` bridges to the FBX the clothing pipeline expects.
+consumer; `tools/dev/blender/gltf2fbx.py` bridges to the FBX the clothing pipeline expects.
 
 Why it exists: `FrooxEngine.ModelExporter.ProcessMesh` writes geometry only — no bones, no weights,
 no morphs — so all nine of Resonite's built-in export formats silently drop the rig. And AssimpNet
@@ -70,7 +70,7 @@ orientation-invariant check green (148 + 29 + 35 tests, all passing, all blind).
   The tool merely *appearing* in the tool list proves nothing. Probe the DLL for the string
   `meshRotationAnchor` (UTF-16) — present only in the fixed writer. As of this commit
   `bin/Release` and `rml_mods\HotReloadMods` are FIXED; `rml_mods\McpLink.dll` updates on game close.
-- ⚠ `tools/blender/*` are **manual** harnesses; `test/` cannot run Blender. Blender is not on PATH.
+- ⚠ `tools/dev/blender/*` are **manual** harnesses; `test/` cannot run Blender. Blender is not on PATH.
 - ⚠ Same-frame verification cannot detect a frame error. Any new check must be anchored to a
   reference **outside** the system under test — a known-good shipped asset, not the export's own
   source.

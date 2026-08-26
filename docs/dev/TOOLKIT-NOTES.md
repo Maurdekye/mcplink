@@ -223,7 +223,7 @@ make the same mistake unless the measurement is written down.
   `[System.IO.File]::Open($path,'Open','Read','Read')`.
   And assert the lock is genuinely in force (try a write, expect it to fail) **before** drawing any
   conclusion from a failed copy — otherwise a lock that never took hold scores as a passing guard.
-- **Disposition:** fixed in `tools/verify-deploy-warning.sh`.
+- **Disposition:** fixed in `tools/dev/verify-deploy-warning.sh`.
 
 ### 2026-08-22 — a diagnostic must not cause the failure it diagnoses
 - **Reported by:** `mcplink-toolkit`
@@ -320,7 +320,7 @@ make the same mistake unless the measurement is written down.
 - **Suggested change:** when reporting mutation results, state which shape the suite is. Assert
   only that the **named** check died (`must_kill in killed`) and treat any surplus as cascade until
   shown otherwise. Both harnesses here do that: `backend/tests/_mutate_handles.py`,
-  `tools/mutate-panel-chat.sh`.
+  `tools/dev/mutate-panel-chat.sh`.
 
 ### 2026-08-22 — two small ones that cost real minutes
 - **Reported by:** `panel-chat`
@@ -404,7 +404,7 @@ make the same mistake unless the measurement is written down.
 - **Measurement that proves it:** on the 2.6.0 artifact, `deployConsistent` scanned `deployed=True /
   candidate=True` — vacuous — while `Ending your turn is NOT a reply` scanned `deployed=False /
   candidate=True` and therefore discriminated. Same probe, same run, opposite evidential value.
-- **Suggested change (applied):** `tools/verify-deploy-artifact.sh` is two-phase. `snapshot` keeps a
+- **Suggested change (applied):** `tools/dev/verify-deploy-artifact.sh` is two-phase. `snapshot` keeps a
   **byte copy** of the outgoing DLL before the build; `verify` then asserts each marker is **ABSENT
   from the old copy and PRESENT in the new one**. Checking only "present in the new DLL" is the trap.
   It refuses to run against a snapshot older than 6h, because a stale baseline is the same failure
@@ -536,7 +536,7 @@ make the same mistake unless the measurement is written down.
 - **Rule:** **`session_info`'s `mvid` is the evidence about what is running; `tools/list` is not.**
   A tool's presence or absence in the proxy-mediated list tells you about a cache, not about the DLL.
 - **Workaround, when you need a just-shipped tool immediately:** call the endpoint directly.
-  `tools/mcp.py` does it — `from mcp import call; call("renderer_info", {"id": "ID…"})` POSTs to
+  `tools/dev/mcp.py` does it — `from mcp import call; call("renderer_info", {"id": "ID…"})` POSTs to
   `http://localhost:7357/mcp` and unwraps `content[].text`. Same dispatcher, one less cache. It is also
   the right instrument for *diagnosing* this: the direct list is the ground truth to compare against.
 ### 2026-08-22 — `render_view` on a NON-FOCUSED world returns an all-white frame, not an error
