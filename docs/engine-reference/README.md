@@ -22,3 +22,10 @@ treat them as "true as of that build," not as guarantees.
 | [`protoflux.md`](protoflux.md) | Trampolined execution, MaxDepth 256, value vs action nodes, DataClass, the storage tiers, globals/GlobalRef, dynvar read cost, delay semantics, per-frame stage order, the node catalog |
 | [`rendering-assets.md`](rendering-assets.md) | The Renderite/Awwdio split, asset load lifecycle, importing, texture/color encoding, MeshX, procedural mesh/asset generation, material families, MeshRenderer/SkinnedMeshRenderer, Light/Camera, audio |
 | [`transforms-math.md`](transforms-math.md) | float4x4/floatQ single precision, coordinate system, TRS/decompose/inverse, the Slot space-transform pipeline, MathX quirks, transform-filter footguns |
+
+Two companion guides in this folder are *method* rather than engine facts:
+
+| File | Covers |
+|---|---|
+| [`decompiler-workflow.md`](decompiler-workflow.md) | How to read Resonite's source with a decompiler MCP server: which assembly holds what, the discover→survey→decompile-last loop, combining source with a live McpLink session, learning from installed mods |
+| [`blender-asset-pipeline.md`](blender-asset-pipeline.md) | Preparing skinned assets in Blender for Resonite and exporting them back out: bind poses as ground truth, the four invisible rig defects, FBX export gotchas, why `export_skinned_gltf` exists |
