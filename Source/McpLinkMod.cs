@@ -131,14 +131,16 @@ public class McpLinkMod : ResoniteMod
 
         try
         {
+            // The gate (not RegisterMenu directly): orgtree surfaces stay hidden until the
+            // companion backend answers or a promptOutbox fallback is configured.
             if (engineInitializing)
-                FrooxEngine.Engine.Current.RunPostInit(PromptWizard.RegisterMenu);
+                FrooxEngine.Engine.Current.RunPostInit(PromptWizard.StartAvailabilityGate);
             else
-                PromptWizard.RegisterMenu(); // RunPostInit never fires after init — register directly
+                PromptWizard.StartAvailabilityGate(); // RunPostInit never fires after init — start directly
         }
         catch (Exception e)
         {
-            Error($"PromptWizard menu registration failed: {e.Message}");
+            Error($"PromptWizard availability gate failed: {e.Message}");
         }
 
         // Game-quit accounting (2.5.0): OnShutdown fires only on a COMMITTED quit (the request
@@ -189,6 +191,7 @@ public class McpLinkMod : ResoniteMod
         try { ToolsImpulse.StopAll(); } catch (Exception e) { Error($"impulse watches: {e.Message}"); }
         try { ImpulseHooks.Unpatch(); } catch (Exception e) { Error($"harmony unpatch: {e.Message}"); }
         try { ToolsShell.CancelAllJobs(); } catch (Exception e) { Error($"jobs: {e.Message}"); }
+        try { PromptWizard.StopAvailabilityGate(); } catch (Exception e) { Error($"prompt wizard gate: {e.Message}"); }
         try { PromptWizard.RemoveMenuEntry(); } catch (Exception e) { Error($"prompt wizard menu: {e.Message}"); }
         try { AgentWires.Teardown(); } catch (Exception e) { Error($"agent wires: {e.Message}"); }
         try

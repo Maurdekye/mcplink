@@ -75,9 +75,9 @@ internal static class OrgtreeClient
 
     // ======================= org / node discovery =======================
 
-    internal static async Task<Result<List<OrgInfo>>> ListOrgsAsync()
+    internal static async Task<Result<List<OrgInfo>>> ListOrgsAsync(int timeoutSeconds = 20)
     {
-        var r = await RequestAsync(HttpMethod.Get, "/api/orgs").ConfigureAwait(false);
+        var r = await RequestAsync(HttpMethod.Get, "/api/orgs", null, timeoutSeconds).ConfigureAwait(false);
         if (r.Error != null)
             return Result<List<OrgInfo>>.Fail(r.Error);
         var orgs = new List<OrgInfo>();

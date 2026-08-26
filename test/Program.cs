@@ -2276,6 +2276,25 @@ Check("default org: an empty org list never throws, even with a value configured
     PromptWizard.DefaultOrgIndex(Orgs(), "resonite", out var m) == 0 && m == null);
 
 Console.WriteLine();
+Console.WriteLine("== orgtree availability gate: exposure decision and refusal ==");
+Check("fresh public install (no outbox, backend down) stays hidden", () =>
+    !PromptWizard.ShouldExpose("", false));
+Check("null outbox behaves like empty", () =>
+    !PromptWizard.ShouldExpose(null, false));
+Check("DISCRIMINATOR: whitespace outbox is NOT a configured fallback", () =>
+    !PromptWizard.ShouldExpose("   ", false));
+Check("a configured outbox exposes even with the backend down", () =>
+    PromptWizard.ShouldExpose(@"C:\x\outbox.jsonl", false));
+Check("a reachable backend exposes with no outbox", () =>
+    PromptWizard.ShouldExpose("", true));
+Check("gate refusal embeds the probed URL (live value, not a hardcode)", () =>
+    PromptWizard.ComposeGateError("http://127.0.0.1:7360").Contains("http://127.0.0.1:7360")
+    && !PromptWizard.ComposeGateError("http://10.9.8.7:1234").Contains("7360"));
+Check("gate refusal names both remedies (companion repo + promptOutbox)", () =>
+    PromptWizard.ComposeGateError("http://x").Contains("claude-orgtree")
+    && PromptWizard.ComposeGateError("http://x").Contains("promptOutbox"));
+
+Console.WriteLine();
 Console.WriteLine("== hierarchy wire: curve handles and atlas cell ==");
 // Bodies live in WireChecks.cs, NOT here — see the note at the top of that file: an Elements.Core
 // type in one of Main's own locals resolves before the AssemblyResolve hook can run and kills the

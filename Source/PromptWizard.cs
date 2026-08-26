@@ -191,11 +191,88 @@ internal static class PromptWizard
         }
     }
 
+    // ======================= orgtree availability gate =======================
+    // Public installs must not surface orgtree-only features when no companion is set up
+    // (user requirement, 2026-08-26). "Set up" means the backend answers at orgtreeBase, or a
+    // promptOutbox fallback is configured (the offline queue is a working, if degraded, setup).
+    // The Create New menu entry therefore registers only once ShouldExpose says so: probed in
+    // the background on a 60 s cadence until it first passes, re-reading config each attempt so
+    // pointing orgtreeBase at a live backend (or configuring an outbox) mid-session is picked up
+    // without a restart. Once exposed, exposure is latched for the mod generation — a backend
+    // that later goes down is reported by the panels themselves, which have their own
+    // unreachable handling; yanking menu entries out from under a user helps nobody.
+    // The MCP tools stay REGISTERED either way: clients and the stdio proxy cache tools/list,
+    // so a tool that appeared and disappeared per game launch would desync those caches.
+    // open_prompt_wizard instead refuses at execution time (with one live 3 s probe first, so a
+    // backend started after the game works on the first call).
+
+    private static CancellationTokenSource? _gateCts;
+
+    /// <summary>Latched true once orgtree surfaces were exposed this mod generation.</summary>
+    internal static bool OrgtreeExposed { get; private set; }
+
+    /// <summary>The exposure decision, pure for the offline suite: a configured outbox counts
+    /// as set up (whitespace does not), as does a backend that actually answered.</summary>
+    internal static bool ShouldExpose(string? promptOutbox, bool backendReachable) =>
+        backendReachable || !string.IsNullOrWhiteSpace(promptOutbox);
+
+    /// <summary>open_prompt_wizard's refusal, naming the probed URL and both remedies.</summary>
+    internal static string ComposeGateError(string baseUrl) =>
+        $"orgtree features are not set up: nothing answered at {baseUrl} and no promptOutbox " +
+        "fallback is configured. The Prompt Agent wizard needs the claude-orgtree companion " +
+        "backend running locally (https://github.com/Maurdekye/claude-orgtree — see the README's " +
+        "'Connecting McpLink to orgtree' section), or a promptOutbox file path in the mod " +
+        "config. Every other McpLink tool works without orgtree.";
+
+    public static void StartAvailabilityGate()
+    {
+        StopAvailabilityGate();
+        var cts = new CancellationTokenSource();
+        _gateCts = cts;
+        Task.Run(async () =>
+        {
+            while (!cts.IsCancellationRequested)
+            {
+                bool reachable = (await OrgtreeClient.ListOrgsAsync(timeoutSeconds: 3)
+                    .ConfigureAwait(false)).Error == null;
+                if (ShouldExpose(McpLinkMod.PromptOutbox, reachable))
+                {
+                    ExposeOrgtreeSurfaces(reachable ? "backend reachable" : "promptOutbox configured");
+                    return;
+                }
+                try { await Task.Delay(TimeSpan.FromSeconds(60), cts.Token).ConfigureAwait(false); }
+                catch (OperationCanceledException) { return; }
+            }
+        });
+    }
+
+    public static void StopAvailabilityGate()
+    {
+        try { _gateCts?.Cancel(); } catch { /* already disposed */ }
+        _gateCts = null;
+    }
+
+    /// <summary>Idempotent; called from the gate task or an on-demand tool probe. RegisterMenu
+    /// mutates DevCreateNewForm's static tree from whatever thread calls it — the same contract
+    /// as the pre-gate code, which ran it from the engine-init thread or a world thread depending
+    /// on path; the tree is only read when a user opens the Create New dialog.</summary>
+    internal static void ExposeOrgtreeSurfaces(string why)
+    {
+        if (OrgtreeExposed)
+            return;
+        OrgtreeExposed = true;
+        StopAvailabilityGate();
+        RegisterMenu();
+        McpLinkMod.LogInfo($"orgtree set up ({why}) — Prompt Agent surfaces enabled.");
+    }
+
     // ======================= MCP tool =======================
 
     public static void Register(Action<ToolDef> add)
     {
         add(new ToolDef("open_prompt_wizard",
+            "Requires the optional claude-orgtree companion backend (or a configured promptOutbox " +
+            "fallback) — without one this errors and the matching in-game menu entry stays hidden. " +
             "Spawn the Prompt Agent panel in front of the local user ('inFrontOf' picks another user). " +
             "Stage 1 creates an orgtree agent — live org picker, clickable org-tree map (tier-colored node " +
             "cards, ghost preview of the agent-to-be), agent name, tier cycle, thinking-effort cycle, Create " +
@@ -222,6 +299,15 @@ internal static class PromptWizard
             args =>
             {
                 RequireWrites();
+                if (!OrgtreeExposed)
+                {
+                    // one live probe so a backend started after the game works on the first call
+                    bool reachable = OrgtreeClient.ListOrgsAsync(timeoutSeconds: 3)
+                        .GetAwaiter().GetResult().Error == null;
+                    if (!ShouldExpose(McpLinkMod.PromptOutbox, reachable))
+                        throw new InvalidOperationException(ComposeGateError(McpLinkMod.OrgtreeBase));
+                    ExposeOrgtreeSurfaces(reachable ? "backend reachable on demand" : "promptOutbox configured");
+                }
                 var world = GetWorld(args);
                 string? inFrontOf = OptString(args, "inFrontOf");
                 float distance = Math.Clamp((float)(args["distance"]?.GetValue<double>() ?? 0.7), 0.2f, 20f);

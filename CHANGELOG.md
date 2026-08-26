@@ -5,6 +5,15 @@
 **Public-release preparation — the first version published to GitHub
 ([Maurdekye/mcplink](https://github.com/Maurdekye/mcplink)).** No tool-behavior changes.
 
+- **orgtree surfaces now hide until the companion is actually set up.** The Dev Tool →
+  Create New → Editor → "Prompt Agent" entry registers only once the claude-orgtree backend
+  answers at `orgtreeBase` (or a `promptOutbox` fallback is configured) — probed cheaply in the
+  background every 60 s until first success, with config re-read per attempt, so starting the
+  backend or configuring an outbox mid-session is picked up without a restart. Exposure latches
+  for the session once seen. The MCP tools stay *registered* either way (clients and the stdio
+  proxy cache `tools/list`); `open_prompt_wizard` instead refuses at execution — after one live
+  3 s probe — with an error naming the probed URL and both remedies. On an install with no
+  orgtree, McpLink now simply never mentions it in-game.
 - **`promptHireDir` now defaults to empty** (= game folder only) instead of a folder path from
   the original development machine. The empty-value behavior already existed and is unchanged;
   only the out-of-the-box default moved. Existing installs keep whatever their config file says.
