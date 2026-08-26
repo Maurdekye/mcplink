@@ -536,7 +536,7 @@ make the same mistake unless the measurement is written down.
 - **Rule:** **`session_info`'s `mvid` is the evidence about what is running; `tools/list` is not.**
   A tool's presence or absence in the proxy-mediated list tells you about a cache, not about the DLL.
 - **Workaround, when you need a just-shipped tool immediately:** call the endpoint directly.
-  `tools/dev/mcp.py` does it — `from mcp import call; call("renderer_info", {"id": "ID…"})` POSTs to
+  `tools/mcp.py` does it — `from mcp import call; call("renderer_info", {"id": "ID…"})` POSTs to
   `http://localhost:7357/mcp` and unwraps `content[].text`. Same dispatcher, one less cache. It is also
   the right instrument for *diagnosing* this: the direct list is the ground truth to compare against.
 ### 2026-08-22 — `render_view` on a NON-FOCUSED world returns an all-white frame, not an error

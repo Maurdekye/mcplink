@@ -27,10 +27,12 @@ $stage = "$root\release\staging"
 if (Test-Path $stage) { Remove-Item $stage -Recurse -Force -Confirm:$false }
 New-Item -ItemType Directory -Force "$stage\rml_mods\McpLink_libs" | Out-Null
 New-Item -ItemType Directory -Force "$stage\proxy" | Out-Null
+New-Item -ItemType Directory -Force "$stage\tools" | Out-Null
 
 Copy-Item "$root\bin\Release\McpLink.dll" "$stage\rml_mods\"
 Copy-Item "$root\eval\bin\Release\*.dll" "$stage\rml_mods\McpLink_libs\"
 Copy-Item "$root\proxy\mcplink_proxy.py" "$stage\proxy\"
+Copy-Item "$root\tools\mcp.py" "$stage\tools\"   # agents' no-registration HTTP fallback
 Copy-Item "$root\README.md", "$root\INSTALL.md", "$root\CLAUDE-MCPLINK.md", "$root\CHANGELOG.md", "$root\LICENSE" $stage
 
 $zip = "$root\release\McpLink-$version.zip"

@@ -61,7 +61,10 @@ and working — that's the one hard prerequisite, and its README covers installi
 
    **Any other MCP client:** point it at the streamable-HTTP endpoint
    `http://localhost:7357/mcp`, or run `python mcplink_proxy.py` as a stdio server — both are
-   standard MCP; nothing here is Claude-specific.
+   standard MCP; nothing here is Claude-specific. And if registration won't work at all, an
+   agent with shell access can drive the server directly:
+   `python tools\mcp.py <tool> '<json args>'` (bundled helper, same dispatcher, no client
+   config — see [INSTALL.md](INSTALL.md#for-agents-the-no-registration-fallback)).
 
 5. **Teach the agent the craft.** The tools are self-describing, but the hazards and idioms
    (reading big ProtoFlux graphs cheaply, checkpointing before risky mutations, what silently

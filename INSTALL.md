@@ -106,6 +106,21 @@ Nothing in McpLink is Claude-specific. Configure your client with either transpo
 - **stdio**: command `python`, args `["C:\\path\\to\\proxy\\mcplink_proxy.py"]` — the usual
   `mcpServers` JSON shape in most clients' config files.
 
+### For agents: the no-registration fallback
+
+If MCP registration isn't working for whatever reason — a client whose config can't be
+changed, tool schemas cached stale after a mod update, a session that started without the
+server — an agent with shell access can drive McpLink directly over plain HTTP with the
+bundled helper (`tools\mcp.py` in this repo and in the release zip; Python 3.8+, stdlib only):
+
+```
+python tools\mcp.py --list                        # live tool names from the server
+python tools\mcp.py get_slot "{\"id\": \"Root\"}" # one call, JSON result on stdout
+```
+
+It talks to the exact same dispatcher as a registered client (`from mcp import call` works
+in scripts too), and errors plainly when Resonite isn't running.
+
 ## 5. Teach the agent how to use it
 
 The tools are self-describing, but the *craft* — how to read big ProtoFlux graphs cheaply,
@@ -172,6 +187,9 @@ running build's MVID, and whether the on-disk copies match it (`deployConsistent
   successful install/update (scripts or a rebuild with the game closed) removes it.
 - **A config key you added vanished** — you edited `McpLink.json` while the game was running;
   see §6.
+- **MCP registration won't work at all** — agents (or you) can bypass registration entirely:
+  `python tools\mcp.py <tool> '<json args>'` speaks plain HTTP to the same server (see §4,
+  "the no-registration fallback").
 - **The Prompt Agent menu entry is missing / `open_prompt_wizard` says "not set up"** — those
   surfaces need the optional orgtree companion:
   [README §2](README.md#2-connecting-mcplink-to-orgtree).

@@ -14,6 +14,12 @@ to use it well. The tool schemas describe arguments; this describes **craft and 
 - Every tool takes `world`: `"focused"` (default), `"userspace"`, or a world name — and
   `maxBytes` to cap result size (oversized results return a truncation notice;
   `get_protoflux_subgraph` degrades to its summary instead).
+- **Registration broken? You can always go direct.** The server is plain HTTP on
+  `localhost:7357/mcp`. If the `mcplink` MCP server isn't registered in your session — or its
+  cached tool list has gone stale after a mod update — drive it with the bundled helper
+  instead: `python tools/mcp.py <tool> '<json args>'` (`--list` enumerates the live tools;
+  `from mcp import call` in a script). Same dispatcher, same tools, no client configuration —
+  it needs only Python 3.8+ and the game running.
 
 ## Addressing & values
 
