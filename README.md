@@ -142,11 +142,14 @@ client connects to alongside McpLink.
    in use in the authors' own environment.
 2. Register it with your MCP client (e.g. Claude Code) as a stdio server, command `ilspy-mcp`,
    no arguments.
-3. Point individual tool calls at the assemblies under
-   `<Resonite install>\Resonite_Data\Managed\*.dll` — `FrooxEngine.dll` (the engine proper),
-   `Elements.Core.dll` (math/data types), `ProtoFlux.Core.dll` (the visual-scripting runtime),
-   and so on. The server takes an assembly path as a parameter on each call rather than a fixed
-   target, so there's nothing to preconfigure beyond knowing where your Resonite install lives.
+3. Point individual tool calls at the `.dll` assemblies sitting **directly in the Resonite
+   install folder** (Steam default: `C:\Program Files (x86)\Steam\steamapps\common\Resonite\`) —
+   `FrooxEngine.dll` (the engine proper), `Elements.Core.dll` (math/data types),
+   `ProtoFlux.Core.dll` (the visual-scripting runtime), and so on. The server takes an assembly
+   path as a parameter on each call rather than a fixed target, so there's nothing to
+   preconfigure beyond knowing where your Resonite install lives. A map of which assembly holds
+   what, and a workflow for reading them without drowning in decompiled output, is bundled at
+   [`docs/engine-reference/decompiler-workflow.md`](docs/engine-reference/decompiler-workflow.md).
 
 Once both are registered, an agent can cross-reference: ask McpLink what a live component's
 field actually contains, then ask the decompiler what the component's code does with it.
@@ -178,6 +181,11 @@ implementation works; the one in use here is the official
 3. Register the server with your MCP client as you would McpLink — it's a separate server, not
    a McpLink feature.
 
+A useful non-obvious property of that server: it bundles the **complete Blender Python API
+reference and user manual as plain-text files** in its install (`data/api/`, `data/manual/`), so
+an agent can grep exact operator signatures and enum values locally instead of guessing at `bpy`
+calls or fetching docs from the web.
+
 **Headless, scripted fixes** — for a repeatable transform (rig repair, scale/roll correction,
 FBX re-export) you don't need the GUI open at all: Blender runs the same Python API from the
 command line with no window and exits when the script finishes.
@@ -196,6 +204,10 @@ The two combine: use the live MCP server to work out *what* a fix needs to do by
 file interactively, then land it as a headless script once it's proven, and run that script over
 the rest of the batch.
 
+The hard-won knowledge about *what those fixes usually are* — bind poses, the rig defects that
+are invisible at rest, FBX export settings that silently break skinning — is bundled at
+[`docs/engine-reference/blender-asset-pipeline.md`](docs/engine-reference/blender-asset-pipeline.md).
+
 ### Documentation already bundled in this repo
 
 Some of the groundwork for the companions above is already written and checked into this repo —
@@ -210,10 +222,12 @@ point an agent at it directly instead of re-deriving the same facts:
   data model, execution internals, hard limits, localization, networking/users, particles,
   persistence, ProtoFlux, rendering/assets, transforms/math. See
   ["Pair with a C# decompiler"](#pair-with-a-c-decompiler) above for how it was produced.
-
-There's no equivalent bundled reference yet for the Blender/asset side (rig, bind pose, and
-scale gotchas when preparing content for Resonite) — only the tool setup above. If that gets
-written up, it belongs here too.
+- **[`docs/engine-reference/decompiler-workflow.md`](docs/engine-reference/decompiler-workflow.md)**
+  — the method behind those notes: which assembly holds what, how to search source without
+  drowning in decompiled output, and the source-plus-live-session pattern.
+- **[`docs/engine-reference/blender-asset-pipeline.md`](docs/engine-reference/blender-asset-pipeline.md)**
+  — the Blender/asset side: bind poses, rig defects invisible at rest, FBX export gotchas, and
+  the supported route for getting skinned meshes back out of the game.
 
 ---
 
