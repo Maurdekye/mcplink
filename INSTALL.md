@@ -22,7 +22,8 @@ access to your live worlds — 97 tools.
 | **[ResoniteModLoader](https://github.com/resonite-modding-group/ResoniteModLoader)** | everything | the mod loader; McpLink does nothing without it |
 | **Python 3.8+** on PATH | the recommended proxy connection (§4) only | the proxy is a single dependency-free script; direct HTTP needs no Python |
 | An **MCP client** | talking to the server | examples use Claude Code; any streamable-HTTP or stdio MCP client works |
-| **[claude-orgtree](https://github.com/Maurdekye/claude-orgtree)** | *optional* — the in-world agent panels only | see [README §2](README.md#2-connecting-mcplink-to-orgtree); everything else works without it |
+| **[claude-orgtree](https://github.com/Maurdekye/claude-orgtree)** | *optional* — the in-world agent panels only | see [README §2, "Connect to orgtree"](README.md#connect-to-orgtree); everything else works without it |
+| A **decompiler MCP server** (e.g. [ILSpy-Mcp](https://github.com/gentledepp/ILSpy-Mcp)) | *optional* — grounding engine questions in decompiled source | see [README §2, "Pair with a C# decompiler"](README.md#pair-with-a-c-decompiler); McpLink itself needs neither |
 | .NET 10 SDK + [ResoniteHotReloadLib](https://github.com/Nytra/ResoniteHotReloadLib) | *building from source only* | release-zip users need neither; see [README "Building from source"](README.md#building-from-source) |
 
 **Install ResoniteModLoader first** if you haven't — follow
@@ -138,6 +139,10 @@ which engine footguns silently no-op, when to checkpoint before mutating — is 
 
 For other agents, provide the file as standing context by whatever mechanism your client uses.
 
+Want the agent to ground engine-behavior questions in decompiled source too? See
+[README §2, "Pair with a C# decompiler"](README.md#pair-with-a-c-decompiler) — an optional
+second MCP server, not a McpLink feature.
+
 ## 6. Configuration
 
 The comfortable route is the in-game
@@ -194,7 +199,7 @@ running build's MVID, and whether the on-disk copies match it (`deployConsistent
   "the no-registration fallback").
 - **The Prompt Agent menu entry is missing / `open_prompt_wizard` says "not set up"** — those
   surfaces need the optional orgtree companion:
-  [README §2](README.md#2-connecting-mcplink-to-orgtree).
+  [README §2, "Connect to orgtree"](README.md#connect-to-orgtree).
 
 ## 9. Uninstall
 

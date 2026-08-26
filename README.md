@@ -79,7 +79,14 @@ After **updating** the mod, restart your MCP client / session so cached tool sch
 That's the whole setup. For the slower path with every step spelled out — plus configuration,
 troubleshooting, updating, and uninstalling — see **[INSTALL.md](INSTALL.md)**.
 
-## 2. Connecting McpLink to orgtree
+## 2. Recommended ways to enhance your McpLink installation
+
+McpLink works standalone, but two optional companions round it out: **claude-orgtree** for
+in-world agent panels, and a **C# decompiler MCP server** for grounding engine-behavior questions
+in source. Neither is required — set up whichever is useful to you; the rest of McpLink works
+without either.
+
+### Connect to orgtree
 
 McpLink pairs with **[claude-orgtree](https://github.com/Maurdekye/claude-orgtree)** — a custom
 orchestrator that organizes Claude Code agents into an authority hierarchy — and the integration
@@ -111,6 +118,39 @@ panel still works in a degraded mode — each submission appends one JSON line
 for an external orchestrator to consume. The default `placement` value is the authors'
 orchestrator convention; your consumer is free to ignore it.
 
+### Pair with a C# decompiler
+
+McpLink shows an agent the *running* engine — live slots, components, values — but not source
+code. For "why does this component behave that way" or "what does this method actually do"
+questions, pair it with a decompiler MCP server pointed at your Resonite install's assemblies.
+Live introspection (McpLink) plus decompiled source (the decompiler) answers engine-behavior
+questions that neither tool answers alone — it's exactly the combination used to write McpLink's
+own engine-behavior reference notes.
+
+**This isn't a McpLink feature or config setting** — it's a second, independent MCP server your
+client connects to alongside McpLink.
+
+1. Install a decompiler MCP server. One working option is
+   **[ILSpy-Mcp](https://github.com/gentledepp/ILSpy-Mcp)** (NuGet package `ILSpyMcp.Server`), a
+   .NET global tool:
+
+   ```
+   dotnet tool install -g ilspymcp.server
+   ```
+
+   Any other ILSpy-based decompiler MCP server works the same way; this is just the one already
+   in use in the authors' own environment.
+2. Register it with your MCP client (e.g. Claude Code) as a stdio server, command `ilspy-mcp`,
+   no arguments.
+3. Point individual tool calls at the assemblies under
+   `<Resonite install>\Resonite_Data\Managed\*.dll` — `FrooxEngine.dll` (the engine proper),
+   `Elements.Core.dll` (math/data types), `ProtoFlux.Core.dll` (the visual-scripting runtime),
+   and so on. The server takes an assembly path as a parameter on each call rather than a fixed
+   target, so there's nothing to preconfigure beyond knowing where your Resonite install lives.
+
+Once both are registered, an agent can cross-reference: ask McpLink what a live component's
+field actually contains, then ask the decompiler what the component's code does with it.
+
 ---
 
 ## What's in the toolbox
@@ -133,7 +173,7 @@ its real RefID, and `@name` bookmarks work anywhere an id does.
 | In-world interaction | `marker`, `notify`, `jump_user`, `user_pointer`, `user_avatar`, `dynamic_impulse`, `spawn_markdown` (markdown → scrollable in-world panel) |
 | Assets & import/export | `import_file`, `spawn_import` (full import pipeline, reports the transform it applied), `spawn_object` (incl. `resrec://` cloud records), `inventory`, `export_asset`, `export_package`/`import_package` (portable `.resonitepackage` round-trip), `export_skinned_gltf`, `tar` (subtree → JSON snapshot) |
 | Escape hatches | `eval` (C# against the live engine; needs the optional `McpLink_libs` companion), `call_method` (any method, full argument construction), `hot_reload` (developer feature) |
-| orgtree companion | `open_prompt_wizard`, `wizard_drive` (see [section 2](#2-connecting-mcplink-to-orgtree)) |
+| orgtree companion | `open_prompt_wizard`, `wizard_drive` (see [Connect to orgtree](#connect-to-orgtree)) |
 | Session sugar | `bookmark`/`bookmarks`, aliases `rm`/`cat`/`ps`/`schedule` + the resomcp-compatible names |
 
 Values encode the way in-game data reads: typed literals
