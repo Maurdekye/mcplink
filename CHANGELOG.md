@@ -1,5 +1,60 @@
 # McpLink changelog
 
+## 2.9.2 (2026-08-27)
+
+**Compatibility with Resonite `2026.8.27.1094`.** That build changed the return type of
+`FrooxEngine.Slot.Children`'s getter from `Elements.Core.SlimListEnumerableWrapper<Slot>` to
+`IReadOnlyList<Slot>`. A return type is part of the IL signature, so **any McpLink build compiled
+against an earlier engine throws**:
+
+```
+System.MissingMethodException: Method not found:
+  'Elements.Core.SlimListEnumerableWrapper`1<FrooxEngine.Slot> FrooxEngine.Slot.get_Children()'
+```
+
+thrown at the first JIT of *each* method body that reads `.Children`, which is 20 call sites
+across 13 files.
+
+**Symptoms, in the terms you would actually search for:**
+
+- The **Prompt Agent panel spawns with its title bar, pin and close buttons but a completely empty
+  body**, and the **Dev Tool → Create New dialogue does not disappear** after you click the entry.
+  Both come from a *single* exception. `DevCreateNewForm.RunAction` calls our panel builder with no
+  `try`/`catch` around it, so the throw also skips the `Slot.Destroy()` at the end of that method —
+  and that call is the Create New menu dismissing itself.
+- **`ls`, `tree`, `du`, `grep`, `find_slots`, path resolution and most traversal tools return
+  `MissingMethodException`** while `session_info` and `eval` keep working. That split is diagnostic,
+  not random: only the code paths that touch `Slot.Children` are affected.
+
+**The fix is a rebuild — there is no source change**, because every call site is already
+`foreach (var child in slot.Children)`, which `IReadOnlyList<Slot>` satisfies unchanged. The
+project resolves its engine references straight from the Resonite install, so building against
+the updated game emits the correct call.
+
+> ⚠ **If you are already on 2.9.1, you do not need this release for the compatibility fix.**
+> The published 2.9.1 binary was compiled at 21:52 local on 2026-08-27, five minutes after the
+> engine update landed at 21:47, and therefore already carries the corrected call — by accident of
+> build timing rather than by design. We verified this at the byte level rather than inferring it
+> from timestamps: the `SlimListEnumerableWrapper` reference is present in every pre-update build
+> and absent from the published 2.9.1 asset. **2.9.0 and earlier are affected and do need updating.**
+
+**Also in this release — the build's deploy warning now tells you how to finish the deploy.**
+When a build cannot replace `rml_mods\McpLink.dll` because Resonite holds it open, it stages to
+`rml_mods\HotReloadMods`, writes a `.PENDING` note and raises warning `MCPLINK001`. All of that
+worked. What neither the warning nor the note said was **how to actually complete the deploy**: the
+game-close copier is a one-shot scheduled task that must be armed by hand
+(`schtasks /run /tn McpLinkCopyOnGameClose`), and nothing in the build does it for you.
+
+On 2026-08-27 that cost a real deploy. The build staged and warned exactly as designed, nobody
+armed the copier, and a genuine game close — the Steam engine update itself — came and went with
+the old DLL still in place. Both messages now name the command, say that it copies `bin\Release`
+specifically, and state plainly that **an unarmed note means the next close deploys nothing.**
+
+**The arming step remains manual on purpose and is not being automated.** A build that armed its
+own deploy would cold-deploy any blocked experimental build into a running game without consent —
+including every worktree and branch build. The warning was the half that was missing, not the
+consent gate.
+
 ## 2.9.1 (2026-08-27)
 
 **Panel open and close events are now passive notices — they no longer start a turn.** 2.9.0
