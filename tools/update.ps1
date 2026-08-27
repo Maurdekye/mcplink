@@ -15,9 +15,34 @@ param(
     [int]$Port = 7357
 )
 
-$ErrorActionPreference = "Stop"
+$ErrorActionPreference = "Stop"   # NOTE: Assert-SameFile below no longer DEPENDS on this, but
+                                  # relaxing it still weakens every other Test-Path/throw here.
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $apiLatest = "https://api.github.com/repos/Maurdekye/mcplink/releases/latest"
+
+# Copy verification, self-contained ON PURPOSE (2026-08-27 guard sweep).
+#
+# This used to be `if ((Get-FileHash $a).Hash -ne (Get-FileHash $b).Hash) { throw }`, which was
+# correct only by accident of the line above: with $ErrorActionPreference = "Stop", Get-FileHash
+# THROWS on a missing file (measured: ItemNotFoundException), so the comparison is never reached.
+# Relax that preference -- one word, at the top of the file, for some unrelated reason -- and both
+# sides become $null, `$null -ne $null` is FALSE, and this guard silently stops verifying while
+# still printing its success message. That is the exact shape of the release.ps1 asset gate that
+# had been vacuous for months.
+#
+# So the check no longer depends on a global: it asserts BOTH files exist and BOTH hashes are
+# non-empty before comparing them, and says which precondition failed.
+function Assert-SameFile([string]$expected, [string]$actual, [string]$what) {
+    foreach ($p in @($expected, $actual)) {
+        if (-not (Test-Path $p)) { throw "VERIFY FAILED: $what (missing file: $p -- the copy did not happen)" }
+    }
+    $a = (Get-FileHash $expected).Hash
+    $b = (Get-FileHash $actual).Hash
+    if ([string]::IsNullOrWhiteSpace($a) -or [string]::IsNullOrWhiteSpace($b)) {
+        throw "VERIFY FAILED: $what (could not hash both files -- the check could not run, so nothing is verified)"
+    }
+    if ($a -ne $b) { throw "VERIFY FAILED: $what" }
+}
 
 function Test-FileLocked([string]$path) {
     if (-not (Test-Path $path)) { return $false }
@@ -75,9 +100,7 @@ try {
     if (-not (Test-Path $srcDll)) { throw "Downloaded zip is missing rml_mods\McpLink.dll -- report this as a bug." }
 
     Copy-Item $srcDll $targetDll -Force
-    if ((Get-FileHash $srcDll).Hash -ne (Get-FileHash $targetDll).Hash) {
-        throw "VERIFY FAILED: installed DLL does not match the downloaded one. Re-run the update."
-    }
+    Assert-SameFile $srcDll $targetDll "installed DLL does not match the downloaded one. Re-run the update."
 
     # update the eval companion only if it was installed before (respect the user's choice)
     $libsDir = Join-Path $modsDir "McpLink_libs"

@@ -759,6 +759,37 @@ build actually ran first.
 - `release.ps1`'s other guards check `$LASTEXITCODE` explicitly and `Test-Path` the artifacts; its
   remaining `--jq .tagName` has no spaces or quotes, so it does not hit fault 1.
 
+### The failure mode we did not have a name for
+
+We had a name for a check that passes when it shouldn't. We did not have one for **a check that
+cannot run and confidently blames something else.** `mutate-panel-chat.sh` could not find the repo,
+so the suite never ran, and it reported:
+
+```
+baseline looks wrong (0 checks) -- is the suite green?
+```
+
+A green suite, a broken harness, and a diagnostic aimed at the healthy component. **The
+misdirection is what let it survive, more than the breakage** — anyone who hit it would have gone
+to look at the suite, found it fine, and moved on. A probe that cannot run must say *"I could not
+run, and here is where I looked"*, never *"the thing I was checking looks wrong"*. Both dev probes
+now refuse to start unless `McpLink.csproj` is where they expect it, and print the cwd they
+actually landed in.
+
+### Follow-up, same day: the install/update hash guard no longer leans on a global
+
+The sweep found this one SOUND but fragile, and the fix is worth recording as the pattern. It was
+`if ((Get-FileHash $a).Hash -ne (Get-FileHash $b).Hash) { throw }`, correct only because
+`$ErrorActionPreference = "Stop"` at the top of the file makes `Get-FileHash` throw on a missing
+file. Measured under the relaxed setting, the old form **passes silently with both hashes `$null`**
+— printing "hash-verified" while verifying nothing. One word, in an unrelated line, disarms it.
+
+Now `Assert-SameFile` asserts both files exist and both hashes are non-empty before comparing, and
+names which precondition failed. Control-tested with `$ErrorActionPreference = "Continue"`: missing
+destination throws, differing contents throws, identical files pass, and the old form passes
+silently on the same input. **The protection belongs at the point of temptation** — there is also a
+note on the `$ErrorActionPreference` line itself, because that is the line someone would edit.
+
 **The standing rule this leaves behind:** for every guard, make it fail once and watch it go red.
 Reading it is not enough — `release.ps1` was read many times. And a run of good luck reads exactly
 like a working check: every release cut with the fake gate happened to be fine, which is precisely
