@@ -881,3 +881,102 @@ what kept it alive.
   seeded config keys is not evidence that both were absent beforehand. Found by running the copier
   in a sandbox rather than reading it. **A log line is a claim by the program about itself**; it
   earns trust the same way any other check does, by being made to fail once.
+
+## 2026-08-27 — a false success wearing a reassuring label, and a claim that was unobservable in principle
+
+`notify` returned `{"shown": true}` unconditionally, and had since it was written. The tool exists
+to reach a user who may not be looking at the game window — so it is the single worst place in the
+mod for a false success: **an agent told `shown: true` has no reason to follow up.**
+
+### The name is why it survived
+
+The offline suite did not miss this. It **asserted** it, at `test/Program.cs`:
+
+```
+Check("notify tool no-ops safely without a dash (engine-free)", () => {
+    string json = ToolRegistry.Call("notify", …);
+    return JsonNode.Parse(json)!["shown"]!.GetValue<bool>();   // asserts TRUE
+});
+```
+
+That check runs with **no engine, no dash and no notification panel** — the one environment where
+nothing could possibly have been shown — and asserted the tool claimed success. It passed for
+months, through several audits, including a deliberate guard sweep of this very repo.
+
+**"no-ops safely without a dash" reads as a safety property.** Nobody stops on it. That is the
+whole lesson and it generalises past this bug:
+
+> **A false success wearing a reassuring label is worse than an unlabelled one — the label recruits
+> the reader into skipping it. We have been auditing whether checks are SOUND, not whether their
+> NAMES INVITE SCRUTINY.**
+
+When you write a check, read its name back and ask what a hurried auditor would assume it covers.
+If the name would let them skip it, the name is part of the defect.
+
+### The deeper finding: it was not a missing check
+
+The obvious diagnosis was "it never checked a precondition". Decompiling the engine
+(2026.8.27.1094) showed that was only half of it:
+
+```csharp
+public static void ShowNotification(string userId, string message, Uri thumbnail,
+                                    colorX color, NotificationType type)
+{
+    Current?.RunSynchronously(delegate {
+        Current.AddNotification(userId, message, thumbnail, color, type);
+    });
+}
+```
+
+1. `Current` null ⇒ the `?.` short-circuits. Silent no-op, no throw. **Observable by us.**
+2. Even WITH a panel, the add is **deferred** — `RunSynchronously` queues it onto that panel's
+   world and the method returns before `AddNotification` runs.
+
+(2) is the one that mattered: **no amount of precondition checking could have rescued the word.**
+Display is not merely unchecked here, it is UNOBSERVABLE IN PRINCIPLE from this call. That changed
+the fix from "check harder" to "stop asserting a thing you cannot see", and the honest ceiling
+became `dispatched` — we handed it to a panel that existed.
+
+⚠ **We did not test this in-world, and not for the usual reason: in-world testing cannot answer
+it.** With a dash open and a toast visible, the call still returns before the add runs. There is no
+session in which `shown` becomes observable from here.
+
+### Migration, and why the deprecated alias is kept
+
+`dispatched` (+ a `reason` when false) is the new truth; `shown` stays through 2.x as a deprecated
+alias equal to `dispatched`, removed in 3.0. Deleting it in the same release that corrected it
+would have turned a wrong answer into **no** answer — `result["shown"]` becomes an absent key, a
+consumer branching on it takes neither branch, and **no answer reads as nothing-happened.** That is
+the abstention shape, created by us, in the act of removing one. The residual overclaim
+(`dispatched ≠ displayed`) is accepted deliberately because it is bounded, documented and dated —
+which is what separates a known imperfection from a lie. The deprecation is stated in the tool
+DESCRIPTION, not only here, so a caller reading the tool list learns it without finding the notes.
+
+### The suite split, and the limit stated rather than papered over
+
+`dispatched:true` needs `NotificationPanel.Current`, which needs a running engine — **unreachable
+offline**. So the checks are split: a pure `NotifyResult(bool)` composer covers both branches and
+the alias equality, while the engine-free end-to-end asserts **only** `dispatched:false` with the
+reason naming the cause. A single check claiming both would have been this same defect in a new
+costume. Both halves were mutation-tested: restoring `dispatched = true` fails the end-to-end and
+the discriminator; restoring the literal historical `shown = true` fails the alias and regression
+checks (291 → 289 each time, reverted clean).
+
+## 2026-08-27 — the handle TTL we deliberately did NOT add
+
+Recorded because **the reasoning for an absent constant is exactly what a future reader re-derives
+badly**, and "we considered it and chose not to" is worth more than most constants. The full
+argument lives at `PromptWizard.ReconcileOrphanedBindingsAsync` — at the mechanism that stands in
+for it, where someone would go looking to add one.
+
+Short version. Orgtree shipped `EXTERN_HANDLE_TTL_S = 24h`, anchored on **human absence** because
+their peer may legitimately never poll. **Take their derivation, not their number**: our panel
+long-polls continuously and machine-driven (`?timeout=25`, 40 s client ceiling, error backoff
+min(prev+5, 30) s that keeps trying), so a live panel touches the backend every ~40 s regardless of
+whether a human is there. Same method, answer two orders of magnitude apart.
+
+And then the derivation argues against having the constant at all: our reconciler is **precise**
+(it keys on a durable ledger entry — a fact), while a TTL is **inference from silence**; the only
+window a TTL adds is crash → next launch, which orgtree's 24 h already backstops from the far side;
+and a short threshold would read a paused game or a suspended laptop as death. **Fast path = our
+reconciler, backstop = their 24 h, nothing in between.**
