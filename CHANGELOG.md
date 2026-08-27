@@ -33,6 +33,16 @@ claim McpLink was in no position to make.
 and a toast visible, the call still returns before the engine adds the notification. There is no
 session in which the old claim becomes observable from where we stand.
 
+**Narrowing an earlier caveat.** 2.9.0 and 2.9.1 both shipped saying none of the panel work had run
+against a live session. That is no longer true, and the honest correction is a narrowing rather
+than a deletion. Now observed live: the `[PANEL OPENED]` notice arriving **passively** (no turn
+spent) carrying the reply handle, the panel slot, the world and session, the world-readable
+warning, and the provenance line that corrects its own envelope; and `[PANEL MESSAGE]` tagging on
+messages **with no object reference attached** — the exact bare case the original report was about.
+Still unobserved: the panel's body rendering, and the `[PANEL CLOSED]` path. The close path has not
+had a fair trial for a pointed reason — the only panel closure so far was a game crash, which is
+precisely the documented case where nothing is sent.
+
 **Also: a deliberate non-change.** Following orgtree's handle-expiry work, we considered and
 **rejected** a McpLink-side TTL for panel response handles. Their threshold is anchored on human
 absence; our panel long-polls continuously and machine-driven, so the same derivation gives an
