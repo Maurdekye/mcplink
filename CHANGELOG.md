@@ -1,5 +1,67 @@
 # McpLink changelog
 
+## 2.9.0 (2026-08-27)
+
+**Panel conversations now carry their own identity.** Two defects reported from inside Resonite,
+plus a third — worse than either report — found while investigating them.
+
+- **FIX — a closed panel left its response handle attached to the agent forever.** When a *window*
+  panel (a chat opened onto an agent that already existed) was closed, McpLink cancelled its polls
+  and stopped. The `@mcp:` handle it had attached to that agent stayed attached, so the orgtree
+  supervisor kept injecting "You hold EXTERNAL RESPONSE HANDLE(s): … send your answers and progress
+  updates there" into the agent's system prompt — naming an address whose panel had not existed for
+  hours, in a world the agent may no longer have been in. Window panels were not recorded in the
+  bindings ledger either, so no reconciler could ever clean it up: the leak was permanent and had no
+  expiry. Closing a panel now **detaches the handle** (preserving every other client's handle on
+  that node — the backend's scope write replaces the whole set), on every path that can run: window
+  close, world close, the ⏏ detach button on a hired panel, and game shutdown. Orphans left by a
+  crash are detached by the next launch's reconciler, which now distinguishes the two kinds of
+  binding — a body orphan is retired as before, a window orphan has its handle cut and its agent is
+  never retired. Removal is deliberately the primary mechanism rather than the notification below:
+  a mail can be missed or compacted away, but a line that is no longer in the system prompt cannot
+  be acted on by anyone.
+- **Panel messages are marked, and carry the panel with them.** Only the *first* message from a
+  panel ever explained itself; every message after it went out as the user's bare text, so an agent
+  could not tell panel mail from ordinary org mail and answered through the wrong channel while the
+  user watched a status ticker and waited. (A message with an object reference attached happened to
+  be recognisable, because that added a block — by accident, not design.) Every panel-originated
+  mail now opens with a marker — `[PANEL OPENED]`, `[PANEL MESSAGE]`, `[PANEL CLOSED]` — and carries
+  a compact channel footer naming the reply handle, the panel's in-world RefID, and the two things
+  agents get wrong without them: ending a turn is not a reply, and the panel is world-readable. The
+  fifth message from a panel is now answerable by an agent that never saw the first — including one
+  that has been compacted since.
+- **An agent is told when a panel opens on it, and when it closes.** Opening a window panel
+  attaches a handle *before* the user types anything, so an agent could be watched in-world — by a
+  panel every user in the session can read — and never be told; if the user never typed, it was
+  never told at all. It now receives a `[PANEL OPENED]` briefing at bind time with the handle, the
+  panel slot, the world and session, and the world-readability warning. Closing sends
+  `[PANEL CLOSED]`, which names the handle **as dead** rather than only reporting that the panel
+  went away — an agent told just "your panel closed" still has a live-looking address in front of
+  it.
+- **The `[PANEL DETACHED]` marker is now `[PANEL CLOSED]`**, so one marker covers every way a panel
+  can go away. An agent briefed by a 2.8.x panel and closed by a 2.9.0 one will see the new marker.
+
+⚠ **Not verified against a live panel.** This release changes panel behaviour and none of it has
+been exercised against a running Resonite session — the user declined an in-world test and we do
+not ask for a game close. The composition and handle-lifecycle logic is pinned by the offline suite
+instead (`test/PanelChecks.cs`), each check with a known-positive control, but a suite is not a
+session.
+
+⚠ **A crash or hard exit sends nothing.** A process that died cannot announce anything, so an agent
+whose panel died that way keeps a live-looking handle until the *next launch* of the game
+reconciles it away. That window is real and is not covered by the close notices above.
+
+**Notices, and why these still wake the agent.** The user asked for the open and close events to be
+*notices* — passive mail that waits in the agent's box and is read on whatever turn comes next.
+That is the right shape, and the orgtree backend can mint exactly it. McpLink cannot ask for it:
+`POST /api/agent` requires the caller to name a real node, and the mod is not a node in anyone's
+org — the user sentinel `@user` is refused. The actors that *are* available all misattribute the
+mail (an agent noticing itself, or a superior appearing to say something it did not), which is a
+poor trade in a change about honest provenance. So these are ordinary user mail, which is at least
+attributed to the person who really did open the panel, and each says plainly that no reply is
+being asked for. Delivery is behind a single call site (`DeliverPanelEvent`), so a user-authored
+notice becomes a one-line change if the backend grows one.
+
 ## 2.8.1 (2026-08-26)
 
 **Public-release preparation — the first version published to GitHub

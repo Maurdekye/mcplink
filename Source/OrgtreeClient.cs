@@ -394,6 +394,29 @@ internal static class OrgtreeClient
             .ConfigureAwait(false);
     }
 
+    /// <summary>Take ONE @mcp: handle away from a node — the mirror of AttachHandlesAsync, and
+    /// the thing that actually closes a panel channel (2.9.0).
+    ///
+    /// A closed panel used to leave its handle attached forever, so the supervisor kept injecting
+    /// "You hold EXTERNAL RESPONSE HANDLE(s): @mcp:… — send your answers and progress updates
+    /// there" into the agent's system prompt for an address nothing reads. Removal beats
+    /// notification here: a [PANEL CLOSED] mail can be missed, compacted away, or simply not
+    /// re-read, but a line that is no longer in the system prompt cannot be acted on by anyone.
+    ///
+    /// Read-modify-write, because the backend's scope write REPLACES the whole set: the node's
+    /// OTHER handles (another panel, an external chat) must survive this. A handle that isn't
+    /// there is success, not an error — every close path is allowed to run twice.</summary>
+    internal static async Task<Result<JsonNode>> DetachHandleAsync(string slug, string nodeId, string peer)
+    {
+        var status = await NodeStatusAsync(slug, nodeId).ConfigureAwait(false);
+        if (status.Error != null)
+            return Result<JsonNode>.Fail(status.Error);
+        var remaining = PromptWizard.HandleMinus(status.Value!.ExternalHandles, peer);
+        if (remaining == null)
+            return Result<JsonNode>.Ok(new JsonObject()); // not attached — nothing to write
+        return await AttachHandlesAsync(slug, nodeId, remaining).ConfigureAwait(false);
+    }
+
     /// <summary>Answer (or dismiss) the node's open question card. The body is the caller's —
     /// PromptWizard.ComposeAskAnswer builds the positional `selected` array + the rev CAS stamp,
     /// or {dismiss:true} for the card's ✕. The backend marks the ask resolved and delivers the

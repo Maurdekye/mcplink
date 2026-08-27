@@ -1668,9 +1668,13 @@ Console.WriteLine();
 Console.WriteLine("== prompt wizard detach + quit accounting (2.5.0) ==");
 Check("bindings: serialize → parse round-trip preserves entries and order", () =>
 {
-    var entries = new List<(string, string)> { ("resonite", "helper"), ("other-org", "scout") };
+    var entries = new List<PanelBindings.Binding>
+    {
+        new("resonite", "helper", "resonite.aa", false),
+        new("other-org", "scout", null, false),
+    };
     var back = PanelBindings.Parse(PanelBindings.Serialize(entries));
-    return back.Count == 2 && back[0] == ("resonite", "helper") && back[1] == ("other-org", "scout");
+    return back.Count == 2 && back[0] == entries[0] && back[1] == entries[1];
 });
 Check("bindings: corrupt, empty and wrong-shape input all degrade to an empty ledger", () =>
     PanelBindings.Parse("{not json").Count == 0
@@ -1685,38 +1689,66 @@ Check("bindings: add + snapshot on the store file; duplicate add is idempotent",
     PanelBindings.Add("resonite", "scout");
     PanelBindings.Add("resonite", "helper"); // again
     var snap = PanelBindings.Snapshot();
-    return snap.Count == 2 && snap.Contains(("resonite", "helper")) && snap.Contains(("resonite", "scout"));
+    return snap.Count == 2
+        && snap.Contains(new PanelBindings.Binding("resonite", "helper", null, false))
+        && snap.Contains(new PanelBindings.Binding("resonite", "scout", null, false));
 });
 Check("bindings: remove drops exactly its entry; removing a missing one is a no-op", () =>
 {
     PanelBindings.Remove("resonite", "helper");
     PanelBindings.Remove("resonite", "never-there");
     var snap = PanelBindings.Snapshot();
-    return snap.Count == 1 && snap[0] == ("resonite", "scout");
+    return snap.Count == 1 && snap[0] == new PanelBindings.Binding("resonite", "scout", null, false);
 });
 Check("bindings: the ledger is really on disk (fresh parse of the file agrees)", () =>
 {
     var onDisk = PanelBindings.Parse(File.ReadAllText(bindingsTmp));
-    return onDisk.Count == 1 && onDisk[0] == ("resonite", "scout");
+    return onDisk.Count == 1 && onDisk[0] == new PanelBindings.Binding("resonite", "scout", null, false);
+});
+// 2.9.0 — a WINDOW binding is a different thing on the same (org, node) and must not collide
+// with the body one, because closing a window retires nobody while closing a body retires.
+Check("bindings: window and body on the SAME agent are two independent entries", () =>
+{
+    PanelBindings.Add("resonite", "scout", "resonite.win1", window: true);
+    var snap = PanelBindings.Snapshot();
+    return snap.Count == 2
+        && snap.Contains(new PanelBindings.Binding("resonite", "scout", null, false))
+        && snap.Contains(new PanelBindings.Binding("resonite", "scout", "resonite.win1", true));
+});
+Check("DISCRIMINATOR: removing the window leaves the body binding (and vice versa)", () =>
+{
+    PanelBindings.Remove("resonite", "scout", window: true);
+    var afterWindow = PanelBindings.Snapshot();
+    PanelBindings.Add("resonite", "scout", "resonite.win1", window: true);
+    PanelBindings.Remove("resonite", "scout");                 // body only
+    var afterBody = PanelBindings.Snapshot();
+    return afterWindow.Count == 1 && !afterWindow[0].Window
+        && afterBody.Count == 1 && afterBody[0].Window
+        && afterBody[0].Peer == "resonite.win1";
+});
+Check("bindings: a window entry's peer survives the disk round-trip (the reconciler needs it)", () =>
+{
+    var onDisk = PanelBindings.Parse(File.ReadAllText(bindingsTmp));
+    return onDisk.Count == 1 && onDisk[0].Window && onDisk[0].Peer == "resonite.win1";
+});
+Check("bindings: a PRE-2.9.0 ledger reads back as body bindings, not windows", () =>
+{
+    // upgrade path: old entries have neither `peer` nor `window`. Reading them as windows would
+    // make the reconciler DETACH where it used to RETIRE — silently keeping agents hired forever.
+    var old = PanelBindings.Parse("{\"bindings\":[{\"org\":\"resonite\",\"node\":\"helper\"}]}");
+    return old.Count == 1 && !old[0].Window && old[0].Peer == null;
 });
 try { File.Delete(bindingsTmp); } catch { }
-Check("detach notice: names the dead handle and forbids sending to it", () =>
-{
-    string notice = PromptWizard.ComposeDetachNotice("resonite.abc123");
-    return notice.Contains("@mcp:resonite.abc123") && notice.Contains("Do NOT")
-        && notice.Contains("[PANEL DETACHED]");
-});
-Check("detach notice: the agent stays hired and is pointed at org channels", () =>
-{
-    string notice = PromptWizard.ComposeDetachNotice("p");
-    return notice.Contains("stay") && notice.Contains("hired") && notice.Contains("orgtree_status");
-});
+PanelBindings.StorePath = Path.Combine(Path.GetTempPath(), $"mcplink-test-bindings-{Guid.NewGuid():N}.json");
 Check("retires-on-close: bound body only — window/fallback/fired/nodeless never retire", () =>
     PromptWizard.RetiresOnClose(windowMode: false, fallbackMode: false, retireFired: false, hasNode: true)
     && !PromptWizard.RetiresOnClose(true, false, false, true)
     && !PromptWizard.RetiresOnClose(false, true, false, true)
     && !PromptWizard.RetiresOnClose(false, false, true, true)
     && !PromptWizard.RetiresOnClose(false, false, false, false));
+
+Console.WriteLine();
+PanelChecks.Run(Check);
 
 Console.WriteLine();
 Console.WriteLine("== list truncation is out-of-band (get_component) ==");
