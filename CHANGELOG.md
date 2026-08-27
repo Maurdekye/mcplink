@@ -60,7 +60,13 @@ consent gate.
 `Slot.Children` is **our** instance of a broader change. `2026.8.27.1094` carries an engine-wide
 migration of collection parameters and returns from `IList<T>` to `IReadOnlyList<T>`, **plus
 unrelated methods that simply gained a parameter.** We resolved every engine `MemberRef` in all
-**45** mod assemblies on this install against the current engine binaries. **Ten are affected.**
+**45** mod assemblies on this install against the current engine binaries. **Ten were affected at
+the versions surveyed.**
+
+**Survey taken 2026-08-27, against the versions listed.** This is a snapshot of one install on one
+day, not a claim about anyone's current setup — and it went stale within the hour: one of the ten
+below was updated to a fixed release while we were writing this up. Versions are given for every
+row so you can tell whether a finding applies to you.
 
 **Seven via `Slot.Children`** — `get_Children()` returned `SlimListEnumerableWrapper<Slot>`, now
 `IReadOnlyList<Slot>`:
@@ -79,9 +85,14 @@ unrelated methods that simply gained a parameter.** We resolved every engine `Me
 
 | mod | old reference | current engine |
 |---|---|---|
-| ProtoFluxContextualActions 0.14.1 | `CollectionsExtensions.FindIndex(IList<T>, Predicate<T>)` | `FindIndex(IReadOnlyList<T>, Predicate<T>)` |
+| ProtoFluxContextualActions **0.14.1** — ✅ **fixed in 2.2.0** | `CollectionsExtensions.FindIndex(IList<T>, Predicate<T>)` | `FindIndex(IReadOnlyList<T>, Predicate<T>)` |
 | JustBoundedUIX 2.0.1 | `DebugManager.Box(float3&, float3&, colorX&, floatQ&, Single)` | `Box(…, Single, Boolean local)` |
 | ImportFromUnityLib 1.0.0 | `MeshX.SetHasUV(Int32, Boolean)`, and likewise `SetHasUV_3D` and `SetHasUV_4D` | each gained a third parameter, `Boolean throwIfDimensionsMismatch` |
+
+**ProtoFluxContextualActions has a fix available and it is worth calling out**, because it is the
+most actionable row here: **0.14.1 is affected, 2.2.0 resolves clean.** We measured 0.14.1 on disk,
+the machine was updated to 2.2.0 shortly afterwards, and re-running against 2.2.0 reports no
+problems. Anyone still on 0.14.1 can simply update.
 
 `FindIndex` is the **same `IList` → `IReadOnlyList` migration** as `Children`, on a different
 member. **`Box` and `SetHasUV` are not that at all — they are added parameters, and no type
@@ -92,11 +103,24 @@ as "is broken".** These mods load fine. The exception is raised when the JIT fir
 method body containing the call, so a mod stays perfectly well-behaved until the specific feature
 is used. Several may never visibly misbehave for a given user.
 
-**35 of the 45 resolved clean**, including this build of McpLink. Two of those clean results —
-`ResoniteBridgeLib` and `ResoniteUnityExporterShared` — reported **0 engine member references
-checked**, which means the tool found nothing of the engine to check rather than checking it and
-finding it sound. That is not a clean bill of health, and we would rather say so than let a count
-of zero read as a pass.
+**The rest resolved clean, including this build of McpLink** (`CLEAN`, 506 engine references
+checked). After the ProtoFluxContextualActions update the same sweep reports 9 affected, 34 clean
+and 2 not checked.
+
+**Two assemblies are reported as neither** — `ResoniteBridgeLib` and `ResoniteUnityExporterShared`
+resolve **zero** engine references, so the tool found nothing of the engine to check rather than
+checking it and finding it sound. They are called out as `NOT CHECKED … this is an ABSTENTION, not
+a pass`, with the assemblies their references actually point at (`mscorlib`, `netstandard`) so you
+can tell an engine-free assembly from a mistyped path. **A count of zero is not a clean bill of
+health**, and a tool that renders it as one is lying quietly.
+
+**A sweep reporting no gaps only means something if it can report one.** The tool also flags
+*partial* checking — some references resolved, some silently skipped — which is far more dangerous
+than a zero because the count still looks healthy. Across all 45 mods with the correct engine
+paths, **nothing was flagged under-checked**, so no verdict above was reached on a partial view.
+We confirmed that result is real rather than vacuous by re-running with a deliberately incomplete
+engine path, which flagged **41** assemblies as under-checked, and with a nonexistent one, which
+produced 45 abstentions and no false clean.
 
 **Independent corroboration:** SimpleInventorySearch **1.0.3**'s release note reads simply
 *"recompiled for new reso version"* — another author hit and fixed exactly this, the same day,
@@ -140,7 +164,9 @@ dotnet run -- "<install>\rml_mods" --resolve "<install>;<install>\Libraries;<ins
 
 It was written by another agent on this project — credited in the source — who built it after
 correctly pointing out that the string-search approach was unsound. The three non-`Children`
-breaks above are entirely their find; our narrower screen would have missed all of them.
+breaks above are entirely their find; our narrower screen would have missed all of them. They also
+added both abstention verdicts described above after an earlier version was caught printing a bare
+`CLEAN (0 checked)` — the same defect this section warns about, in the instrument used to write it.
 
 ## 2.9.1 (2026-08-27)
 

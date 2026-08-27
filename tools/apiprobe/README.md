@@ -29,19 +29,43 @@ dotnet run -- <assembly> --def <Type> <Member>
 ## Reading the output
 
 ```
-McpLink.dll                        CLEAN  (506 engine memberrefs checked)
 ProtoFluxOverhaul.dll              1 PROBLEM(S)  (260 checked)
       SIG CHANGED FrooxEngine.Slot.get_Children()->SlimListEnumerableWrapper`1<Slot>
+McpLink.dll                        CLEAN  (506 engine memberrefs checked)
+ResoniteBridgeLib.dll              NOT CHECKED - 0 engine memberrefs resolved (this is an ABSTENTION, not a pass)
+      refs point at: mscorlib (187 refs), System.Core (9 refs), System (2 refs)
 ```
 
 The quoted signature is **what the mod expects**, not what the engine now provides — a mismatch
-against the current `MethodDef` is the finding. Three verdicts: `SIG CHANGED`, `MEMBER GONE`,
+against the current `MethodDef` is the finding. Problem kinds: `SIG CHANGED`, `MEMBER GONE`,
 `TYPE GONE`.
 
-⚠ **Read the `checked` count, not just the word `CLEAN`.** An assembly with no engine member
-references reports `CLEAN (0 engine memberrefs checked)` — that means there was nothing to check,
-not that it was checked and found sound. Two mods on this install do exactly that, and a count of
-zero should never be read as a pass.
+### The two verdicts that exist so an abstention can't look like a pass
+
+- **`NOT CHECKED`** — zero engine references resolved. It also prints *what the references pointed
+  at*, which is what makes it actionable: `mscorlib (187 refs)` means a genuinely engine-free
+  assembly, whereas seeing `FrooxEngine (200 refs)` there would mean your engine path is wrong.
+- **`!! ENGINE ASSEMBLY NOT LOADED - under-checked: FrooxEngine, Elements.Core`** — the dangerous
+  one. *Some* references resolved and some didn't. Without this line you'd get a confident
+  `CLEAN (n checked)` that had silently skipped every `FrooxEngine` reference in the file. **Much
+  harder to catch than a zero, because the count looks healthy.**
+
+An earlier version of this tool had exactly that defect and printed a bare `CLEAN (0 checked)`.
+Both verdicts were added by the original author after it was pointed out.
+
+### ⚠ Control-test both before you trust a clean sweep
+
+`0 under-checked` is only meaningful if the warning is capable of firing. Measured 2026-08-27
+across 45 mods:
+
+| engine paths given | result |
+|---|---|
+| correct (`install;install\Libraries;install\rml_libs`) | **0 under-checked** — the real result |
+| `Libraries;rml_libs` only, no game root (**partial map**) | **41 under-checked** — proves it fires |
+| a nonexistent directory | **45 `NOT CHECKED`**, 0 under-checked |
+
+The middle row is the one that matters. Without it, "0 under-checked" is itself an abstention —
+indistinguishable from a check that never runs.
 
 ## Why not just grep for the changed type name
 

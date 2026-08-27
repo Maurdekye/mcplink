@@ -97,12 +97,14 @@ class Resolver {
         if (!pe.HasMetadata) return;
         var r = pe.GetMetadataReader();
         var problems = new List<string>();
+        var skipped = new Dictionary<string,int>();
         int checkedCount = 0;
         foreach (var h in r.MemberReferences) {
             var mr = r.GetMemberReference(h);
             if (mr.Parent.Kind != HandleKind.TypeReference) continue;
             var (asmName, full) = ResolveTypeRef(r, (TypeReferenceHandle)mr.Parent);
-            if (asmName == null || !engine.TryGetValue(asmName, out var a)) continue;   // not an engine type
+            if (asmName == null) { skipped["<unresolved-scope>"] = skipped.GetValueOrDefault("<unresolved-scope>") + 1; continue; }
+            if (!engine.TryGetValue(asmName, out var a)) { skipped[asmName] = skipped.GetValueOrDefault(asmName) + 1; continue; }
             if (!a.Types.TryGetValue(full, out var th)) {
                 problems.Add($"TYPE GONE   {full} (in {asmName})");
                 continue;
@@ -122,6 +124,19 @@ class Resolver {
         }
         string label = System.IO.Path.GetFileName(modPath);
         var uniq = problems.Distinct().ToList();
+        // A screen that checked nothing has ABSTAINED. It must never render as a pass.
+        if (checkedCount == 0) {
+            Console.WriteLine($"{label,-34} NOT CHECKED - 0 engine memberrefs resolved (this is an ABSTENTION, not a pass)");
+            var why = skipped.OrderByDescending(k => k.Value).Take(6)
+                             .Select(k => $"{k.Key} ({k.Value} refs)");
+            Console.WriteLine($"      refs point at: {(skipped.Count == 0 ? "nothing at all - no external member refs" : string.Join(", ", why))}");
+            return;
+        }
+        // Loud if a GAME assembly was referenced but missing from the engine map: that is under-checking.
+        var gameish = skipped.Keys.Where(k => System.Text.RegularExpressions.Regex.IsMatch(
+            k, "FrooxEngine|Elements|Renderite|ProtoFlux|Awwdio|SkyFrost|CloudX", System.Text.RegularExpressions.RegexOptions.IgnoreCase)).ToList();
+        if (gameish.Count > 0)
+            Console.WriteLine($"{label,-34} !! ENGINE ASSEMBLY NOT LOADED - under-checked: {string.Join(", ", gameish)}");
         if (uniq.Count == 0) Console.WriteLine($"{label,-34} CLEAN  ({checkedCount} engine memberrefs checked)");
         else {
             Console.WriteLine($"{label,-34} {uniq.Count} PROBLEM(S)  ({checkedCount} checked)");
