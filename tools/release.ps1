@@ -109,9 +109,35 @@ if ($LASTEXITCODE -ne 0) { throw "Tag push failed -- main is pushed but v$versio
     $zip "$dll#McpLink.dll (bare mod DLL)" "$root\tools\mcp.py#mcp.py (agents' no-registration helper)"
 if ($LASTEXITCODE -ne 0) { throw "gh release create failed -- tag v$version is pushed; create the release manually or re-run." }
 
-$assets = & $gh release view ("v" + $version) --repo $repoSlug --json assets --jq '[.assets[].name] | join(", ")'
-if ($assets -notmatch "McpLink-$version.zip" -or $assets -notmatch "McpLink.dll" -or $assets -notmatch "mcp.py") {
-    throw "VERIFY FAILED: release exists but assets are [$assets] -- expected the zip, the bare DLL, and mcp.py. Fix on the Releases page."
+# The final gate: the release must actually CARRY its assets. Publishing and being populated
+# are two different claims, and only the second one is what a user downloads.
+#
+# ⚠ This check used to abstain instead of failing, and an abstention read exactly like a pass
+# (found while releasing 2.9.0; every release cut on Windows PowerShell 5.1 had a vacuous asset
+# check). Two faults compounded:
+#   1. `--jq '[.assets[].name] | join(", ")'` -- 5.1 does not escape the embedded double quotes
+#      when handing an argument to a native exe, so gh received `join(,` and `)` as extra
+#      positional args and refused with "accepts at most 1 arg(s), received 2". $assets was $null.
+#   2. the guard was a regex `-notmatch` against that absent value, and it did not fire. Observed
+#      directly: the 2.9.0 run printed "Assets verified: " with an EMPTY list and reported success.
+#      `-notmatch` is not a reliable absence test -- with an ARRAY on the left it FILTERS and
+#      returns the non-matching elements (an empty array, i.e. falsy) rather than a boolean, so
+#      whether it yields $true at all depends on how the failed capture landed. A guard whose
+#      truthiness depends on that is not a guard.
+# Hence: parse the JSON in PowerShell rather than in a quoted jq program, treat an unreadable or
+# empty answer as a FAILURE rather than a pass, and test membership with -notcontains (exact,
+# array-safe) rather than a regex against a string that might not exist.
+$assetsJson = & $gh release view ("v" + $version) --repo $repoSlug --json assets
+if ($LASTEXITCODE -ne 0 -or -not $assetsJson) {
+    throw "VERIFY FAILED: the release was created but its assets could not be READ back (gh exit $LASTEXITCODE). Check https://github.com/$repoSlug/releases/tag/v$version by hand -- do not assume it is populated."
+}
+try { $assetNames = @(($assetsJson | ConvertFrom-Json).assets | ForEach-Object { $_.name }) }
+catch { throw "VERIFY FAILED: could not parse gh's asset listing: $_" }
+$assets = $assetNames -join ", "
+foreach ($want in @("McpLink-$version.zip", "McpLink.dll", "mcp.py")) {
+    if ($assetNames -notcontains $want) {
+        throw "VERIFY FAILED: release exists but assets are [$assets] -- expected $want among the zip, the bare DLL, and mcp.py. Fix on the Releases page."
+    }
 }
 Write-Host ""
 Write-Host "Released McpLink $version -> https://github.com/$repoSlug/releases/tag/v$version" -ForegroundColor Green
