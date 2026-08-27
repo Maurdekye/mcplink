@@ -1,5 +1,45 @@
 # McpLink changelog
 
+## 2.10.0 (2026-08-27)
+
+**`notify` stops claiming it showed you something it cannot see.** The tool returned
+`{"shown": true}` unconditionally — it had never returned anything else — and that value was a
+claim McpLink was in no position to make.
+
+- **What was wrong, and it is worse than a missing check.** Decompiling the engine shows
+  `NotificationPanel.ShowNotification` does `Current?.RunSynchronously(… AddNotification …)`. Two
+  independent problems: with no notification panel (no dash, userspace not ready) the `?.`
+  short-circuits into a **silent no-op**; and even *with* a panel the add is **deferred onto that
+  panel's world**, so the method returns before anything is added. Display is therefore not merely
+  unchecked from here — it is **unobservable in principle**. No amount of precondition checking
+  could have made the word "shown" honest.
+- **What it returns now.** `dispatched` — whether there was a notification panel to hand the
+  message to — plus a `reason` when false naming the cause. The tool's own description now states
+  that display is asynchronous and cannot be confirmed from our side, so a caller reading the tool
+  list learns it without finding these notes.
+- **`shown` is kept through 2.x as a deprecated alias of `dispatched`, and removed in 3.0.**
+  Deliberately not deleted in the same release that corrected it: an absent key makes a caller
+  branching on it take *neither* branch, which turns a wrong answer into no answer — and no answer
+  reads as nothing-happened. Existing callers keep getting an answer; the answer is now honest,
+  including when it is `false`.
+- **The offline check that protected this bug is gone.** It was named *"notify tool no-ops safely
+  without a dash"* and asserted `shown == true` with no engine running — the one environment where
+  nothing could have been shown. The name is why it survived audits: it reads as a safety property.
+  It is replaced by checks that assert the honest outcome, split so that the `dispatched:true`
+  branch (which needs a live engine) is covered against a pure composer rather than pretended at
+  end-to-end.
+
+⚠ **Not tested in-world — and unusually, in-world testing could not answer it.** With a dash open
+and a toast visible, the call still returns before the engine adds the notification. There is no
+session in which the old claim becomes observable from where we stand.
+
+**Also: a deliberate non-change.** Following orgtree's handle-expiry work, we considered and
+**rejected** a McpLink-side TTL for panel response handles. Their threshold is anchored on human
+absence; our panel long-polls continuously and machine-driven, so the same derivation gives an
+answer two orders of magnitude apart — and the orphan reconciler we already run at launch is
+*precise* where a TTL would be inference from silence. The reasoning is recorded at
+`ReconcileOrphanedBindingsAsync`, next to the mechanism that stands in for it.
+
 ## 2.9.2 (2026-08-27)
 
 **Compatibility with Resonite `2026.8.27.1094`.** That build changed the return type of

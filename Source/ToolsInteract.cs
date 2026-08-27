@@ -420,8 +420,14 @@ internal static class ToolsInteract
             }));
 
         add(new ToolDef("notify",
-            "Show a toast notification on the user's dash (works in VR — reaches the user even when the game " +
-            "window isn't visible). Use to flag completion of long tasks or to ask the user to look at something.",
+            "Hand a toast notification to the user's dash (works in VR — reaches the user even when the game " +
+            "window isn't visible). Use to flag completion of long tasks or to ask the user to look at something. " +
+            "Returns 'dispatched': whether there was a notification panel to hand it to. ⚠ DISPLAY ITSELF IS " +
+            "ASYNCHRONOUS AND CANNOT BE OBSERVED FROM HERE — the engine queues the add onto the panel's world and " +
+            "returns before it runs, so even dispatched:true is not proof the user saw anything. " +
+            "dispatched:false means there was NO panel (no dash / userspace not ready) and nothing was displayed; " +
+            "'reason' says which. ('shown' is a DEPRECATED alias of 'dispatched', kept through 2.x for existing " +
+            "callers and removed in 3.0 — it never meant what its name says.)",
             "{\"type\":\"object\",\"properties\":{" +
             "\"message\":{\"type\":\"string\"}," +
             "\"title\":{\"type\":\"string\",\"default\":\"McpLink\"}," +
@@ -441,10 +447,64 @@ internal static class ToolsInteract
                              ?? throw new InvalidOperationException("NotificationPanel.ShowNotification not found");
                 var parameters = method.GetParameters();
                 object type = Enum.Parse(parameters[4].ParameterType, sound ? "Full" : "ToastOnly", ignoreCase: true);
+
+                // The ONE thing that is actually observable here — see NotifyResult for why it is
+                // also the ONLY thing. Read by reflection for the same reason the method is: the
+                // property is engine-version surface we would rather not bind at compile time.
+                bool havePanel = typeof(NotificationPanel)
+                    .GetProperty("Current", BindingFlags.Public | BindingFlags.Static)
+                    ?.GetValue(null) != null;
+
                 method.Invoke(null, [null, $"{title}: {message}", null, new colorX(0.1f, 0.5f, 0.9f, 0.9f), type]);
 
-                return new JsonObject { ["shown"] = true, ["message"] = message };
+                var result = NotifyResult(havePanel);
+                result["message"] = message;
+                return result;
             }));
+    }
+
+    /// <summary>
+    /// The `notify` result, split out and pure so the suite can pin BOTH branches — the false one
+    /// is the only one reachable without a running engine, and a check that pretended otherwise
+    /// would be the very defect this replaces.
+    ///
+    /// ⚠ WHY THIS DOES NOT SAY "shown". Until 2.10.0 the tool returned `{"shown": true}`
+    /// unconditionally, and our own offline suite asserted it — with no engine, no dash and no
+    /// notification panel — under a check named "notify tool no-ops safely without a dash". The
+    /// name is why it survived every audit: it reads as a safety property, so nobody stopped on it.
+    ///
+    /// Decompiling the engine (2026.8.27.1094) showed the claim was unfounded for TWO independent
+    /// reasons, and the second is the one that shapes this contract:
+    /// <code>
+    /// public static void ShowNotification(string userId, string message, Uri thumbnail,
+    ///                                     colorX color, NotificationType type)
+    /// {
+    ///     Current?.RunSynchronously(delegate {
+    ///         Current.AddNotification(userId, message, thumbnail, color, type);
+    ///     });
+    /// }
+    /// </code>
+    /// 1. `Current` null ⇒ the `?.` short-circuits: a silent no-op, no throw. Observable by us.
+    /// 2. Even with a panel, the add is DEFERRED — `RunSynchronously` queues it onto that panel's
+    ///    world and `ShowNotification` returns before `AddNotification` runs.
+    ///
+    /// (2) is why no amount of checking could have rescued the word: display is not merely
+    /// unchecked, it is UNOBSERVABLE IN PRINCIPLE from this call. So the honest ceiling is
+    /// "dispatched" — we handed it to a panel that existed — and the tool says so.
+    /// </summary>
+    internal static JsonObject NotifyResult(bool dispatched)
+    {
+        var result = new JsonObject
+        {
+            ["dispatched"] = dispatched,
+            // DEPRECATED alias, kept through 2.x so a caller branching on the old key still gets
+            // an answer rather than an absent one. Removing it in the same release that corrected
+            // it would turn a wrong answer into NO answer, and no answer reads as nothing-happened.
+            ["shown"] = dispatched,
+        };
+        if (!dispatched)
+            result["reason"] = "no notification panel (no dash / userspace not ready) — nothing was displayed";
+        return result;
     }
 
     // ---------- helpers ----------

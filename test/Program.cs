@@ -429,10 +429,55 @@ Check("NotificationPanel.ShowNotification signature + NotificationType values", 
            && Enum.GetNames(enumType).Contains("Full")
            && Enum.GetNames(enumType).Contains("ToastOnly");
 });
-Check("notify tool no-ops safely without a dash (engine-free)", () =>
+// THE CHECK THIS REPLACED WAS THE DEFECT. It was named "notify tool no-ops safely without a dash
+// (engine-free)" and it asserted `shown == true` — with no engine, no dash and no notification
+// panel, i.e. in the one environment where nothing could possibly have been shown. It passed for
+// months. The NAME is why: "no-ops safely" reads as a safety property, so nobody auditing the
+// suite ever stopped on it. A false success wearing a reassuring label is worse than a bare one.
+//
+// Note what these checks deliberately do NOT do: the dispatched:TRUE branch needs
+// NotificationPanel.Current, which needs a running engine. It is unreachable here, so the
+// end-to-end check below asserts ONLY the false branch, and the true branch is covered where it
+// genuinely can be — against the pure composer. A check claiming both would be the same defect
+// in a new costume.
+Check("notify: with NO notification panel it reports dispatched:FALSE (engine-free, end to end)", () =>
 {
     string json = ToolRegistry.Call("notify", new JsonObject { ["message"] = "smoke" });
-    return JsonNode.Parse(json)!["shown"]!.GetValue<bool>();
+    var r = JsonNode.Parse(json)!;
+    return r["dispatched"]!.GetValue<bool>() == false
+        && r["message"]!.GetValue<string>() == "smoke";
+});
+Check("notify: the false result SAYS WHY, naming the missing panel", () =>
+{
+    string json = ToolRegistry.Call("notify", new JsonObject { ["message"] = "smoke" });
+    string reason = JsonNode.Parse(json)!["reason"]!.GetValue<string>();
+    return reason.Contains("no notification panel") && reason.Contains("nothing was displayed");
+});
+Check("notify composer: dispatched:true carries no reason (there is nothing to explain)", () =>
+{
+    var ok = ToolsInteract.NotifyResult(true);
+    return ok["dispatched"]!.GetValue<bool>() && ok["reason"] == null;
+});
+Check("DISCRIMINATOR: the composer's two branches actually differ", () =>
+{
+    var yes = ToolsInteract.NotifyResult(true);
+    var no = ToolsInteract.NotifyResult(false);
+    return yes["dispatched"]!.GetValue<bool>() != no["dispatched"]!.GetValue<bool>()
+        && yes["reason"] == null && no["reason"] != null;
+});
+Check("notify: 'shown' survives as a DEPRECATED ALIAS and now tracks dispatched (both ways)", () =>
+{
+    // the migration promise: an existing caller branching on `shown` still gets an answer rather
+    // than an absent key -- but the answer is now honest, including when it is false
+    var yes = ToolsInteract.NotifyResult(true);
+    var no = ToolsInteract.NotifyResult(false);
+    return yes["shown"]!.GetValue<bool>() == true
+        && no["shown"]!.GetValue<bool>() == false;
+});
+Check("REGRESSION: the old always-true 'shown' is gone (engine-free, it must be FALSE now)", () =>
+{
+    string json = ToolRegistry.Call("notify", new JsonObject { ["message"] = "smoke" });
+    return JsonNode.Parse(json)!["shown"]!.GetValue<bool>() == false;
 });
 Check("UndoManagerExtensions.GetUndoManager(World, bool) present", () =>
 {

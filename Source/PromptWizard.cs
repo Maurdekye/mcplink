@@ -2538,7 +2538,34 @@ internal static class PromptWizard
     /// for the launch after.
     ///
     /// This is also the only cleanup the CRASH path gets: a process that died sent nothing, so
-    /// the agent carries a live-looking address until the next launch of the game.</summary>
+    /// the agent carries a live-looking address until the next launch of the game.
+    ///
+    /// ═══ WHY THERE IS NO McpLink-SIDE HANDLE TTL, AND WHY YOU SHOULD NOT ADD ONE ═══
+    /// This method IS our expiry mechanism. The question was asked directly (2026-08-27) after
+    /// orgtree shipped `EXTERN_HANDLE_TTL_S = 24h` on their side, and the answer was: no constant.
+    ///
+    /// Their 24 h is anchored on HUMAN ABSENCE, because their peer may legitimately never poll —
+    /// nothing bounds its silence. Ours is not like that. A live panel long-polls
+    /// `/api/extern/{peer}/wait` continuously and machine-driven: `?timeout=25`, a 40 s client
+    /// ceiling, and on error a backoff of min(prev+5, 30) s that KEEPS TRYING. So a live panel
+    /// touches the backend at least every ~40 s whether or not a human is present. Same
+    /// derivation, different transport, an answer two orders of magnitude apart — which is exactly
+    /// why their NUMBER must not be copied even though their METHOD should be.
+    ///
+    /// But the derivation then argues against the constant existing at all:
+    ///   • This reconciler is PRECISE. It keys on a durable ledger entry — a FACT that a panel
+    ///     existed and its process died. A TTL is INFERENCE from silence. Prefer the fact.
+    ///   • The only window a TTL would add is crash → next launch, which is the user's timeline,
+    ///     and orgtree's 24 h already backstops exactly that window from the other side of the wire.
+    ///   • A threshold derived from our ~40 s poll would read a backend hiccup, a paused game, a
+    ///     suspended laptop or a long loading stall as death.
+    ///
+    /// And the asymmetry is not symmetric: A FALSE DETACH BREAKS A WORKING INTEGRATION AND IS
+    /// DIAGNOSED FROM THE FAR SIDE BY SOMEONE WITH NO IDEA WHY THEIR CHANNEL WENT QUIET; a late
+    /// detach only delays cleanup of something already dead. So the composition is deliberate:
+    /// FAST PATH = this reconciler (ledger-backed, precise), BACKSTOP = orgtree's 24 h
+    /// (unconditional), and NOTHING IN BETWEEN. A third number in the middle buys false-detach
+    /// risk and no coverage.</summary>
     internal static async Task ReconcileOrphanedBindingsAsync()
     {
         for (int attempt = 0; attempt < 3; attempt++)
