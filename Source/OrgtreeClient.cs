@@ -417,6 +417,60 @@ internal static class OrgtreeClient
         return await AttachHandlesAsync(slug, nodeId, remaining).ConfigureAwait(false);
     }
 
+    // ======================= passive notice delivery (2.9.1) =======================
+
+    /// <summary>The request body for a SELF-ADDRESSED notice: the node is both the actor and the
+    /// recipient. Split out and internal so the offline suite can prove that invariant on the
+    /// wire rather than trusting the sentence above it.
+    ///
+    /// ⚠ THERE IS DELIBERATELY NO WAY TO NAME A DIFFERENT ACTOR. One parameter fills both fields,
+    /// so the downward shape cannot be constructed here even by mistake — which matters far more
+    /// than it looks:
+    ///
+    /// A notice sent DOWNWARD to a non-child descendant PERMANENTLY GRANTS THAT DESCENDANT AN
+    /// UPWARD AUDIENCE (§7.3), silently, with no expiry — measured warning, verbatim:
+    /// "audience granted: e-leaf may now reply to e-boss directly". Had we used, say, the
+    /// recipient's superior as the actor, every panel open and close would quietly rewrite who is
+    /// allowed to address whom inside the user's organisation, as a side effect of a system event
+    /// nobody would ever trace back to an in-game panel. Self-send has no such effect: the
+    /// measured response carries no audience warning at all.
+    ///
+    /// ⚠ WE DEPEND ON SELF-SEND REMAINING PERMITTED, AND IT IS LEGAL BY FALL-THROUGH RATHER THAN
+    /// BY DESIGN. The §7.2 addressing check and the relationship label both fall through their
+    /// SIBLING clause for this case, because a node's parent trivially equals its own parent.
+    /// Nothing excluded the self case; nothing anticipated it either. Orgtree expects it to keep
+    /// working but has not decided whether to relabel it. That is exactly why the caller keeps a
+    /// tested fallback: if this is ever closed off, panel events degrade to waking mail rather
+    /// than vanishing.</summary>
+    internal static JsonObject ComposeSelfNoticeCall(string slug, string node, string body)
+    {
+        return new JsonObject
+        {
+            ["org"] = slug,
+            ["node"] = node,   // the ACTOR
+            ["tool"] = "orgtree_send_notice",
+            ["args"] = new JsonObject
+            {
+                ["to"] = node, // the RECIPIENT — the same value, by construction
+                ["body"] = body,
+            },
+        };
+    }
+
+    /// <summary>Deliver a passive notice to a node, as that node itself: it lands in the mailbox
+    /// and is read on whatever turn comes next, without ever starting one. This is the panel
+    /// lifecycle channel the user actually asked for.
+    ///
+    /// The route takes no credential — reaching loopback is the credential — and requires the
+    /// caller to name a real node, which is why the mod cannot send as the user. The envelope the
+    /// agent sees will say FROM itself, labelled "your peer"; we do not control that, so the
+    /// notice BODY states its true provenance in its opening line instead.</summary>
+    internal static async Task<Result<JsonNode>> SendSelfNoticeAsync(string slug, string node, string body)
+    {
+        return await RequestAsync(HttpMethod.Post, "/api/agent",
+            ComposeSelfNoticeCall(slug, node, body)).ConfigureAwait(false);
+    }
+
     /// <summary>Answer (or dismiss) the node's open question card. The body is the caller's —
     /// PromptWizard.ComposeAskAnswer builds the positional `selected` array + the rev CAS stamp,
     /// or {dismiss:true} for the card's ✕. The backend marks the ask resolved and delivers the

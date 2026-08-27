@@ -1,5 +1,46 @@
 # McpLink changelog
 
+## 2.9.1 (2026-08-27)
+
+**Panel open and close events are now passive notices — they no longer start a turn.** 2.9.0
+shipped them as ordinary user mail because the passive route appeared unreachable to us; it isn't,
+and this is the delivery the events should always have had. An agent told "your panel closed" has
+nothing useful to do with a turn, and now doesn't get one: the notice waits in its mailbox and is
+read on whatever turn comes next.
+
+- **The notice is sent by the receiving agent to itself, and that is a deliberate structural
+  constraint rather than a convenience.** The backend route requires the caller to name a real
+  node, and the obvious alternative — sending as the recipient's superior — carries a consequence
+  that is easy to miss: **a notice sent downward to a non-child descendant permanently grants that
+  descendant an upward audience**, silently and with no expiry. Every panel open and close would
+  have quietly rewritten who is allowed to address whom inside the organisation, as a side effect
+  of a system event nobody would think to trace back to an in-game panel. The self-addressed form
+  has no such effect. There is deliberately no way to name a different actor — one argument fills
+  both the sender and recipient fields, so the downward shape cannot be constructed by mistake.
+- **The notice says who really sent it, because its envelope cannot.** A self-addressed notice
+  necessarily arrives labelled *FROM the agent itself*, described as "your peer" — we do not
+  control that header. So the body's opening line states plainly that this is a McpLink panel
+  system event, that the agent did not send it and no peer did either, and that the **user** did
+  the thing being described. The waking-mail path carries no such disclaimer, because there its
+  header is already honest.
+- **2.9.0's waking mail is kept as the fallback, not deleted.** If the notice is refused for any
+  reason — the backend down, the node unresolvable, or the addressing rule we depend on being
+  tightened — the event still reaches the agent as user mail, with the refusal logged loudly. A
+  panel lifecycle event is never silently dropped; waking someone unnecessarily is the lesser
+  failure.
+
+Messages the user types in a panel are unchanged: those still wake the agent, as they must.
+
+⚠ **Still not verified against a live panel.** As with 2.9.0, none of this has run against a
+running Resonite session. The delivery policy, the actor invariant and the fallback are pinned by
+the offline suite — the fallback check was confirmed able to fail by removing the fallback and
+watching those checks go red — but a suite is not a session.
+
+⚠ **We depend on a rule that was never written down.** A node sending to itself is permitted by
+*fall-through* rather than by design: the addressing check treats it as a sibling send, because a
+node's parent trivially equals its own parent. Nothing excluded the self case and nothing
+anticipated it. That is precisely why the fallback above exists and is tested.
+
 ## 2.9.0 (2026-08-27)
 
 **Panel conversations now carry their own identity.** Two defects reported from inside Resonite,
