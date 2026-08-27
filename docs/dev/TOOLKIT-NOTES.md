@@ -794,3 +794,90 @@ note on the `$ErrorActionPreference` line itself, because that is the line someo
 Reading it is not enough — `release.ps1` was read many times. And a run of good luck reads exactly
 like a working check: every release cut with the fake gate happened to be fine, which is precisely
 what kept it alive.
+
+### 2026-08-27 — ilspy `search_members_by_name`: a ZERO result is only evidence about the KIND of thing it searches
+- **Reported by:** `engine-break`, diagnosing the `2026.8.27.1094` breakage. Cost: one wrong claim
+  relayed to a coordinator and written into a report before I caught it.
+- **What I assumed:** that `search_members_by_name(Elements.Core.dll, "SlimListEnumerableWrapper")`
+  returning **`Found 0 matching members`** meant the type had been deleted from the engine. I wrote
+  "the old type is **gone entirely**" into a diagnosis on the strength of it.
+- **What is actually true:** the tool searches **members** — methods, properties, fields, events.
+  `SlimListEnumerableWrapper` is a **type**. It was never in scope for that query, and it still
+  exists in `Elements.Core` (a struct, with `op_Implicit(SlimList)`); `RectTransform.RectChildren`
+  still returns it. What actually changed was only **`Slot.Children`'s return type**.
+- **Why the zero was so convincing:** it arrived in the same breath as a real finding. The engine
+  *had* changed, the mod *was* throwing `MissingMethodException`, and "the type was removed" is a
+  tidier story than "one property's return type moved". A zero that confirms the narrative you
+  already believe gets no scrutiny at all.
+- **The rule:** ⚠ **an ilspy query returning zero tells you nothing until you know what kind of
+  thing it looked for.** `search_members_by_name` will never find a type, `get_type_members` will
+  never find a free function, and neither absence is evidence of deletion. This is the sibling of
+  the standing extension-method trap (`get_type_members` renders signatures without `this`, so
+  every extension method looks impossible to call in instance form) — **both are the tool's
+  *rendering or scope* being mistaken for the engine's *contents*.** Confirm a type's existence
+  with a type-level query, or ask the live engine.
+- **What settled it in the end:** a byte search of the assembly, and — for the related
+  `FluxExecutionRuntime` question — `eval` reading `FieldInfo.FieldType.FullName` off the running
+  engine. **The live engine is the cheapest authority available while the game is up**, and it
+  outranks the decompiler's rendering.
+
+### 2026-08-27 — a byte probe of a .NET assembly must match the HEAP it is searching (two heaps, two encodings)
+- **Reported by:** `engine-break`, verifying that a 2.9.2 build carried its version bump. This one
+  **abstained rather than failed**, which is the house failure mode, so it is worth the space.
+- **What happened:** I probed the freshly built DLL for the string `2.9.2` by reading the file's
+  bytes and ASCII-decoding them. It reported **`2.9.2 = False`**. It also reported
+  **`2.9.1 = False`** — on a build I had just bumped *from* 2.9.1.
+- **Why that second line saved me:** "the new version is absent" is a plausible, actionable-looking
+  result — I was one step from concluding the version bump hadn't compiled in. **Both** versions
+  reading `False` is not a finding, it is a **probe that cannot see the thing at all**. The only
+  reason I noticed is that I had happened to print a value I already knew the answer to.
+- **The mechanism:** .NET metadata has **two separate string heaps with different encodings**.
+  Type and member names live in the **`#Strings` heap, UTF-8**. User string *literals* — which is
+  what `public const string VERSION = "2.9.2"` compiles to — live in the **`#US` heap, UTF-16LE**.
+  An ASCII/UTF-8 decode finds names and is blind to literals; a UTF-16 decode is the reverse.
+- **Consequence for earlier work in this repo:** my `SlimListEnumerableWrapper` probes in the same
+  session were **valid** (that is a type name, `#Strings`, UTF-8) while the version probe was
+  vacuous. *Two byte searches of the same file, one sound and one meaningless, and they look
+  identical in the output.* This also retroactively explains `ingame-prompt`'s 2.8.0-era recipe of
+  decoding UTF-16LE at offsets 0 **and** 1 — that was derived empirically; this is the reason it works.
+- **The rule:** ⚠ **decide which heap holds your needle before you decode, and always include a
+  known-positive control in the same probe.** Mine now decodes both and asserts a string that must
+  be present (`"McpLink"`) alongside the one under test. Re-run with the control, the probe
+  discriminated cleanly: subject 2.9.2✓/2.9.1✗, canonical 2.9.1✓/2.9.2✗, deployed 2.8.1 neither.
+- **Generalised:** a marker probe that returns "absent" for the marker **and** for its predecessor
+  is reporting on itself, not on the artifact. **Any probe whose negative result is interesting
+  must be run against something known-positive in the same breath**, or a broken probe is
+  indistinguishable from a clean artifact — which is exactly how a stale DLL keeps passing.
+
+### 2026-08-27 — a deployed DLL's mtime is the SOURCE's build time, not the deploy time (`Copy-Item` preserves it)
+- **Reported by:** `engine-break`; the forensic consequence spotted by `ingame-prompt` while
+  independently corroborating the 2.9.2 deploy. Nothing broke — recording it because it is a
+  ready-made wrong conclusion sitting in a file everyone reads during an incident.
+- **Measured, right after a verified deploy:**
+  ```
+  SOURCE   bin\Release\McpLink.dll        2026-08-27T23:02:27.6676761+03:00
+  DEPLOYED rml_mods\McpLink.dll           2026-08-27T23:02:27.6676761+03:00   <- identical
+  DEPLOYED HotReloadMods\McpLink.dll      2026-08-27T23:02:27.6676761+03:00   <- identical
+  CreationTime of rml_mods copy           2026-07-03T13:32:08                 <- July!
+  ```
+  **The copy actually happened at ~23:10 local.** `Copy-Item` propagates the source's
+  `LastWriteTime`, and NTFS keeps the original `CreationTime` when a file is overwritten in place —
+  so *neither* timestamp on the deployed file is the moment it was deployed. The creation time is
+  off by nearly two months.
+- **Where this bites, concretely:** `session_info` reports `deployed[].modifiedUtc` straight from
+  the file. After this deploy it reads **`2026-08-27T20:02:27Z`**, which is *earlier* than the
+  deploy — and sits uncomfortably close to the engine update at `18:47Z`. Anyone reconstructing
+  "was the mod rebuilt before or after the engine changed?" from those two numbers can get the
+  ordering right by luck and the reasoning wrong by construction. On 2026-08-27 the entire initial
+  diagnosis hinged on exactly that kind of build-vs-engine ordering argument.
+- **The rule:** ⚠ **file mtime is evidence about a BUILD, never about a DEPLOY, and never a
+  staleness check.** To answer "are the right bytes on disk", hash them. To answer "when did they
+  get there", you need something that records the write — a log line, or the check you ran at the
+  time. `session_info`'s `mvid` and `matchesRunning` are identity claims and are sound; its
+  `modifiedUtc` is inherited metadata and is not.
+- **Corollary for anyone reading a copier's own log:** the production copier's success line prints
+  hard-coded prose (`copied bin\Release -> rml_mods`) regardless of the paths it actually used, and
+  logs `$seed.Keys` wholesale rather than the keys it genuinely added — so a log line naming two
+  seeded config keys is not evidence that both were absent beforehand. Found by running the copier
+  in a sandbox rather than reading it. **A log line is a claim by the program about itself**; it
+  earns trust the same way any other check does, by being made to fail once.
