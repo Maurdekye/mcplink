@@ -8,7 +8,10 @@
 # NO TEST MAY TOUCH PRODUCTION. The whole probe runs against a throwaway ModsDeployRoot, and the
 # script hashes the REAL rml_mods DLLs before and after and fails if either moved.
 set -u
-REPO="$(cd "$(dirname "$0")/.." && pwd)"
+# ../.. -- see the note in mutate-panel-chat.sh: 09e167a moved this into tools/dev/ and left
+# the path pointing at tools/, where there is no csproj, so this probe could not run either.
+REPO="$(cd "$(dirname "$0")/../.." && pwd)"
+[ -f "$REPO/McpLink.csproj" ] || { echo "not the repo root: $REPO (no McpLink.csproj) -- refusing to run"; exit 1; }
 REAL_GAME="C:/Program Files (x86)/Steam/steamapps/common/Resonite"
 TMP="$(mktemp -d)"
 FAILED=0
@@ -18,6 +21,20 @@ ok   () { say "  PASS  $*"; }
 bad  () { say "! FAIL  $*"; FAILED=$((FAILED+1)); }
 
 hash_or_absent () { [ -f "$1" ] && sha256sum "$1" | cut -d' ' -f1 || echo "ABSENT"; }
+
+# Several checks below assert that something is ABSENT from the build output -- no MCPLINK001, no
+# "Build succeeded". Those are the dangerous ones: EMPTY OUTPUT SATISFIES ALL OF THEM. If the build
+# never ran (dotnet missing, the repo path wrong, an early crash), `echo "" | grep -q X` fails, the
+# `||` branch fires, and the probe cheerfully reports "the build FAILS, so an unfinished deploy
+# cannot be mistaken for a finished one" -- having observed nothing whatsoever. Demonstrated, not
+# reasoned: fed an empty string, two of these guards passed and the failure count stayed 0.
+# So every case first proves the build actually ran, and an absence check is only allowed to speak
+# after that.
+ran () {  # $1 = build output
+  printf '%s\n' "$1" | grep -qE 'Build (succeeded|FAILED)' \
+    && ok "SETUP: the build really ran (its summary is in the output)" \
+    || bad "SETUP: no build summary in the output -- the build did not run, so every absence check in this case would pass vacuously"
+}
 
 REAL_MODS="$REAL_GAME/rml_mods/McpLink.dll"
 REAL_HOT="$REAL_GAME/rml_mods/HotReloadMods/McpLink.dll"
@@ -54,6 +71,7 @@ else
 fi
 
 OUT1="$(build)"
+ran "$OUT1"
 echo "$OUT1" | grep -q "MCPLINK001" \
   && ok "build emits MCPLINK001" || bad "build did NOT emit MCPLINK001"
 echo "$OUT1" | grep -qi "warning" \
@@ -78,6 +96,7 @@ echo "$OUT1" | grep -q "Build succeeded" \
 say ""
 say "== case 2: same block, but -p:RequireModsDeploy=true (the deploy-window setting) =="
 OUT2="$(build -p:RequireModsDeploy=true)"
+ran "$OUT2"
 echo "$OUT2" | grep -q "error MCPLINK001" \
   && ok "escalates to a hard ERROR" || bad "did not escalate to an error"
 echo "$OUT2" | grep -q "Build succeeded" \
@@ -92,6 +111,7 @@ sleep 3
 say ""
 say "== case 3: lock released — the copy completes =="
 OUT3="$(build)"
+ran "$OUT3"
 echo "$OUT3" | grep -q "MCPLINK001" \
   && bad "MCPLINK001 fired on a SUCCESSFUL copy (false alarm)" \
   || ok "no warning when the copy succeeds (the guard is not stuck on)"
