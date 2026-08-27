@@ -2086,10 +2086,27 @@ internal static class PromptWizard
     /// the only way in and it drives a turn; `/org_inbox/send` only addresses outside peers), so
     /// the last line tells the agent plainly that nothing is being asked of it. When the backend
     /// grows a notice mode, DeliverPanelEvent is the single place that changes.</summary>
-    internal static string ComposeOpenNotice(PanelChannel ch)
+    /// <summary>The true provenance of a panel lifecycle event, stated in the opening line
+    /// (2.9.1) — because when these are delivered as passive notices the ENVELOPE IS WRONG and we
+    /// cannot fix it.
+    ///
+    /// A self-addressed notice is the only form that reaches a mailbox without waking it and
+    /// without silently granting an audience (§7.3), but it necessarily arrives labelled FROM the
+    /// agent itself, relationship "your peer". An agent reading only the header would conclude it
+    /// had written to itself, or that some peer had. So the header is not allowed to be the only
+    /// provenance signal: the body says who really did this. On the waking-mail fallback the
+    /// header is honest (the mail is from the user, who really did open or close the panel), so
+    /// no disclaimer is added there — a correction that corrects nothing is just noise.</summary>
+    internal static string Provenance(bool selfNotice) => selfNotice
+        ? " (McpLink in-game panel system event — your mailbox will show this as FROM YOURSELF, "
+          + "labelled \"your peer\". That is an artifact of how panel events are delivered: you did "
+          + "not send it and no peer of yours did either. The USER did the thing described below.)"
+        : "";
+
+    internal static string ComposeOpenNotice(PanelChannel ch, bool selfNotice = false)
     {
         var sb = new StringBuilder();
-        sb.AppendLine($"{MarkOpened} The user \"{ch.UserName}\" has opened an in-game chat panel onto you "
+        sb.AppendLine($"{MarkOpened}{Provenance(selfNotice)} The user \"{ch.UserName}\" has opened an in-game chat panel onto you "
                       + $"from inside the Resonite world \"{ch.WorldName}\" (session {ch.SessionId}). You were "
                       + "not re-hired and nothing about your role has changed — you simply have a live audience "
                       + "in-world now, and an address to answer it on.");
@@ -2112,11 +2129,12 @@ internal static class PromptWizard
     /// The mail is the announcement; the real fix is the detach that accompanies it
     /// (OrgtreeClient.DetachHandleAsync). A mail can be missed or compacted away — a handle
     /// that is no longer in the system prompt cannot be used by anyone.</summary>
-    internal static string ComposeCloseNotice(PanelChannel ch)
+    internal static string ComposeCloseNotice(PanelChannel ch, bool selfNotice = false)
     {
         var sb = new StringBuilder();
-        sb.AppendLine($"{MarkClosed} The in-game panel that was open on you has been closed. You STAY HIRED "
-                      + "and keep working — the panel was a conversation, not your employment.");
+        sb.AppendLine($"{MarkClosed}{Provenance(selfNotice)} The in-game panel that was open on you has been "
+                      + "closed. You STAY HIRED and keep working — the panel was a conversation, not your "
+                      + "employment.");
         sb.AppendLine();
         sb.AppendLine(ChannelCard(ch, dead: true));
         sb.AppendLine("- Communicate through normal org channels from now on: orgtree_status for progress, "
@@ -2155,22 +2173,47 @@ internal static class PromptWizard
             world.Name ?? "?", world.SessionId ?? "?", world.LocalUser?.UserName ?? "?", window);
     }
 
-    /// <summary>THE CHOKE POINT for every panel lifecycle event (open, close) — one call site to
-    /// change if the delivery mechanism ever does.
+    /// <summary>The delivery policy for panel lifecycle events, with the two calls injected so the
+    /// offline suite can prove the FALLBACK ACTUALLY FIRES. A fallback that has never executed is
+    /// not a fallback, and this one is the safety net under a channel we depend on but do not own.
+    ///
+    /// `compose` is asked for the body twice on purpose — once for each path — because the two
+    /// deliveries have different, and differently honest, envelopes: the notice arrives FROM the
+    /// agent itself and needs its provenance stated in the body, the waking mail arrives from the
+    /// user and does not. Returns null on delivery, or the fallback's error if BOTH fail; the
+    /// event is never silently dropped.</summary>
+    internal static async Task<string?> DeliverWithFallback(
+        Func<string, Task<string?>> sendNotice, Func<string, Task<string?>> sendMail,
+        Func<bool, string> compose, Action<string>? onFallback = null)
+    {
+        string? noticeError = await sendNotice(compose(true)).ConfigureAwait(false);
+        if (noticeError == null)
+            return null;
+        onFallback?.Invoke(noticeError);
+        return await sendMail(compose(false)).ConfigureAwait(false);
+    }
+
+    /// <summary>THE CHOKE POINT for every panel lifecycle event (open, close).
     ///
     /// The user asked for these to be NOTICES: passive mail that waits in the agent's box and is
     /// read on whatever turn comes next, never a turn started to receive it. That is the right
-    /// shape — an agent woken by "your panel closed" has nothing useful to do with the turn.
+    /// shape — an agent woken by "your panel closed" has nothing useful to do with the turn — and
+    /// as of 2.9.1 it is what we send, as a SELF-ADDRESSED notice (see
+    /// OrgtreeClient.ComposeSelfNoticeCall for why the actor is pinned to the recipient and why
+    /// any other actor would silently rewrite the org's audience graph).
     ///
-    /// The backend can mint exactly that (`orgtree_send_notice` → kind "notice", which every
-    /// no-wake rule keys on) and the route is even loopback-reachable — but `POST /api/agent`
-    /// validates the CALLING NODE unconditionally, and McpLink is not a node in anyone's org: the
-    /// user sentinel `@user` is refused with "no such node" (measured, not assumed). The only
-    /// door open to us is `POST /nodes/{nid}/message`, which drives a turn. So these WAKE today,
-    /// and the notices say plainly that nothing is being asked. When the backend grows a
-    /// user-authored notice, this method is the whole change.</summary>
-    private static Task<OrgtreeClient.Result<JsonNode>> DeliverPanelEvent(
-        string slug, string node, string body) => OrgtreeClient.MessageNodeAsync(slug, node, body);
+    /// The waking user-mail path that 2.9.0 shipped is kept as the DEGRADED path, not deleted: if
+    /// the notice is refused for any reason — backend down, node unresolvable, or the self-send
+    /// fall-through we rely on being closed off — the event still reaches the agent, loudly
+    /// logged. Losing a panel lifecycle event is worse than waking someone for it.</summary>
+    private static Task<string?> DeliverPanelEvent(string slug, string node, Func<bool, string> compose)
+        => DeliverWithFallback(
+            body => OrgtreeClient.SendSelfNoticeAsync(slug, node, body).ContinueWith(t => t.Result.Error),
+            body => OrgtreeClient.MessageNodeAsync(slug, node, body).ContinueWith(t => t.Result.Error),
+            compose,
+            err => McpLinkMod.LogError(
+                $"PromptWizard: passive notice to {node} was refused ({err}) — falling back to waking "
+                + "user mail so the panel event is not lost."));
 
     /// <summary>Every live panel's (key, peer) — the input to PeerStillHeld. Stringified keys:
     /// see that method's note about the suite and Elements.Core.</summary>
@@ -2201,13 +2244,13 @@ internal static class PromptWizard
         // the announcement lands: what the reconciler cleans up is the handle, not the telling.
         PanelBindings.Add(slug, node, ch.Peer, window: true);
         var world = state.Root.World;
-        string body = ComposeOpenNotice(ch);
         Task.Run(async () =>
         {
-            var r = await DeliverPanelEvent(slug, node, body).ConfigureAwait(false);
-            if (r.Error != null)
+            string? error = await DeliverPanelEvent(slug, node, self => ComposeOpenNotice(ch, self))
+                .ConfigureAwait(false);
+            if (error != null)
             {
-                McpLinkMod.LogError($"PromptWizard: open notice to {node} failed: {r.Error} — "
+                McpLinkMod.LogError($"PromptWizard: open notice to {node} failed: {error} — "
                                     + "the first message will carry the full contract instead.");
                 return;
             }
@@ -2253,15 +2296,15 @@ internal static class PromptWizard
         }
         McpLinkMod.LogInfo($"PromptWizard: window on {node} closed ({reason}) — telling it and "
                            + $"detaching @mcp:{peer}.");
-        string body = ComposeCloseNotice(ch);
         Task.Run(async () =>
         {
             // announce BEFORE cutting: the agent should still hold the address it is being told
             // about. A failed notice does not stop the detach — an un-announced dead handle is
             // bad, an announced-but-still-attached one is worse.
-            var told = await DeliverPanelEvent(slug, node, body).ConfigureAwait(false);
-            if (told.Error != null)
-                McpLinkMod.LogError($"PromptWizard: close notice to {node} failed: {told.Error}");
+            string? told = await DeliverPanelEvent(slug, node, self => ComposeCloseNotice(ch, self))
+                .ConfigureAwait(false);
+            if (told != null)
+                McpLinkMod.LogError($"PromptWizard: close notice to {node} failed: {told}");
             var cut = await OrgtreeClient.DetachHandleAsync(slug, node, peer).ConfigureAwait(false);
             if (cut.Error == null || LooksAlreadyResolved(cut.Error))
                 PanelBindings.Remove(slug, node, window: true);
@@ -2384,14 +2427,13 @@ internal static class PromptWizard
         var world = state.Root.World;
         // the channel snapshot is the panel's own identity; a panel with no handle (degraded)
         // still detaches, it simply has no address to name
-        string notice = state.Channel != null
-            ? ComposeCloseNotice(state.Channel)
-            : ComposeCloseNotice(new PanelChannel(peer, "?", world.Name ?? "?",
-                world.SessionId ?? "?", world.LocalUser?.UserName ?? "?", false));
+        var closing = state.Channel ?? new PanelChannel(peer, "?", world.Name ?? "?",
+            world.SessionId ?? "?", world.LocalUser?.UserName ?? "?", false);
         Task.Run(async () =>
         {
-            var r = await DeliverPanelEvent(slug, node, notice).ConfigureAwait(false);
-            if (r.Error == null && peer.Length > 0)
+            string? deliveryError = await DeliverPanelEvent(slug, node, self => ComposeCloseNotice(closing, self))
+                .ConfigureAwait(false);
+            if (deliveryError == null && peer.Length > 0)
             {
                 var cut = await OrgtreeClient.DetachHandleAsync(slug, node, peer).ConfigureAwait(false);
                 if (cut.Error != null && !LooksAlreadyResolved(cut.Error))
@@ -2401,10 +2443,10 @@ internal static class PromptWizard
             RunSync(world, state, () =>
             {
                 state.Busy = false;
-                if (r.Error != null)
+                if (deliveryError != null)
                 {
                     AppendSystem(state, $"<color=#f88>couldn't detach — the agent wasn't notified: " +
-                                        $"{Escape(r.Error)}</color> — the panel stays open.");
+                                        $"{Escape(deliveryError)}</color> — the panel stays open.");
                     return;
                 }
                 state.RetireFired = true;          // the destroy below must not retire
@@ -2436,7 +2478,7 @@ internal static class PromptWizard
         // would otherwise outlive the game. Deduped by (slug, node, peer) because two windows
         // on one agent share a single handle — cutting it twice is harmless but announcing it
         // twice is not.
-        var toClose = new List<(string Slug, string Node, string Peer, string Body)>();
+        var toClose = new List<(string Slug, string Node, string Peer, PanelChannel Channel)>();
         foreach (var state in LiveStates.Values)
         {
             if (state.WindowMode && !state.ClosedFired && state.Channel != null
@@ -2446,7 +2488,7 @@ internal static class PromptWizard
                 state.Poll?.Cancel();
                 var ch = state.Channel;
                 if (!toClose.Any(e => e.Slug == state.OrgSlug && e.Node == state.NodeId && e.Peer == ch.Peer))
-                    toClose.Add((state.OrgSlug, state.NodeId, ch.Peer, ComposeCloseNotice(ch)));
+                    toClose.Add((state.OrgSlug, state.NodeId, ch.Peer, ch));
                 continue;
             }
             if (!RetiresOnClose(state.WindowMode, state.FallbackMode, state.RetireFired, state.NodeId != null))
@@ -2471,7 +2513,8 @@ internal static class PromptWizard
                     : $"PromptWizard: shutdown retire of {entry.Node}: {r.Error} (reconciled next launch if still bound)");
             }).Concat(toClose.Select(async entry =>
             {
-                await DeliverPanelEvent(entry.Slug, entry.Node, entry.Body).ConfigureAwait(false);
+                await DeliverPanelEvent(entry.Slug, entry.Node,
+                    self => ComposeCloseNotice(entry.Channel, self)).ConfigureAwait(false);
                 var cut = await OrgtreeClient.DetachHandleAsync(entry.Slug, entry.Node, entry.Peer)
                     .ConfigureAwait(false);
                 if (cut.Error == null || LooksAlreadyResolved(cut.Error))

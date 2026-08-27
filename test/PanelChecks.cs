@@ -141,5 +141,112 @@ internal static class PanelChecks
             // a handle-less panel (null peer) holds nothing open
             && !PromptWizard.PeerStillHeld(
                 [("panelA", "resonite.abc123"), ("panelB", null)], "panelA", "resonite.abc123"));
+
+        // ---- 2.9.1: passive delivery, with the actor pinned to the recipient ----
+        System.Console.WriteLine();
+        System.Console.WriteLine("== passive notice delivery + the actor invariant (2.9.1) ==");
+
+        // WHY THIS INVARIANT IS SEVERE: a notice sent DOWNWARD to a non-child descendant
+        // permanently grants that descendant an upward audience (§7.3), silently and with no
+        // expiry. An actor that could be an ancestor would mean every panel open and close
+        // quietly rewrote who may address whom inside the user's org. Self-send has no such
+        // effect. So the actor is not a parameter — it IS the recipient, by construction.
+        Check("THE INVARIANT: the notice call's actor is the recipient node itself", () =>
+        {
+            var call = OrgtreeClient.ComposeSelfNoticeCall("resonite", "helper", "hi");
+            return call["node"]!.GetValue<string>() == "helper"
+                && call["args"]!["to"]!.GetValue<string>() == "helper"
+                && call["tool"]!.GetValue<string>() == "orgtree_send_notice"
+                && call["org"]!.GetValue<string>() == "resonite";
+        });
+        Check("DISCRIMINATOR: actor tracks the recipient — it is not a constant that happens to match", () =>
+        {
+            foreach (var node in new[] { "scout", "deep-leaf", "a", "x-9" })
+            {
+                var call = OrgtreeClient.ComposeSelfNoticeCall("org", node, "b");
+                if (call["node"]!.GetValue<string>() != node) return false;
+                if (call["args"]!["to"]!.GetValue<string>() != node) return false;
+            }
+            return true;
+        });
+        Check("STRUCTURAL: no overload lets a caller name an actor separate from the recipient", () =>
+        {
+            // the downward shape must be impossible to CONSTRUCT, not merely absent today
+            var overloads = typeof(OrgtreeClient).GetMethods(
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Public
+                | System.Reflection.BindingFlags.Static)
+                .Where(m => m.Name is "ComposeSelfNoticeCall" or "SendSelfNoticeAsync").ToList();
+            return overloads.Count == 2
+                && overloads.All(m => m.GetParameters().Length == 3
+                    && m.GetParameters().Select(p => p.Name).SequenceEqual(new[] { "slug", "node", "body" }));
+        });
+
+        // The envelope will say FROM the agent itself, labelled "your peer", and we cannot change
+        // that — so the body has to carry the true provenance or nothing does.
+        Check("a self-delivered notice states its real provenance in the opening line", () =>
+        {
+            string self = PromptWizard.ComposeOpenNotice(ch, selfNotice: true);
+            return self.StartsWith("[PANEL OPENED]", StringComparison.Ordinal)
+                && self.Contains("FROM YOURSELF") && self.Contains("you did not send it")
+                && self.IndexOf("FROM YOURSELF", StringComparison.Ordinal) < 400;
+        });
+        Check("DISCRIMINATOR: the waking-mail body carries NO such disclaimer (its header is honest)", () =>
+            !PromptWizard.ComposeOpenNotice(ch, selfNotice: false).Contains("FROM YOURSELF")
+            && !PromptWizard.ComposeCloseNotice(ch, selfNotice: false).Contains("FROM YOURSELF")
+            && PromptWizard.ComposeCloseNotice(ch, selfNotice: true).Contains("FROM YOURSELF"));
+
+        // ---- the fallback. A fallback that has never executed is not a fallback. ----
+        Check("delivery: the notice path succeeding means the waking mail is NEVER sent", () =>
+        {
+            bool mailed = false;
+            string? err = PromptWizard.DeliverWithFallback(
+                _ => Task.FromResult<string?>(null),               // notice succeeds
+                _ => { mailed = true; return Task.FromResult<string?>(null); },
+                self => self ? "notice-body" : "mail-body").GetAwaiter().GetResult();
+            return err == null && !mailed;
+        });
+        Check("THE FALLBACK FIRES: a refused notice still reaches the agent as waking mail", () =>
+        {
+            string? sentBody = null, logged = null;
+            string? err = PromptWizard.DeliverWithFallback(
+                _ => Task.FromResult<string?>("422: no such node"),  // notice refused
+                b => { sentBody = b; return Task.FromResult<string?>(null); },
+                self => self ? "notice-body" : "mail-body",
+                e => logged = e).GetAwaiter().GetResult();
+            return err == null                    // the event was delivered after all
+                && sentBody == "mail-body"        // ...as the NON-notice composition
+                && logged == "422: no such node"; // ...and the refusal was reported, not swallowed
+        });
+        Check("CONTROL: that check can FAIL — a fallback that never sends is caught", () =>
+        {
+            // the same assertions against a deliberately broken policy (drops the event on a
+            // refused notice) must NOT pass; otherwise the check above proves nothing
+            bool mailed = false;
+            string? err = BrokenDeliver(
+                _ => Task.FromResult<string?>("422: no such node"),
+                _ => { mailed = true; return Task.FromResult<string?>(null); },
+                self => self ? "notice-body" : "mail-body").GetAwaiter().GetResult();
+            return !mailed && err != null;        // it dropped the event — which is the bug
+        });
+        Check("delivery: when BOTH paths fail the error surfaces (never a silent drop)", () =>
+        {
+            string? err = PromptWizard.DeliverWithFallback(
+                _ => Task.FromResult<string?>("notice refused"),
+                _ => Task.FromResult<string?>("backend down"),
+                self => "body").GetAwaiter().GetResult();
+            return err == "backend down";
+        });
+    }
+
+    /// <summary>A deliberately broken delivery policy — the one that drops a lifecycle event when
+    /// the notice is refused. It exists so the fallback check above has something it demonstrably
+    /// FAILS against: a test that only ever runs the passing implementation cannot tell a working
+    /// fallback from an unreachable one.</summary>
+    private static async Task<string?> BrokenDeliver(
+        Func<string, Task<string?>> sendNotice, Func<string, Task<string?>> sendMail,
+        Func<bool, string> compose)
+    {
+        string? noticeError = await sendNotice(compose(true)).ConfigureAwait(false);
+        return noticeError; // never falls back — the defect this suite must be able to see
     }
 }
