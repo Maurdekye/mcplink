@@ -131,6 +131,45 @@ internal static class PromptWizard
         return union;
     }
 
+    /// <summary>The handle set to write when a panel channel CLOSES (2.9.0): everything the node
+    /// holds except this panel's address. Same union discipline in reverse — the scope write
+    /// replaces the whole set, so every other client's channel has to be carried through.
+    /// Null means the address wasn't attached in the first place: nothing to write, and writing
+    /// anyway would churn the node's scope for no reason. Internal + pure for the suite.</summary>
+    internal static List<string>? HandleMinus(IReadOnlyList<string>? existing, string peer)
+    {
+        string addr = $"@mcp:{peer}";
+        var remaining = new List<string>();
+        bool found = false;
+        foreach (var h in existing ?? [])
+        {
+            if (h == addr)
+            {
+                found = true;
+                continue;
+            }
+            remaining.Add(h);
+        }
+        return found ? remaining : null;
+    }
+
+    /// <summary>Is some OTHER live panel still answering on this peer? Two panels opened onto the
+    /// same agent deliberately ADOPT the same handle (that is what keeps one channel per agent
+    /// and lets a reopened panel backfill the earlier replies) — so the first of them to close
+    /// must not announce the handle dead, nor detach it out from under the one still open.
+    ///
+    /// Keys are strings rather than RefIDs on purpose: this is pinned by the offline suite, and
+    /// an Elements.Core type in one of the suite's own locals resolves before its AssemblyResolve
+    /// hook can run (see the note atop test/WireChecks.cs). Callers stringify. Internal + pure.</summary>
+    internal static bool PeerStillHeld(IEnumerable<(string Key, string? Peer)> live,
+        string closingKey, string peer)
+    {
+        foreach (var (key, held) in live)
+            if (key != closingKey && held == peer)
+                return true;
+        return false;
+    }
+
     // stage-2 footer orders (chat scroll = 0)
     private const long OrderAttach = 10;
     private const long OrderPresence = 15;     // live-activity ticker between attachments and input
@@ -649,6 +688,11 @@ internal static class PromptWizard
         public string? NodeId;
         public string? ParentId;                   // hire parent (null = top level)
         public string? Peer;                       // extern peer id (no @mcp: prefix)
+        /// <summary>This panel's channel identity, captured ONCE when it binds (2.9.0). Every
+        /// panel-originated mail is composed from it — including the close notice, which is why
+        /// it is a stored snapshot rather than something read off the world: close handlers can
+        /// run while the world is being torn down. Null only on a handle-less panel.</summary>
+        public PanelChannel? Channel;
         public string AgentLabel = "";
         public bool WindowMode;                    // a VIEW onto an existing agent's mail thread — never retires
         public string TitleTag = "";               // " · window" marker, appended to every title render
@@ -659,6 +703,10 @@ internal static class PromptWizard
         public CancellationTokenSource? Poll;
         public bool Busy;
         public bool RetireFired;
+        /// <summary>A close has already been accounted for on this panel (2.9.0) — the window
+        /// close path is reachable from both Destroyed and WorldDestroyed, and on engine
+        /// shutdown from a third direction. Whichever arrives first owns it.</summary>
+        public bool ClosedFired;
         public Action<World>? WorldClosed;         // stored for unsubscribe
     }
 
@@ -1350,8 +1398,9 @@ internal static class PromptWizard
                 state.Root.AttachComponent<Comment>().Text.Value =
                     $"orgtree agent {org.Slug}/{node} · handle @mcp:{peer} · deleting this panel retires it (⏏ detaches)";
                 state.Wire = AgentWires.Register(state.Root.World, state.Root, org.Slug, node, parentId, TierColor(tier));
+                state.Channel = NewChannel(state, peer, window: false);
                 ArmAutoRetire(state);
-                PanelBindings.Add(org.Slug, node);  // orphan ledger: cleared on retire/detach
+                PanelBindings.Add(org.Slug, node, peer);  // orphan ledger: cleared on retire/detach
                 AddDetachChromeButton(state);
                 // no system note here (user ruling 2026-08-20): the retitle + solid frame are
                 // the creation feedback — the chat starts empty, like a fresh thread
@@ -1466,6 +1515,7 @@ internal static class PromptWizard
                 state.WindowMode = true;
                 state.TitleTag = " · window";
                 state.Peer = windowPeer;
+                state.Channel = windowPeer == null ? null : NewChannel(state, windowPeer, window: true);
                 // with a handle, the first send carries the window contract naming it; without
                 // one (old backend, or the attach was refused) fall back to 2.5.0 behaviour —
                 // plain follow-up mail, no contract to send, agent answers via the desk
@@ -1486,6 +1536,7 @@ internal static class PromptWizard
                 EnterChatStage(state);
                 StartInboxLoop(state);
                 StartStatusLoop(state);
+                AnnounceOpen(state);
             });
         });
     }
@@ -1504,7 +1555,13 @@ internal static class PromptWizard
         {
             cts.Cancel();                 // closing a window never retires — just stop the polls
             AgentWires.Drop(state.Wire);
+            FireWindowClose(state, "window closed");   // …but the channel it opened does die (2.9.0)
         };
+        // the world going away takes the panel with it and is NOT always reported as a slot
+        // destroy first, so the close is armed from both directions; ClosedFired settles the race
+        Action<World> onWorldClosed = _ => FireWindowClose(state, "world closed");
+        state.WorldClosed = onWorldClosed;
+        state.Root.World.WorldDestroyed += onWorldClosed;
         var world = state.Root.World;
         string slug = state.OrgSlug!, node = state.NodeId!;
         var seen = new HashSet<string>();
@@ -1895,8 +1952,13 @@ internal static class PromptWizard
             return;
         }
 
+        // A panel message is marked and carries its channel whenever there IS a channel to name;
+        // a handle-less panel (old backend / refused attach) falls back to the pre-2.9.0 bare
+        // text, because naming a handle that does not exist is worse than naming none.
         string body = state.KickoffSent
-            ? ComposeFollowUp(text, refs)
+            ? state.Channel != null
+                ? ComposePanelMessage(state.Channel, text, refs)
+                : ComposeFollowUp(text, refs)
             : state.WindowMode
                 ? BuildWindowKickoff(state, text, refs, state.Peer!)
                 : BuildKickoff(state, text, refs, state.Peer!);
@@ -1923,6 +1985,152 @@ internal static class PromptWizard
         });
     }
 
+    // ======================= the panel channel (2.9.0) =======================
+    // Everything an agent needs in order to ANSWER a panel used to exist exactly once, in that
+    // panel's first message. A follow-up went out as the user's BARE TEXT, so from the agent's
+    // side the second message and every one after it was indistinguishable from ordinary org
+    // mail: it replied through normal channels while the in-world user watched a status ticker
+    // and waited for an answer that never came. (An attached object reference made a message
+    // recognisable by accident, because that added a block — never by design.)
+    //
+    // The only thing that travelled with the channel itself was the backend's standing
+    // system-prompt line, "You hold EXTERNAL RESPONSE HANDLE(s): @mcp:… — send your answers and
+    // progress updates there". That is an address and nothing more: not the world, not the panel
+    // object, not that the panel is world-readable, not that ending a turn is not a reply, not
+    // even that the channel is an in-game panel rather than some other external chat.
+    //
+    // So every panel-originated mail now carries its own routing. Three markers, one per
+    // lifecycle event, each opening its line so a reader can match on it — [PANEL OPENED],
+    // [PANEL MESSAGE], [PANEL CLOSED] — and each carries the channel card naming the reply
+    // handle and the panel's in-world identity. The fifth message is answerable by an agent
+    // that never saw the first.
+
+    internal const string MarkOpened = "[PANEL OPENED]";
+    internal const string MarkMessage = "[PANEL MESSAGE]";
+    internal const string MarkClosed = "[PANEL CLOSED]";
+
+    /// <summary>A panel's identity as its agent needs to see it: the address to answer on, and
+    /// the in-world object the answer lands in. Captured ONCE when the panel binds and carried
+    /// on the state — never rebuilt from the world during a close, because close handlers can
+    /// run while the world is tearing down.</summary>
+    internal sealed record PanelChannel(string Peer, string PanelId, string WorldName,
+        string SessionId, string UserName, bool Window)
+    {
+        public string Handle => $"@mcp:{Peer}";
+    }
+
+    /// <summary>The compact footer that rides EVERY panel message. Deliberately one line per
+    /// fact and no more: the full briefing belongs on the open notice, but the address, the
+    /// panel object, and the two rules an agent gets wrong without them (a turn is not a reply;
+    /// the panel is public) have to be in front of it every single time.</summary>
+    internal static string ChannelLine(PanelChannel ch) =>
+        $"[PANEL CHANNEL] Reply with orgtree_message to exactly \"{ch.Handle}\" — ending your turn is " +
+        $"NOT a reply. Panel slot {ch.PanelId} in world \"{ch.WorldName}\"; it is WORLD-READABLE, so " +
+        "send deliberate replies, not a running transcript.";
+
+    /// <summary>The full channel card, for the two events where an agent meets or loses the
+    /// channel. `dead` inverts it: same address, stated as unusable, which is the whole point —
+    /// an agent told only "the panel closed" is still looking at a live-shaped address.</summary>
+    internal static string ChannelCard(PanelChannel ch, bool dead = false)
+    {
+        var sb = new StringBuilder();
+        if (dead)
+        {
+            sb.AppendLine($"[PANEL CHANNEL — DEAD] \"{ch.Handle}\" no longer reaches anyone. Do NOT send to it.");
+            sb.AppendLine($"- The panel it fed (slot {ch.PanelId}, world \"{ch.WorldName}\") is gone, and the "
+                          + "handle has been REMOVED from your external handles — it will stop appearing in "
+                          + "your system prompt too. Anything sent there from now on is read by nobody.");
+            return sb.ToString();
+        }
+        sb.AppendLine($"[PANEL CHANNEL] Reply with orgtree_message to exactly \"{ch.Handle}\" — it appears in "
+                      + "the panel's chat immediately, markdown renders, and no audience grant is needed for it.");
+        sb.AppendLine("- ENDING YOUR TURN IS NOT A REPLY. With no message to that address the user sees only "
+                      + "your status ticker and is left waiting on an answer that never comes.");
+        sb.AppendLine($"- The panel is slot {ch.PanelId} in world \"{ch.WorldName}\" (session {ch.SessionId}), "
+                      + $"opened by user \"{ch.UserName}\". The mcp__mcplink__* tools reach that live world, and "
+                      + "[[ref:<RefID>|label]] anywhere in your reply renders a grabbable reference card in the "
+                      + "panel (the token itself is stripped).");
+        sb.AppendLine("- Keep lines panel-friendly (~1100 px wide).");
+        sb.Append("- ⚠ THE PANEL IS WORLD-READABLE — every user in that Resonite session can read it, and it is "
+                  + "not your desk. Send deliberate replies and progress notes, never a running transcript of "
+                  + "your work. Anything private or long-form belongs in user mail or your status.");
+        return sb.ToString();
+    }
+
+    /// <summary>A user message from the panel. Marker first, their words next, references and
+    /// the channel footer after — so the text the user actually typed is never buried.</summary>
+    internal static string ComposePanelMessage(PanelChannel ch, string text, JsonArray refs)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine($"{MarkMessage} from \"{ch.UserName}\" in the in-game panel.");
+        sb.AppendLine();
+        sb.AppendLine(text);
+        if (refs.Count > 0)
+        {
+            sb.AppendLine();
+            sb.AppendLine("[ATTACHED OBJECT REFERENCES]");
+            AppendRefLines(sb, refs);
+        }
+        sb.AppendLine();
+        sb.Append(ChannelLine(ch));
+        return sb.ToString();
+    }
+
+    /// <summary>Sent when a WINDOW panel binds onto an already-hired agent, before the user has
+    /// typed anything. Closes the gap where a panel could sit open on an agent that was never
+    /// told it had an audience at all — and the panel is world-readable, so "someone is watching
+    /// you" is worth saying on its own terms.
+    ///
+    /// It WAKES the agent, which is not what we want: the user asked for a notice, and a notice
+    /// is passive. The backend has no passive delivery to a node (`POST /nodes/{nid}/message` is
+    /// the only way in and it drives a turn; `/org_inbox/send` only addresses outside peers), so
+    /// the last line tells the agent plainly that nothing is being asked of it. When the backend
+    /// grows a notice mode, DeliverPanelEvent is the single place that changes.</summary>
+    internal static string ComposeOpenNotice(PanelChannel ch)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine($"{MarkOpened} The user \"{ch.UserName}\" has opened an in-game chat panel onto you "
+                      + $"from inside the Resonite world \"{ch.WorldName}\" (session {ch.SessionId}). You were "
+                      + "not re-hired and nothing about your role has changed — you simply have a live audience "
+                      + "in-world now, and an address to answer it on.");
+        sb.AppendLine();
+        sb.AppendLine(ChannelCard(ch));
+        sb.AppendLine();
+        sb.AppendLine($"- Their messages arrive as ordinary user mail marked {MarkMessage}, each repeating the "
+                      + "handle and the panel slot — you never have to remember this message.");
+        sb.AppendLine($"- Closing the panel does NOT retire you: you get a {MarkClosed} mail and the handle is "
+                      + "taken off your external handles.");
+        sb.Append("- Nothing is being asked of you right now. Carry on with what you were doing; this is "
+                  + "context for when they speak.");
+        return sb.ToString();
+    }
+
+    /// <summary>Sent when a panel that does NOT retire its agent goes away — the ⏏ detach button
+    /// on a body panel, or a window panel closing. Names the handle as dead, because an agent
+    /// told only that "the panel closed" still has a live-shaped address in front of it.
+    ///
+    /// The mail is the announcement; the real fix is the detach that accompanies it
+    /// (OrgtreeClient.DetachHandleAsync). A mail can be missed or compacted away — a handle
+    /// that is no longer in the system prompt cannot be used by anyone.</summary>
+    internal static string ComposeCloseNotice(PanelChannel ch)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine($"{MarkClosed} The in-game panel that was open on you has been closed. You STAY HIRED "
+                      + "and keep working — the panel was a conversation, not your employment.");
+        sb.AppendLine();
+        sb.AppendLine(ChannelCard(ch, dead: true));
+        sb.AppendLine("- Communicate through normal org channels from now on: orgtree_status for progress, "
+                      + "mail to your superior, or user mail if you hold a user audience.");
+        sb.AppendLine($"- The user may open a panel on you again later; if they do you will get a fresh "
+                      + $"{MarkOpened} naming the new handle.");
+        sb.Append("- Continue your current task unless told otherwise.");
+        return sb.ToString();
+    }
+
+    /// <summary>Degraded path only: a panel with no response handle (an older backend, or a
+    /// refused attach) has no channel to name, so its messages stay exactly as they were before
+    /// 2.9.0 — bare text, references appended. Claiming a handle that doesn't exist would be
+    /// worse than saying nothing.</summary>
     private static string ComposeFollowUp(string text, JsonArray refs)
     {
         if (refs.Count == 0)
@@ -1933,6 +2141,134 @@ internal static class PromptWizard
         sb.AppendLine("[ATTACHED OBJECT REFERENCES]");
         AppendRefLines(sb, refs);
         return sb.ToString();
+    }
+
+    // ======================= panel lifecycle events (2.9.0) =======================
+
+    /// <summary>Snapshot this panel's channel identity. Called ON THE WORLD THREAD at bind time,
+    /// once, because it reads the world — and the close path that needs it runs during teardown,
+    /// where reading the world is exactly what you must not do.</summary>
+    private static PanelChannel NewChannel(WizardState state, string peer, bool window)
+    {
+        var world = state.Root.World;
+        return new PanelChannel(peer, state.Root.ReferenceID.ToString(),
+            world.Name ?? "?", world.SessionId ?? "?", world.LocalUser?.UserName ?? "?", window);
+    }
+
+    /// <summary>THE CHOKE POINT for every panel lifecycle event (open, close) — one call site to
+    /// change if the delivery mechanism ever does.
+    ///
+    /// The user asked for these to be NOTICES: passive mail that waits in the agent's box and is
+    /// read on whatever turn comes next, never a turn started to receive it. That is the right
+    /// shape — an agent woken by "your panel closed" has nothing useful to do with the turn.
+    ///
+    /// The backend can mint exactly that (`orgtree_send_notice` → kind "notice", which every
+    /// no-wake rule keys on) and the route is even loopback-reachable — but `POST /api/agent`
+    /// validates the CALLING NODE unconditionally, and McpLink is not a node in anyone's org: the
+    /// user sentinel `@user` is refused with "no such node" (measured, not assumed). The only
+    /// door open to us is `POST /nodes/{nid}/message`, which drives a turn. So these WAKE today,
+    /// and the notices say plainly that nothing is being asked. When the backend grows a
+    /// user-authored notice, this method is the whole change.</summary>
+    private static Task<OrgtreeClient.Result<JsonNode>> DeliverPanelEvent(
+        string slug, string node, string body) => OrgtreeClient.MessageNodeAsync(slug, node, body);
+
+    /// <summary>Every live panel's (key, peer) — the input to PeerStillHeld. Stringified keys:
+    /// see that method's note about the suite and Elements.Core.</summary>
+    private static List<(string Key, string? Peer)> LivePeers()
+    {
+        var live = new List<(string, string?)>();
+        foreach (var kv in LiveStates)
+            live.Add((kv.Key.ToString(), kv.Value.Peer));
+        return live;
+    }
+
+    /// <summary>Tell an agent a window panel has opened onto it — the event that had no message
+    /// at all before 2.9.0. A window binds and attaches its handle BEFORE the user types
+    /// anything, so an agent could be watched in-world, by a panel every user in the session can
+    /// read, and never be told: all it got was the backend's standing handle line, which does not
+    /// even say the channel is a panel. If the user never typed, it was never told anything.
+    ///
+    /// On success the panel's first message becomes an ordinary marked message. If the notice
+    /// fails to land, KickoffSent stays false and that first message still carries the full
+    /// window contract — the pre-2.9.0 behaviour, so a failure degrades instead of losing it.</summary>
+    private static void AnnounceOpen(WizardState state)
+    {
+        var ch = state.Channel;
+        if (ch == null || state.OrgSlug == null || state.NodeId == null)
+            return; // handle-less (degraded) panel: no channel exists to announce
+        string slug = state.OrgSlug, node = state.NodeId;
+        // The handle is attached NOW, so the orphan ledger has to know about it whether or not
+        // the announcement lands: what the reconciler cleans up is the handle, not the telling.
+        PanelBindings.Add(slug, node, ch.Peer, window: true);
+        var world = state.Root.World;
+        string body = ComposeOpenNotice(ch);
+        Task.Run(async () =>
+        {
+            var r = await DeliverPanelEvent(slug, node, body).ConfigureAwait(false);
+            if (r.Error != null)
+            {
+                McpLinkMod.LogError($"PromptWizard: open notice to {node} failed: {r.Error} — "
+                                    + "the first message will carry the full contract instead.");
+                return;
+            }
+            RunSync(world, state, () => state.KickoffSent = true);
+        });
+    }
+
+    /// <summary>A WINDOW panel is gone: announce it and CUT THE HANDLE.
+    ///
+    /// Before 2.9.0 this path did nothing at all. Closing a window cancelled its polls and
+    /// returned, leaving the `@mcp:` handle attached to the agent permanently — so the
+    /// supervisor kept injecting "You hold EXTERNAL RESPONSE HANDLE(s): … send your answers and
+    /// progress updates there" into its system prompt, naming an address whose panel had not
+    /// existed for hours, in a world the agent may no longer be in. Window panels were not in the
+    /// bindings ledger either, so nothing anywhere could ever reconcile it away.
+    ///
+    /// The detach is the load-bearing half. The mail can be missed or compacted away; a line that
+    /// is no longer in the system prompt cannot be acted on by anyone. Handlers here must not
+    /// touch world state — this runs during teardown — so everything it needs is on the state
+    /// already, and the HTTP work is fire-and-forget on the thread pool.</summary>
+    private static void FireWindowClose(WizardState state, string reason)
+    {
+        if (state.ClosedFired || !state.WindowMode || state.OrgSlug == null || state.NodeId == null)
+            return;
+        state.ClosedFired = true;
+        var ch = state.Channel;
+        if (ch == null)
+            return; // degraded panel: no handle was ever attached, so nothing died
+        string slug = state.OrgSlug, node = state.NodeId, peer = ch.Peer;
+        // Two panels on one agent deliberately share one handle. The first to close must not
+        // announce it dead nor detach it out from under the other — and must leave the ledger
+        // entry alone, because that single entry is what covers the survivor on a crash.
+        if (PeerStillHeld(LivePeers(), state.Root.ReferenceID.ToString(), peer))
+        {
+            McpLinkMod.LogInfo($"PromptWizard: window on {node} closed ({reason}) — another panel "
+                               + $"still answers on @mcp:{peer}, so the channel stays open.");
+            return;
+        }
+        if (state.WorldClosed != null)
+        {
+            try { state.Root.World.WorldDestroyed -= state.WorldClosed; } catch { }
+            state.WorldClosed = null;
+        }
+        McpLinkMod.LogInfo($"PromptWizard: window on {node} closed ({reason}) — telling it and "
+                           + $"detaching @mcp:{peer}.");
+        string body = ComposeCloseNotice(ch);
+        Task.Run(async () =>
+        {
+            // announce BEFORE cutting: the agent should still hold the address it is being told
+            // about. A failed notice does not stop the detach — an un-announced dead handle is
+            // bad, an announced-but-still-attached one is worse.
+            var told = await DeliverPanelEvent(slug, node, body).ConfigureAwait(false);
+            if (told.Error != null)
+                McpLinkMod.LogError($"PromptWizard: close notice to {node} failed: {told.Error}");
+            var cut = await OrgtreeClient.DetachHandleAsync(slug, node, peer).ConfigureAwait(false);
+            if (cut.Error == null || LooksAlreadyResolved(cut.Error))
+                PanelBindings.Remove(slug, node, window: true);
+            else
+                McpLinkMod.LogError($"PromptWizard: detaching @mcp:{peer} from {node} failed: "
+                                    + $"{cut.Error} — left in the ledger for the next launch.");
+        });
     }
 
     // ======================= retire (automatic) =======================
@@ -2034,7 +2370,11 @@ internal static class PromptWizard
     /// <summary>Close the panel WITHOUT retiring: notify the agent first (its panel and handle
     /// are gone — stop using them), and only on a delivered notice tear the panel down. A
     /// failed notice keeps the panel: the agent must never be silently orphaned from a panel
-    /// it still believes in.</summary>
+    /// it still believes in.
+    ///
+    /// 2.9.0: the notice is now accompanied by the actual DETACH of the handle. Before, this
+    /// path announced the address dead and then left it attached to the node, so the agent was
+    /// told to stop using a handle its system prompt went on advertising indefinitely.</summary>
     private static void Detach(WizardState state)
     {
         if (state.Busy || state.WindowMode || state.FallbackMode || state.RetireFired || state.NodeId == null)
@@ -2042,10 +2382,22 @@ internal static class PromptWizard
         state.Busy = true;
         string slug = state.OrgSlug!, node = state.NodeId, peer = state.Peer ?? "";
         var world = state.Root.World;
-        string notice = ComposeDetachNotice(peer);
+        // the channel snapshot is the panel's own identity; a panel with no handle (degraded)
+        // still detaches, it simply has no address to name
+        string notice = state.Channel != null
+            ? ComposeCloseNotice(state.Channel)
+            : ComposeCloseNotice(new PanelChannel(peer, "?", world.Name ?? "?",
+                world.SessionId ?? "?", world.LocalUser?.UserName ?? "?", false));
         Task.Run(async () =>
         {
-            var r = await OrgtreeClient.MessageNodeAsync(slug, node, notice).ConfigureAwait(false);
+            var r = await DeliverPanelEvent(slug, node, notice).ConfigureAwait(false);
+            if (r.Error == null && peer.Length > 0)
+            {
+                var cut = await OrgtreeClient.DetachHandleAsync(slug, node, peer).ConfigureAwait(false);
+                if (cut.Error != null && !LooksAlreadyResolved(cut.Error))
+                    McpLinkMod.LogError($"PromptWizard: {node} was told its panel is gone but "
+                                        + $"detaching @mcp:{peer} failed: {cut.Error}");
+            }
             RunSync(world, state, () =>
             {
                 state.Busy = false;
@@ -2056,6 +2408,7 @@ internal static class PromptWizard
                     return;
                 }
                 state.RetireFired = true;          // the destroy below must not retire
+                state.ClosedFired = true;          // nor may the window-close path double up
                 PanelBindings.Remove(slug, node);  // nor may shutdown / the next-launch reconciler
                 if (state.WorldClosed != null)
                 {
@@ -2070,20 +2423,6 @@ internal static class PromptWizard
         });
     }
 
-    /// <summary>The mail that keeps a detached agent aware. Internal + pure for the suite.</summary>
-    internal static string ComposeDetachNotice(string peer)
-    {
-        return "[PANEL DETACHED] The user closed your in-game panel WITHOUT retiring you — you stay " +
-               "hired and keep working.\n" +
-               $"- The panel and its response handle @mcp:{peer} are GONE. Do NOT send anything to that " +
-               "address anymore — nothing reads it.\n" +
-               "- Communicate through normal org channels from now on: orgtree_status for progress, " +
-               "mail to your superior, or user mail if you hold a user audience.\n" +
-               "- The user can reopen a chat with you later as a window onto the user mail thread; " +
-               "anything you send as user mail reaches their desk regardless.\n" +
-               "- Continue your current task unless told otherwise.";
-    }
-
     /// <summary>Engine.OnShutdown subscriber (fires ONLY on a committed quit, on the main
     /// thread, before worlds tear down). Marks every bound body panel handled — so the
     /// WorldDestroyed handlers that fire moments later during engine disposal no-op — and
@@ -2093,17 +2432,33 @@ internal static class PromptWizard
     internal static void HandleEngineShutdown()
     {
         var toRetire = new List<(string Slug, string Node)>();
+        // 2.9.0: a quit also closes every WINDOW panel, and each of those owns a handle that
+        // would otherwise outlive the game. Deduped by (slug, node, peer) because two windows
+        // on one agent share a single handle — cutting it twice is harmless but announcing it
+        // twice is not.
+        var toClose = new List<(string Slug, string Node, string Peer, string Body)>();
         foreach (var state in LiveStates.Values)
         {
+            if (state.WindowMode && !state.ClosedFired && state.Channel != null
+                && state.OrgSlug != null && state.NodeId != null)
+            {
+                state.ClosedFired = true;
+                state.Poll?.Cancel();
+                var ch = state.Channel;
+                if (!toClose.Any(e => e.Slug == state.OrgSlug && e.Node == state.NodeId && e.Peer == ch.Peer))
+                    toClose.Add((state.OrgSlug, state.NodeId, ch.Peer, ComposeCloseNotice(ch)));
+                continue;
+            }
             if (!RetiresOnClose(state.WindowMode, state.FallbackMode, state.RetireFired, state.NodeId != null))
                 continue;
             state.RetireFired = true;
             state.Poll?.Cancel();
             toRetire.Add((state.OrgSlug!, state.NodeId!));
         }
-        if (toRetire.Count == 0)
+        if (toRetire.Count == 0 && toClose.Count == 0)
             return;
-        McpLinkMod.LogInfo($"PromptWizard: game shutting down — retiring {toRetire.Count} panel-bound agent(s).");
+        McpLinkMod.LogInfo($"PromptWizard: game shutting down — retiring {toRetire.Count} panel-bound "
+                           + $"agent(s), closing {toClose.Count} window channel(s).");
         FrooxEngine.Engine.Current.RegisterShutdownTask(Task.Run(async () =>
         {
             await Task.WhenAll(toRetire.Select(async entry =>
@@ -2114,15 +2469,33 @@ internal static class PromptWizard
                 McpLinkMod.LogInfo(r.Error == null
                     ? $"PromptWizard: {entry.Node} retired on game shutdown."
                     : $"PromptWizard: shutdown retire of {entry.Node}: {r.Error} (reconciled next launch if still bound)");
-            })).ConfigureAwait(false);
+            }).Concat(toClose.Select(async entry =>
+            {
+                await DeliverPanelEvent(entry.Slug, entry.Node, entry.Body).ConfigureAwait(false);
+                var cut = await OrgtreeClient.DetachHandleAsync(entry.Slug, entry.Node, entry.Peer)
+                    .ConfigureAwait(false);
+                if (cut.Error == null || LooksAlreadyResolved(cut.Error))
+                    PanelBindings.Remove(entry.Slug, entry.Node, window: true);
+                McpLinkMod.LogInfo(cut.Error == null
+                    ? $"PromptWizard: @mcp:{entry.Peer} detached from {entry.Node} on game shutdown."
+                    : $"PromptWizard: shutdown detach of @mcp:{entry.Peer}: {cut.Error} (reconciled next launch)");
+            }))).ConfigureAwait(false);
         }));
     }
 
     /// <summary>Next-launch sweep: wizard panels are non-persistent, so ANY binding present at
     /// engine startup is an orphan — its panel died with the previous game process (crash, or
-    /// a quit whose retires didn't land). Retire them; keep entries whose retire genuinely
-    /// failed (backend down) for the launch after. Runs only during REAL engine init — a hot
-    /// reload keeps live panels whose bindings are current, and must never sweep them.</summary>
+    /// a quit whose retires didn't land). Runs only during REAL engine init — a hot reload keeps
+    /// live panels whose bindings are current, and must never sweep them.
+    ///
+    /// What "reconcile" means depends on the binding, and getting it backwards would be
+    /// catastrophic in one direction: a BODY orphan is retired (its panel was its employment); a
+    /// WINDOW orphan is a dead HANDLE on an agent that must keep running, so its handle is
+    /// detached and it is never, ever retired. Entries that genuinely fail (backend down) stay
+    /// for the launch after.
+    ///
+    /// This is also the only cleanup the CRASH path gets: a process that died sent nothing, so
+    /// the agent carries a live-looking address until the next launch of the game.</summary>
     internal static async Task ReconcileOrphanedBindingsAsync()
     {
         for (int attempt = 0; attempt < 3; attempt++)
@@ -2132,19 +2505,44 @@ internal static class PromptWizard
             if (entries.Count == 0)
                 return;
             bool allResolved = true;
-            foreach (var (org, node) in entries)
+            foreach (var entry in entries)
             {
-                var r = await OrgtreeClient.RetireAsync(org, node).ConfigureAwait(false);
+                if (entry.Window)
+                {
+                    // no peer recorded (shouldn't happen — a window binding is only written with
+                    // one) leaves nothing actionable; drop it rather than sweep it forever
+                    if (entry.Peer == null)
+                    {
+                        PanelBindings.Remove(entry.Org, entry.Node, window: true);
+                        continue;
+                    }
+                    var d = await OrgtreeClient.DetachHandleAsync(entry.Org, entry.Node, entry.Peer)
+                        .ConfigureAwait(false);
+                    if (d.Error == null || LooksAlreadyResolved(d.Error))
+                    {
+                        PanelBindings.Remove(entry.Org, entry.Node, window: true);
+                        McpLinkMod.LogInfo($"PromptWizard: reconciled orphaned panel channel — "
+                                           + $"@mcp:{entry.Peer} detached from {entry.Node} ({entry.Org}).");
+                    }
+                    else
+                    {
+                        allResolved = false;
+                        McpLinkMod.LogError($"PromptWizard: orphan detach of @mcp:{entry.Peer} from "
+                                            + $"{entry.Node} ({entry.Org}) failed: {d.Error}");
+                    }
+                    continue;
+                }
+                var r = await OrgtreeClient.RetireAsync(entry.Org, entry.Node).ConfigureAwait(false);
                 if (r.Error == null || LooksAlreadyResolved(r.Error))
                 {
-                    PanelBindings.Remove(org, node);
+                    PanelBindings.Remove(entry.Org, entry.Node);
                     McpLinkMod.LogInfo($"PromptWizard: reconciled orphaned panel binding — " +
-                                       $"{node} ({org}) {(r.Error == null ? "retired" : "was already gone")}.");
+                                       $"{entry.Node} ({entry.Org}) {(r.Error == null ? "retired" : "was already gone")}.");
                 }
                 else
                 {
                     allResolved = false;
-                    McpLinkMod.LogError($"PromptWizard: orphan reconcile of {node} ({org}) failed: {r.Error}");
+                    McpLinkMod.LogError($"PromptWizard: orphan reconcile of {entry.Node} ({entry.Org}) failed: {r.Error}");
                 }
             }
             if (allResolved)
@@ -2194,8 +2592,11 @@ internal static class PromptWizard
                         if (!state.RetireFired)
                         {
                             state.RetireFired = true; // nothing left to retire on panel delete
-                            if (!state.WindowMode && !state.FallbackMode)
-                                PanelBindings.Remove(slug, node); // already gone — nothing to reconcile
+                            // the agent is archived, so its handles went with it: there is
+                            // nothing to announce and nothing to detach (2.9.0)
+                            state.ClosedFired = true;
+                            if (!state.FallbackMode)
+                                PanelBindings.Remove(slug, node, state.WindowMode); // already gone
                             AgentWires.Drop(state.Wire);
                             UpdateFrame(state, NeutralBorder);
                             SetTitle(state, $"{state.AgentLabel}{state.TitleTag} (retired)");
@@ -2995,15 +3396,17 @@ internal static class PromptWizard
         "and ground engine claims with mcp__ilspy-mcp__* against the DLLs in the game folder root. " +
         "Read-only toward the user's objects unless asked for changes; save_object before risky " +
         "mutations. The cross-session mail hub is OFF-LIMITS. When a task completes: answer to the " +
-        "handle, then orgtree_status done with a short summary. If a [PANEL DETACHED] mail arrives, " +
-        "your panel is gone but you remain hired: stop using the handle and work via org channels.";
+        "handle, then orgtree_status done with a short summary. Panel mail is marked: every message " +
+        "from the panel opens with [PANEL MESSAGE] and repeats the handle, so you never have to " +
+        "remember it. If a [PANEL CLOSED] mail arrives, your panel is gone but you remain hired: " +
+        "stop using the handle and work via org channels.";
 
     private static string BuildKickoff(WizardState state, string prompt, JsonArray refs, string peer)
     {
         var world = state.Root.World;
         var sb = new StringBuilder();
-        sb.AppendLine("You were created from an IN-GAME PROMPT PANEL (McpLink Prompt Wizard) — the user "
-                      + $"\"{world.LocalUser?.UserName}\" hired you from inside the Resonite world "
+        sb.AppendLine($"{MarkOpened} You were created from an IN-GAME PROMPT PANEL (McpLink Prompt Wizard) "
+                      + $"— the user \"{world.LocalUser?.UserName}\" hired you from inside the Resonite world "
                       + $"\"{world.Name}\" (session {world.SessionId}) and chats with you through that panel.");
         sb.AppendLine();
         sb.AppendLine("THE PROMPT:");
@@ -3027,10 +3430,12 @@ internal static class PromptWizard
         sb.AppendLine($"- For a rich standalone answer you may ALSO use the mcplink spawn_markdown tool "
                       + $"(panel slot {state.Root.ReferenceID}, or inFrontOf \"{world.LocalUser?.UserName}\") — "
                       + "but the handle message is the required minimum.");
-        sb.AppendLine("- Follow-ups arrive as more user mail; they may carry [ATTACHED OBJECT REFERENCES] blocks like the one above.");
+        sb.AppendLine($"- Follow-ups arrive as more user mail, each opening with {MarkMessage} and repeating this "
+                      + "handle and panel slot — you never have to remember them. They may carry "
+                      + "[ATTACHED OBJECT REFERENCES] blocks like the one above.");
         sb.AppendLine("- The user deleting the panel retires you; when a task is complete, answer to the handle, then orgtree_status done.");
-        sb.AppendLine("- The user may instead DETACH the panel: you get a [PANEL DETACHED] mail, you STAY HIRED, "
-                      + "and the handle above goes dead — from then on use normal org channels, not the handle.");
+        sb.AppendLine($"- The user may instead DETACH the panel: you get a {MarkClosed} mail, you STAY HIRED, "
+                      + "and the handle above is taken off you — from then on use normal org channels.");
         return sb.ToString();
     }
 
@@ -3048,8 +3453,8 @@ internal static class PromptWizard
     {
         var world = state.Root.World;
         var sb = new StringBuilder();
-        sb.AppendLine($"The user \"{world.LocalUser?.UserName}\" has OPENED AN IN-GAME CHAT PANEL onto you "
-                      + $"from inside the Resonite world \"{world.Name}\" (session {world.SessionId}). "
+        sb.AppendLine($"{MarkOpened} The user \"{world.LocalUser?.UserName}\" has OPENED AN IN-GAME CHAT PANEL "
+                      + $"onto you from inside the Resonite world \"{world.Name}\" (session {world.SessionId}). "
                       + "You were not re-hired and nothing about your role has changed — you simply have "
                       + "a live audience in-world now, and an address to answer it on.");
         sb.AppendLine();
@@ -3074,10 +3479,12 @@ internal static class PromptWizard
                       + "is not your desk. Send DELIBERATE replies and progress notes, never a running "
                       + "transcript of your work: content stays explicit, presence stays ambient. Anything "
                       + "private or long-form belongs in user mail or your status, not the panel.");
-        sb.AppendLine("- Follow-ups arrive as more user mail; they may carry [ATTACHED OBJECT REFERENCES] blocks like the one above.");
+        sb.AppendLine($"- Follow-ups arrive as more user mail, each opening with {MarkMessage} and repeating this "
+                      + "handle and panel slot — you never have to remember them. They may carry "
+                      + "[ATTACHED OBJECT REFERENCES] blocks like the one above.");
         sb.AppendLine("- Closing this window does NOT retire you — it is a view onto the conversation, not your "
-                      + "employment. If a [PANEL DETACHED] mail arrives, the handle above is dead: stop using it "
-                      + "and work through normal org channels.");
+                      + $"employment. When it closes you get a {MarkClosed} mail and the handle above is taken "
+                      + "off you: work through normal org channels from then on.");
         sb.AppendLine("- You may also use the mcplink tools against that live world "
                       + $"(panel slot {state.Root.ReferenceID}) if your work calls for it.");
         return sb.ToString();
