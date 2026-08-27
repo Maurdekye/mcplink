@@ -41,6 +41,12 @@
     <!-- the smoke-test and eval-companion projects live in subfolders; keep them out of the mod build -->
     <Compile Remove="test/**" />
     <Compile Remove="eval/**" />
+    <!-- tools/apiprobe is a standalone dotnet project too. Without this the SDK's **/*.cs glob
+         picks up its generated obj/**/*.AssemblyInfo.cs and the mod build dies with eight
+         CS0579 "duplicate assembly attribute" errors that name only the ROOT obj/ files and say
+         nothing about the subfolder which actually caused it. Any future standalone project added
+         under tools/ is covered by this. -->
+    <Compile Remove="tools/**" />
   </ItemGroup>
 
   <ItemGroup>

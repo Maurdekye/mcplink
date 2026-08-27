@@ -55,11 +55,15 @@ own deploy would cold-deploy any blocked experimental build into a running game 
 including every worktree and branch build. The warning was the half that was missing, not the
 consent gate.
 
-### This is not just a McpLink problem — other mods are affected too
+### This is not just a McpLink problem, and it is not just `Slot.Children`
 
-We checked the rest of the mods on our own install, because if `Slot.Children` moved under us it
-moved under everyone. **Seven of them still hold a reference to the old signature**, at the
-versions we had installed:
+`Slot.Children` is **our** instance of a broader change. `2026.8.27.1094` carries an engine-wide
+migration of collection parameters and returns from `IList<T>` to `IReadOnlyList<T>`, **plus
+unrelated methods that simply gained a parameter.** We resolved every engine `MemberRef` in all
+**45** mod assemblies on this install against the current engine binaries. **Ten are affected.**
+
+**Seven via `Slot.Children`** — `get_Children()` returned `SlimListEnumerableWrapper<Slot>`, now
+`IReadOnlyList<Slot>`:
 
 | mod | version |
 |---|---|
@@ -71,42 +75,72 @@ versions we had installed:
 | ResoniteMetricsCounter | 0.8.0 |
 | SimpleInventorySearch | 1.0.1 |
 
-⚠ **Please read that as "will throw on any code path that reads `.Children`", not as "is
-broken".** These mods load fine. The exception is raised when the JIT first compiles a method
-body that reads the property, so a mod stays perfectly well-behaved until the specific feature
-that walks a slot hierarchy is used. Several may never visibly misbehave for a given user.
+**Three via other members entirely** — and these are the ones that matter for how you test:
 
-**And three we specifically checked and found *unaffected***, listed because a list of casualties
-with no survivors is not a measurement: **CustomInspectors** and **FastModelImport** both match on
-a `get_Children` belonging to unrelated types (`Elements.Core.DataTreeList` /
-`DataTreeDictionary`, and `Assimp.Node`), and **ProtoFluxContextualActions** contains no reference
-to `Slot.Children` at all.
+| mod | old reference | current engine |
+|---|---|---|
+| ProtoFluxContextualActions 0.14.1 | `CollectionsExtensions.FindIndex(IList<T>, Predicate<T>)` | `FindIndex(IReadOnlyList<T>, Predicate<T>)` |
+| JustBoundedUIX 2.0.1 | `DebugManager.Box(float3&, float3&, colorX&, floatQ&, Single)` | `Box(…, Single, Boolean local)` |
+| ImportFromUnityLib 1.0.0 | `MeshX.SetHasUV(Int32, Boolean)`, and likewise `SetHasUV_3D` and `SetHasUV_4D` | each gained a third parameter, `Boolean throwIfDimensionsMismatch` |
+
+`FindIndex` is the **same `IList` → `IReadOnlyList` migration** as `Children`, on a different
+member. **`Box` and `SetHasUV` are not that at all — they are added parameters, and no type
+disappears anywhere.**
+
+⚠ **Please read all of this as "will throw on any code path that reaches the changed member", not
+as "is broken".** These mods load fine. The exception is raised when the JIT first compiles a
+method body containing the call, so a mod stays perfectly well-behaved until the specific feature
+is used. Several may never visibly misbehave for a given user.
+
+**35 of the 45 resolved clean**, including this build of McpLink. Two of those clean results —
+`ResoniteBridgeLib` and `ResoniteUnityExporterShared` — reported **0 engine member references
+checked**, which means the tool found nothing of the engine to check rather than checking it and
+finding it sound. That is not a clean bill of health, and we would rather say so than let a count
+of zero read as a pass.
 
 **Independent corroboration:** SimpleInventorySearch **1.0.3**'s release note reads simply
 *"recompiled for new reso version"* — another author hit and fixed exactly this, the same day,
 without any contact with us. If you maintain a mod, a rebuild against the current game is very
 likely all you need.
 
-### How to check a mod correctly (a string search is the wrong instrument)
+### How to check a mod correctly — including why our own first attempt was too narrow
 
-If you go looking for this yourself, three things will bite you:
+If you go looking for this yourself, four things will bite you. **The fourth one caught us.**
 
 1. **Direction.** A reference to the **old** signature is what means *affected*. It is easy to
    assume the opposite.
 2. **The engine itself is a false positive.** `Elements.Core.dll` contains the string
-   `SlimListEnumerableWrapper` because it **defines** the type — which it still does; the type was
-   never removed, and `RectTransform.RectChildren` still returns it. Only `Slot.Children`'s return
+   `SlimListEnumerableWrapper` because it **defines** the type — which it still does. The type was
+   never removed, and `RectTransform.RectChildren` still returns it; only `Slot.Children`'s return
    type changed. A naive grep across a game install therefore reports the engine as "affected".
-3. **A text search can't tell a definition from a use, or a use on `Slot` from a use on some other
-   type.** The sound instrument is to read the assembly's **metadata**: does it carry a `TypeRef`
-   to `SlimListEnumerableWrapper` *together with* a `MemberRef` to `get_Children` on
-   `FrooxEngine.Slot`? A mod that has been rebuilt still has the `MemberRef` — it still calls
-   `.Children` — but no longer references the old type. That pair is what discriminates.
+3. **A text search cannot tell a definition from a use**, or a use on `Slot` from a use on some
+   other type. `CustomInspectors` and `FastModelImport` both reference a `get_Children` — on
+   `Elements.Core.DataTreeList` / `DataTreeDictionary` and on `Assimp.Node` respectively — and
+   neither is affected by anything here.
+4. ⚠ **A screen that looks for a *vanished type* structurally cannot see a *changed parameter
+   list*.** Our first published version of this section recommended looking for a `TypeRef` to
+   `SlimListEnumerableWrapper` alongside a `MemberRef` to `Slot.get_Children`. That is a correct
+   test **for this one break** and it is blind to the other three: no type disappears in the
+   `Box` or `SetHasUV` changes, so nothing would have shown up. **It also listed
+   `ProtoFluxContextualActions` as unaffected, which was wrong** — it has no `Slot.Children`
+   reference, and it is broken via `FindIndex`.
 
-We verified the table above by two independent routes: decoding the `MemberRef` signature blobs
-directly, and the `TypeRef`+`MemberRef` pairing described above. Both were run with a
-known-positive and a known-negative control — a pre-update and post-update build of *the same
-file*, which the check correctly separated.
+**The general instrument is to resolve each `MemberRef`'s decoded signature against the current
+engine's `MethodDef`** (walking the base-type chain), and report the ones that no longer match.
+That catches removals, return-type changes and parameter additions alike, without needing to know
+in advance which API moved. Critically, it also tells *fixed* from *broken* on an identical
+reference: a rebuilt mod still carries a `MemberRef` to `Slot.get_Children` — it still calls the
+property — but its signature now matches, so it resolves clean.
+
+The tool we used for this is included in the repo at **`tools/apiprobe/`** (needs only `dotnet`):
+
+```
+dotnet run -- "<install>\rml_mods" --resolve "<install>;<install>\Libraries;<install>\rml_libs"
+```
+
+It was written by another agent on this project — credited in the source — who built it after
+correctly pointing out that the string-search approach was unsound. The three non-`Children`
+breaks above are entirely their find; our narrower screen would have missed all of them.
 
 ## 2.9.1 (2026-08-27)
 
