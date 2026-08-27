@@ -848,3 +848,36 @@ what kept it alive.
   is reporting on itself, not on the artifact. **Any probe whose negative result is interesting
   must be run against something known-positive in the same breath**, or a broken probe is
   indistinguishable from a clean artifact — which is exactly how a stale DLL keeps passing.
+
+### 2026-08-27 — a deployed DLL's mtime is the SOURCE's build time, not the deploy time (`Copy-Item` preserves it)
+- **Reported by:** `engine-break`; the forensic consequence spotted by `ingame-prompt` while
+  independently corroborating the 2.9.2 deploy. Nothing broke — recording it because it is a
+  ready-made wrong conclusion sitting in a file everyone reads during an incident.
+- **Measured, right after a verified deploy:**
+  ```
+  SOURCE   bin\Release\McpLink.dll        2026-08-27T23:02:27.6676761+03:00
+  DEPLOYED rml_mods\McpLink.dll           2026-08-27T23:02:27.6676761+03:00   <- identical
+  DEPLOYED HotReloadMods\McpLink.dll      2026-08-27T23:02:27.6676761+03:00   <- identical
+  CreationTime of rml_mods copy           2026-07-03T13:32:08                 <- July!
+  ```
+  **The copy actually happened at ~23:10 local.** `Copy-Item` propagates the source's
+  `LastWriteTime`, and NTFS keeps the original `CreationTime` when a file is overwritten in place —
+  so *neither* timestamp on the deployed file is the moment it was deployed. The creation time is
+  off by nearly two months.
+- **Where this bites, concretely:** `session_info` reports `deployed[].modifiedUtc` straight from
+  the file. After this deploy it reads **`2026-08-27T20:02:27Z`**, which is *earlier* than the
+  deploy — and sits uncomfortably close to the engine update at `18:47Z`. Anyone reconstructing
+  "was the mod rebuilt before or after the engine changed?" from those two numbers can get the
+  ordering right by luck and the reasoning wrong by construction. On 2026-08-27 the entire initial
+  diagnosis hinged on exactly that kind of build-vs-engine ordering argument.
+- **The rule:** ⚠ **file mtime is evidence about a BUILD, never about a DEPLOY, and never a
+  staleness check.** To answer "are the right bytes on disk", hash them. To answer "when did they
+  get there", you need something that records the write — a log line, or the check you ran at the
+  time. `session_info`'s `mvid` and `matchesRunning` are identity claims and are sound; its
+  `modifiedUtc` is inherited metadata and is not.
+- **Corollary for anyone reading a copier's own log:** the production copier's success line prints
+  hard-coded prose (`copied bin\Release -> rml_mods`) regardless of the paths it actually used, and
+  logs `$seed.Keys` wholesale rather than the keys it genuinely added — so a log line naming two
+  seeded config keys is not evidence that both were absent beforehand. Found by running the copier
+  in a sandbox rather than reading it. **A log line is a claim by the program about itself**; it
+  earns trust the same way any other check does, by being made to fail once.
