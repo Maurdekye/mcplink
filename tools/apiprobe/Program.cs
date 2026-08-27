@@ -23,9 +23,25 @@
 // check cannot: a rebuilt mod still carries a MemberRef to Slot.get_Children -- it still calls the
 // property -- but the decoded signature now matches, so it resolves CLEAN.
 //
-// ⚠ READ THE "checked" COUNT, NOT JUST "CLEAN". An assembly with no engine MemberRefs reports
-// "CLEAN (0 engine memberrefs checked)". That means there was nothing to check, NOT that it was
-// checked and found sound. Two mods on this install do exactly that.
+// THREE VERDICTS, AND TWO OF THEM ARE ABSTENTIONS THAT REFUSE TO LOOK LIKE PASSES.
+//   CLEAN (n checked)   n>0 refs resolved and all matched.
+//   NOT CHECKED         0 engine refs resolved. Prints WHAT the refs pointed at instead, so you
+//                       can see whether it is a genuinely engine-free assembly or a bad path.
+//   !! ENGINE ASSEMBLY NOT LOADED - under-checked: <asms>
+//                       the dangerous one. SOME refs resolved and some did not, so without this
+//                       line you would get a confident "CLEAN (n checked)" that had silently
+//                       skipped every FrooxEngine reference in the file. Far harder to spot than
+//                       a zero, because the count looks healthy.
+//
+// The earlier version of this tool had exactly that defect and reported bare "CLEAN (0 checked)".
+// Both verdicts were added by the original author after it was pointed out.
+//
+// ⚠ CONTROL-TEST BOTH BEFORE TRUSTING A CLEAN SWEEP. Measured 2026-08-27 against 45 mods:
+//   - correct engine paths          -> 0 under-checked  (the real result)
+//   - Libraries+rml_libs only, no
+//     game root (PARTIAL map)       -> 41 under-checked  (proves the warning can fire)
+//   - a nonexistent engine dir      -> 45 NOT CHECKED, 0 under-checked
+// The middle run is the one that matters: without it, "0 under-checked" is itself an abstention.
 //
 // USAGE
 //   dotnet run -- "<install>\rml_mods" --resolve "<install>;<install>\Libraries;<install>\rml_libs"
