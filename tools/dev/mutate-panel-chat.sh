@@ -11,29 +11,76 @@
 #   SANITY  an obviously broken mutant -- must DIE. If it survives, the harness
 #           is not running the code it thinks it is.
 #
-#   bash tools/mutate-panel-chat.sh
+#   bash tools/dev/mutate-panel-chat.sh            (full round)
+#   bash tools/dev/mutate-panel-chat.sh --check-baseline   (just the baseline gate)
 #
 # Restores every mutated file from git afterwards; refuses to start dirty.
 
 set -u
-cd "$(dirname "$0")/.." || exit 1
+# ../.. because this script lives in tools/dev/. It was tools/ until the 2.8.1 public
+# restructure (09e167a) moved dev tooling down a level and left this path behind, so the
+# harness has been unable to find the repo -- and therefore unable to run -- ever since.
+cd "$(dirname "$0")/../.." || exit 1
 ROOT="$(pwd)"
+if [ ! -f "McpLink.csproj" ]; then
+  echo "not at the repo root (cwd: $(pwd)) -- McpLink.csproj is not here. Refusing to run:"
+  echo "a harness that cannot find the repo reports 'the suite is not green', which blames"
+  echo "the suite for the harness's own broken path."; exit 1
+fi
 PW="Source/PromptWizard.cs"
 
 if [ -n "$(git status --porcelain "$PW")" ]; then
   echo "refusing to run: $PW is dirty -- commit first"; exit 1
 fi
 
-run_suite() {   # -> prints the PASS lines
-  ( cd test && dotnet run -v quiet 2>/dev/null ) | sed -n 's/^  PASS  //p'
+# Prints the suite's PASS lines, and writes its summary line to $SUMMARY_FILE.
+#
+# ⚠ IT MUST DISTINGUISH "the suite ran and some checks failed" -- which is the whole point of a
+# mutant -- FROM "the suite never ran at all", which makes every conclusion below meaningless.
+# The summary line is the tell, so its absence is a hard failure.
+#
+# What this replaced, because it is this repo's own named failure mode (measured 2026-08-27):
+# `sed -n 's/^  PASS  //p'` CANNOT SEE A FAIL LINE, so a RED suite still yielded hundreds of PASS
+# lines, and the gate below was a magic floor -- `[ "$BASE_N" -lt 190 ]`. The suite has since grown
+# to 286 checks, so the floor had ~96 checks of slack: a deliberate mutant left the suite at
+# "284 passed, 2 failed" and 284 >= 190 sailed straight through as a healthy baseline. That is the
+# same shape as the round that once ran five mutants against reverted code, where a baseline
+# drifting 178 -> 175 was the only tell. And `2>/dev/null` hid the build error behind an empty run.
+# The suite's OWN summary is now the gate; there is no threshold to maintain.
+SUMMARY_FILE="$(mktemp)"
+trap 'rm -f "$SUMMARY_FILE"' EXIT
+
+run_suite() {
+  local out
+  out="$( cd test && dotnet run -v quiet 2>&1 )"
+  printf '%s\n' "$out" | grep -E '^[0-9]+ passed, [0-9]+ failed$' | tail -1 > "$SUMMARY_FILE"
+  if [ ! -s "$SUMMARY_FILE" ]; then
+    { echo "SUITE DID NOT RUN -- no 'N passed, M failed' summary in its output."
+      echo "Refusing to treat a non-run as a result. Last lines:"
+      printf '%s\n' "$out" | tail -5
+    } >&2
+    return 1
+  fi
+  printf '%s\n' "$out" | sed -n 's/^  PASS  //p'
 }
 
-BASE="$(run_suite)"
-BASE_N="$(printf '%s\n' "$BASE" | grep -c .)"
-if [ "$BASE_N" -lt 190 ]; then
-  echo "baseline looks wrong ($BASE_N checks) -- is the suite green?"; exit 1
-fi
-echo "baseline: $BASE_N checks green"
+BASE="$(run_suite)" || { echo "cannot establish a baseline -- fix the suite first"; exit 1; }
+BASE_SUMMARY="$(cat "$SUMMARY_FILE")"
+case "$BASE_SUMMARY" in
+  *", 0 failed")
+    echo "baseline: $BASE_SUMMARY"
+    # `--check-baseline` exercises THIS gate, on the real suite, without paying for a full
+    # mutation round. A gate nobody can afford to run is a gate nobody runs.
+    if [ "${1:-}" = "--check-baseline" ]; then
+      echo "baseline gate OK (--check-baseline: stopping before the mutants)"; exit 0
+    fi ;;
+  *)
+    echo "refusing to run: the baseline suite is RED ($BASE_SUMMARY)."
+    echo "Mutation results are only meaningful against a green baseline -- a check that was"
+    echo "already failing cannot be 'killed' by a mutant, and one that was already broken cannot"
+    echo "be shown to work. Fix the suite first."
+    exit 1 ;;
+esac
 echo
 
 MISSES=0
@@ -53,7 +100,12 @@ PY
   fi
 
   local after killed
-  after="$(run_suite)"
+  # a mutant SHOULD turn the suite red -- but a suite that never ran produces the same empty
+  # PASS list as one where the mutant killed everything, and the two mean opposite things
+  if ! after="$(run_suite)"; then
+    echo "  ??  $name"; echo "      the suite did not RUN under this mutant -- result meaningless"
+    MISSES=$((MISSES+1)); git checkout -- "$file"; return
+  fi
   killed="$(comm -23 <(printf '%s\n' "$BASE" | sort) <(printf '%s\n' "$after" | sort))"
   git checkout -- "$file"
 

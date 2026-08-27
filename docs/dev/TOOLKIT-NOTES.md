@@ -683,3 +683,83 @@ make the same mistake unless the measurement is written down.
   (`IUpdatable updatable`, `bool evenIfDisposed`) are optional, so the 2-arg form stands; and the
   decompiled `EnsureVisual` body confirms the `<NODE_UI>` visual-slot name and the `0.00093750004f`
   (≈0.0009375) visual scale as literals in the engine code.
+
+## 2026-08-27 — a guard sweep of our own tooling: three checks that could not fail, two probes that could not run
+
+Prompted by the 2.9.0 release. `tools/release.ps1`'s final gate — "the Release exists with exactly
+those assets" — had been **vacuous on every release ever cut here**, and its failure mode looked
+exactly like success. The tell was one empty string:
+
+```
+Assets verified:  (build stamp gb5d796faf92e)     <- 2.9.0, the broken gate
+Assets verified: mcp.py, McpLink-2.9.1.zip, McpLink.dll (build stamp gb5ab2f0ccdab)   <- 2.9.1, fixed
+```
+
+Two faults compounded, and both generalise:
+
+1. **Windows PowerShell 5.1 does not escape embedded double quotes when passing an argument to a
+   native exe.** `--jq '[.assets[].name] | join(", ")'` reached `gh` as extra positional args:
+   `accepts at most 1 arg(s), received 2`. The capture came back empty. **Rule: don't pass a
+   quoted expression program to a native tool from 5.1 — get raw JSON and parse it in PowerShell.**
+2. **`-match` / `-notmatch` is not an absence test.** With an array on the left it *filters*,
+   returning the non-matching elements (an empty array — falsy) rather than a boolean. I claimed in
+   review that `$null -notmatch "x"` is not `$true`; testing showed it *is*, for a true `$null`
+   scalar — the blank came from the array path. **The narrow lesson is the useful one: whether it
+   yields a boolean at all depends on how the failed capture landed, and a guard whose truthiness
+   depends on that is not a guard.** Use `-notcontains` against an array, and test emptiness
+   explicitly.
+
+### Then we swept the rest of the repo's tooling for the same class
+
+Ground covered: `package.ps1`, `tools/{release,install,update}.ps1`,
+`tools/dev/{mutate-panel-chat,verify-deploy-artifact,verify-deploy-warning}.sh`, `McpLink.csproj`,
+`eval/McpLinkEval.csproj`, `test/McpLinkSmoke.csproj` — ~1,100 lines.
+
+**The biggest find was not a subtle guard — it was that two of the three dev probes had not been
+runnable for days.** `09e167a` (the 2.8.1 public restructure) moved dev tooling from `tools/` into
+`tools/dev/` and left `cd "$(dirname "$0")/.."` behind, so both resolved their "repo root" to
+`tools/`, where there is no `McpLink.csproj`. Measured: `cd: test: No such file or directory`.
+Worse, `mutate-panel-chat.sh` then reported **"baseline looks wrong (0 checks) -- is the suite
+green?"** — blaming the suite for the harness's own broken path. Both now resolve `../..` and
+refuse to run if `McpLink.csproj` is not there, naming the cwd.
+
+**`mutate-panel-chat.sh`'s baseline gate was the same defect class as `release.ps1`.** `run_suite`
+was `dotnet run 2>/dev/null | sed -n 's/^  PASS  //p'` — it **cannot see a FAIL line** — and the
+gate was a magic floor, `[ "$BASE_N" -lt 190 ]`. The suite has since grown to 286 checks, so the
+floor carried ~96 checks of slack: measured today, a deliberate mutant left the suite at
+**"284 passed, 2 failed"**, and 284 ≥ 190 sails through as a healthy baseline. That is the same
+shape as the round that once ran five mutants against reverted code with a baseline drifting
+178→175 as the only tell. Now gated on the suite's **own summary line** (`, 0 failed`), with a
+missing summary treated as "did not run" rather than as a result — a distinction that matters
+because a mutant is *supposed* to make the suite red. Added `--check-baseline` so the gate can be
+exercised without paying for a full mutation round; a gate nobody can afford to run is a gate
+nobody runs.
+
+**`verify-deploy-warning.sh` asserted absence against output that would also be absent if the
+build never ran.** Demonstrated rather than reasoned: feeding `""` to its case-2 and case-3 guards,
+both PASS and the failure count stays 0 — "the build FAILS, so an unfinished deploy cannot be
+mistaken for a finished one", concluded from having observed nothing. Each case now proves the
+build actually ran first.
+
+### Checked and found sound — stated so nobody re-derives it
+
+- **`verify-deploy-artifact.sh` is the model to copy.** Explicit `CONTROL+` / `CONTROL-` pair, a
+  third control probing an unrelated DLL, and it keeps a byte copy of the *old* DLL so a marker
+  must be absent there and present here. (It also greps clean for `strings` — that word appears in
+  a usage message; it uses Python, not the binary this division was once burned by.)
+- **`McpLink.csproj`'s `DeployToMods` detects success POSITIVELY** — non-empty `CopiedFiles`, with
+  `SkipUnchangedFiles="false"` pinned precisely so a skipped file cannot be mistaken for a blocked
+  one. `ContinueOnError` there is deliberate (a locked DLL is the normal mid-development case) and
+  is paired with a real MSBuild warning plus an on-disk `.PENDING` note. Correct shape.
+- **`install.ps1` / `update.ps1` hash verification is safe, but by `$ErrorActionPreference =
+  "Stop"`, not by the comparison.** Measured: `Get-FileHash` on a missing file *throws*
+  (`ItemNotFoundException`), so the compare is never reached. Worth knowing that if that preference
+  were ever relaxed, `$null -ne $null` is `False` and the `VERIFY FAILED` guard would silently not
+  fire.
+- `release.ps1`'s other guards check `$LASTEXITCODE` explicitly and `Test-Path` the artifacts; its
+  remaining `--jq .tagName` has no spaces or quotes, so it does not hit fault 1.
+
+**The standing rule this leaves behind:** for every guard, make it fail once and watch it go red.
+Reading it is not enough — `release.ps1` was read many times. And a run of good luck reads exactly
+like a working check: every release cut with the fake gate happened to be fine, which is precisely
+what kept it alive.
