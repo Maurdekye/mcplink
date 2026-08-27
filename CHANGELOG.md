@@ -55,6 +55,59 @@ own deploy would cold-deploy any blocked experimental build into a running game 
 including every worktree and branch build. The warning was the half that was missing, not the
 consent gate.
 
+### This is not just a McpLink problem — other mods are affected too
+
+We checked the rest of the mods on our own install, because if `Slot.Children` moved under us it
+moved under everyone. **Seven of them still hold a reference to the old signature**, at the
+versions we had installed:
+
+| mod | version |
+|---|---|
+| DynVarGenerator | 1.3.4 |
+| DynVarSpaceTree | 2.0.1 |
+| GetItemLink | 1.4.6 — and **1.4.9 is still old-signature**, checked on the downloaded artifact |
+| ProtoFluxOverhaul | 1.5.0 |
+| ReferenceFinderWizard | 1.2.0 |
+| ResoniteMetricsCounter | 0.8.0 |
+| SimpleInventorySearch | 1.0.1 |
+
+⚠ **Please read that as "will throw on any code path that reads `.Children`", not as "is
+broken".** These mods load fine. The exception is raised when the JIT first compiles a method
+body that reads the property, so a mod stays perfectly well-behaved until the specific feature
+that walks a slot hierarchy is used. Several may never visibly misbehave for a given user.
+
+**And three we specifically checked and found *unaffected***, listed because a list of casualties
+with no survivors is not a measurement: **CustomInspectors** and **FastModelImport** both match on
+a `get_Children` belonging to unrelated types (`Elements.Core.DataTreeList` /
+`DataTreeDictionary`, and `Assimp.Node`), and **ProtoFluxContextualActions** contains no reference
+to `Slot.Children` at all.
+
+**Independent corroboration:** SimpleInventorySearch **1.0.3**'s release note reads simply
+*"recompiled for new reso version"* — another author hit and fixed exactly this, the same day,
+without any contact with us. If you maintain a mod, a rebuild against the current game is very
+likely all you need.
+
+### How to check a mod correctly (a string search is the wrong instrument)
+
+If you go looking for this yourself, three things will bite you:
+
+1. **Direction.** A reference to the **old** signature is what means *affected*. It is easy to
+   assume the opposite.
+2. **The engine itself is a false positive.** `Elements.Core.dll` contains the string
+   `SlimListEnumerableWrapper` because it **defines** the type — which it still does; the type was
+   never removed, and `RectTransform.RectChildren` still returns it. Only `Slot.Children`'s return
+   type changed. A naive grep across a game install therefore reports the engine as "affected".
+3. **A text search can't tell a definition from a use, or a use on `Slot` from a use on some other
+   type.** The sound instrument is to read the assembly's **metadata**: does it carry a `TypeRef`
+   to `SlimListEnumerableWrapper` *together with* a `MemberRef` to `get_Children` on
+   `FrooxEngine.Slot`? A mod that has been rebuilt still has the `MemberRef` — it still calls
+   `.Children` — but no longer references the old type. That pair is what discriminates.
+
+We verified the table above by two independent routes: decoding the `MemberRef` signature blobs
+directly, and the `TypeRef`+`MemberRef` pairing described above. Both were run with a
+known-positive and a known-negative control — a pre-update and post-update build of *the same
+file*, which the check correctly separated.
+
 ## 2.9.1 (2026-08-27)
 
 **Panel open and close events are now passive notices — they no longer start a turn.** 2.9.0
