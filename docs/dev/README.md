@@ -14,6 +14,9 @@ these files are that process's paper trail, kept because the lessons in them are
   the orgtree agent-panel chat feature.
 - **[SKINNED-EXPORT-STATUS.md](SKINNED-EXPORT-STATUS.md)** — a mid-flight status handoff for
   the skinned-mesh glTF export work, written by one agent for its successor.
+- **[PUSH-ACCESS.md](PUSH-ACCESS.md)** — how push access to this repo is wired on the
+  maintainer's machine, and how it breaks. The mechanism lives in an *uncommitted* file, so
+  this note is the only way to discover it; it records no credentials.
 
 Contributor-facing note: after using McpLink for a real job, log new toolkit friction in
 `TOOLKIT-NOTES.md` — one short entry, with the measurement in it. The dev harness scripts

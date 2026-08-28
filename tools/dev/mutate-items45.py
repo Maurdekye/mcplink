@@ -18,10 +18,23 @@ import sys
 import re
 from pathlib import Path
 
-WT = Path(r"E:\Libraries\Desktop\resonite\mcplink-toolkit")
+# THE TREE THIS SCRIPT LIVES IN. This used to be hardcoded to a worktree
+# (`...\resonite\mcplink-toolkit`) that was later removed, so the harness had been dead for days
+# while still looking runnable: it printed "=== baseline ===" and then died with
+# NotADirectoryError. It failed loudly, which is the only reason it was merely useless rather than
+# actively misleading -- but a probe that cannot run is still a probe nobody is being protected by.
+# Resolve relatively, the way the sibling harness mutate-panel-chat.sh already does.
+WT = Path(__file__).resolve().parent.parent.parent
 IMPORT_SHAPE = WT / "Source" / "ImportShape.cs"
 MATERIAL_SHAPE = WT / "Source" / "MaterialShape.cs"
 TOOLS_ASSETS = WT / "Source" / "ToolsAssets.cs"
+
+# Fail before mutating anything if the tree is not what we think it is. A mutation harness that
+# starts editing files it cannot find is how you get "five mutants run against reverted code".
+for _p in (IMPORT_SHAPE, MATERIAL_SHAPE, TOOLS_ASSETS):
+    if not _p.is_file():
+        sys.exit(f"ABORT: expected source file not found: {_p}\n"
+                 f"       (resolved repo root: {WT}) -- is this script still inside the repo?")
 
 
 def run_suite():

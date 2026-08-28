@@ -18,11 +18,22 @@
 set -u
 
 STATE="${TMPDIR:-/tmp}/mcplink-deploy-probe"
-GAME="C:/Program Files (x86)/Steam/steamapps/common/Resonite"
+
+# THE TREE THIS SCRIPT LIVES IN — not a hardcoded one.
+#   Previously BUILT pointed at the canonical checkout's bin/Debug no matter where the script ran
+#   from. Our standing rule puts all work in worktrees, so the normal case was: build in your
+#   worktree, run this, and have it compare the deployed DLL against the CANONICAL tree's build.
+#   It did not error -- that file exists -- so it reported a confident PASS about an artifact you
+#   never built. A probe that verifies the wrong thing is worse than no probe.
+REPO="$(cd "$(dirname "$0")/../.." && pwd)"
+
+# Overridable so this script can be CONTROL-TESTED against a synthetic game dir. A check nobody
+# can drive into failure is a check nobody has evidence works.
+GAME="${MCPLINK_GAME:-C:/Program Files (x86)/Steam/steamapps/common/Resonite}"
 MODS="$GAME/rml_mods"
 DEPLOYED="$MODS/McpLink.dll"
 HOTRELOAD="$MODS/HotReloadMods/McpLink.dll"
-BUILT="E:/Libraries/Desktop/resonite/mcplink/bin/Debug/McpLink.dll"
+BUILT="${MCPLINK_BUILT:-$REPO/bin/Debug/McpLink.dll}"
 FOREIGN="$GAME/FrooxEngine.dll"
 
 FAILED=0
@@ -69,9 +80,26 @@ verify)
   fi
 
   echo "=== identity ==="
+  # SAY WHAT IS BEING COMPARED. The old version named none of these, so a run against the wrong
+  # build output was indistinguishable from a run against the right one.
+  echo "    repo (this script's tree) : $REPO"
+  echo "    build output compared     : $BUILT"
+  echo "    game                      : $GAME"
+
+  # A MISSING ARTIFACT IS A HARD ABORT, NOT A TALLY. Previously 'bad' merely incremented the
+  # counter and execution fell through to sha of a nonexistent file -- every later comparison
+  # then ran against an empty hash. That is an abstention wearing a pass's clothes: the checks
+  # "ran", but none of them could have been about anything.
+  missing=0
   for f in "$DEPLOYED" "$HOTRELOAD" "$BUILT"; do
-    [ -f "$f" ] || { bad "missing: $f"; }
+    [ -f "$f" ] || { bad "missing artifact, cannot verify: $f"; missing=1; }
   done
+  if [ $missing -ne 0 ]; then
+    echo "! ABORT  at least one artifact is absent, so nothing below could compare anything."
+    echo "         If '$BUILT' is the surprise: this script compares the build output of the tree"
+    echo "         it lives in ($REPO). Build there first, or set MCPLINK_BUILT explicitly."
+    exit 2
+  fi
   D="$(sha "$DEPLOYED")"; H="$(sha "$HOTRELOAD")"; B="$(sha "$BUILT")"
   echo "    pre-deploy    ${PRE:0:20}"
   echo "    rml_mods      ${D:0:20}"
@@ -79,10 +107,10 @@ verify)
   echo "    built         ${B:0:20}"
   [ "$D" != "$PRE" ] && ok "rml_mods CHANGED from the pre-deploy artifact" \
                      || bad "rml_mods is UNCHANGED — the deploy did not land"
-  [ "$D" = "$B" ]    && ok "rml_mods is byte-identical to the build output" \
-                     || bad "rml_mods differs from what the build produced"
-  [ "$H" = "$B" ]    && ok "HotReloadMods is byte-identical to the build output" \
-                     || bad "HotReloadMods differs from what the build produced"
+  [ "$D" = "$B" ]    && ok "rml_mods is byte-identical to the build output ($BUILT)" \
+                     || bad "rml_mods differs from the build output at $BUILT"
+  [ "$H" = "$B" ]    && ok "HotReloadMods is byte-identical to the build output ($BUILT)" \
+                     || bad "HotReloadMods differs from the build output at $BUILT"
   [ "$D" = "$H" ]    && ok "both deploy paths carry the SAME bytes (no divergence)" \
                      || bad "the two deploy paths DIVERGED — restart and hot-reload would differ"
   [ -f "$MODS/McpLink.dll.PENDING" ] && bad "a PENDING note was left — the rml_mods copy was blocked" \
