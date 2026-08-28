@@ -510,13 +510,21 @@ internal static class OrgtreeClient
     /// nobody would ever trace back to an in-game panel. Self-send has no such effect: the
     /// measured response carries no audience warning at all.
     ///
-    /// ⚠ WE DEPEND ON SELF-SEND REMAINING PERMITTED, AND IT IS LEGAL BY FALL-THROUGH RATHER THAN
-    /// BY DESIGN. The §7.2 addressing check and the relationship label both fall through their
-    /// SIBLING clause for this case, because a node's parent trivially equals its own parent.
-    /// Nothing excluded the self case; nothing anticipated it either. Orgtree expects it to keep
-    /// working but has not decided whether to relabel it. That is exactly why the caller keeps a
-    /// tested fallback: if this is ever closed off, panel events degrade to waking mail rather
-    /// than vanishing.</summary>
+    /// ⚠ WE DEPEND ON SELF-SEND REMAINING PERMITTED, AND IT IS STILL LEGAL BY FALL-THROUGH RATHER
+    /// THAN BY DESIGN. The §7.2 addressing check has no self case: it passes because the SIBLING
+    /// clause compares a node's parent against its own parent, which is trivially equal. Nothing
+    /// excluded the self case; nothing anticipated it either. What HAS changed is that Orgtree now
+    /// knows it is load-bearing — that clause carries a warning naming McpLink 2.9.1 as the
+    /// consumer, and their own test suite pins it. So narrowing it would be a ruling with someone
+    /// to notify rather than a tidy-up. It is still not a guarantee, which is why the caller keeps
+    /// a tested fallback: if this is ever closed off, panel events degrade to waking mail rather
+    /// than vanishing.
+    ///
+    /// ⚠ DO NOT INFER THE LABEL FROM THE PERMISSION — THEY HAVE ALREADY DIVERGED. These two used
+    /// to rest on the same trivial parent comparison, and this comment used to say so. As of
+    /// Orgtree's 2026-08-27 ruling the RELATIONSHIP LABEL has an explicit self branch and no
+    /// longer falls through to "your peer" (see SendSelfNoticeAsync); the PERMISSION above did not
+    /// change with it. One being decided says nothing about the other.</summary>
     internal static JsonObject ComposeSelfNoticeCall(string slug, string node, string body)
     {
         return new JsonObject
@@ -538,8 +546,15 @@ internal static class OrgtreeClient
     ///
     /// The route takes no credential — reaching loopback is the credential — and requires the
     /// caller to name a real node, which is why the mod cannot send as the user. The envelope the
-    /// agent sees will say FROM itself, labelled "your peer"; we do not control that, so the
-    /// notice BODY states its true provenance in its opening line instead.</summary>
+    /// agent sees will say FROM itself, labelled "yourself"; we do not control that, so the
+    /// notice BODY states its true provenance in its opening line instead
+    /// (PromptWizard.Provenance).
+    ///
+    /// The label was "your peer" through 2.11.1 — the self case fell through Orgtree's sibling
+    /// clause — and became "yourself" by their ruling of 2026-08-27. Measured verbatim against a
+    /// live backend, with a sibling-sent control in the same turn that still read "your peer", so
+    /// the change is specific to the self case and not the label going away. The envelope is
+    /// FROM-itself either way; only the parenthesised label moved.</summary>
     internal static async Task<Result<JsonNode>> SendSelfNoticeAsync(string slug, string node, string body)
     {
         return await RequestAsync(HttpMethod.Post, "/api/agent",

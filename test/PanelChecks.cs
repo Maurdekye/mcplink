@@ -181,14 +181,55 @@ internal static class PanelChecks
                     && m.GetParameters().Select(p => p.Name).SequenceEqual(new[] { "slug", "node", "body" }));
         });
 
-        // The envelope will say FROM the agent itself, labelled "your peer", and we cannot change
+        // The envelope will say FROM the agent itself, labelled "yourself", and we cannot change
         // that — so the body has to carry the true provenance or nothing does.
+        //
+        // ⚠ THESE TWO STRINGS ARE MEASUREMENTS, NOT GUESSES. Captured verbatim 2026-08-28 from a
+        // live backend by sending both notices through this mod's own call shape (POST /api/agent,
+        // tool orgtree_send_notice) into one throwaway agent, and having it read its own MAIL
+        // block back character for character. They landed in the SAME turn, milliseconds apart,
+        // through the same renderer — which is what makes the pair a control rather than two
+        // anecdotes. Do not "tidy" them; re-measure and paste what comes back.
+        const string MeasuredSelfEnvelope =
+            "NOTICE FROM probe-a (yourself) · 2026-08-28T19:12:57.194Z — informational, "
+            + "delivered passively; no reply is expected";
+        const string MeasuredSiblingEnvelope =
+            "NOTICE FROM probe-b (your peer) · 2026-08-28T19:12:57.337Z — informational, "
+            + "delivered passively; no reply is expected";
+
+        // Pull the parenthesised label straight out of each measured header, so the expectation is
+        // derived from the measurement instead of restated beside it and free to drift from it.
+        static string LabelOf(string envelope)
+        {
+            int open = envelope.IndexOf('(');
+            int close = envelope.IndexOf(')', open + 1);
+            return open < 0 || close < 0 ? "" : envelope.Substring(open + 1, close - open - 1);
+        }
+
+        Check("CONTROL: the label extractor actually extracts, and tells the two headers apart", () =>
+            LabelOf(MeasuredSelfEnvelope) == "yourself"
+            && LabelOf(MeasuredSiblingEnvelope) == "your peer"
+            && LabelOf("no parens here") == "");
+
         Check("a self-delivered notice states its real provenance in the opening line", () =>
         {
             string self = PromptWizard.ComposeOpenNotice(ch, selfNotice: true);
             return self.StartsWith("[PANEL OPENED]", StringComparison.Ordinal)
                 && self.Contains("FROM YOURSELF") && self.Contains("you did not send it")
                 && self.IndexOf("FROM YOURSELF", StringComparison.Ordinal) < 400;
+        });
+
+        // The staleness the user reported, pinned in both directions. Quoting a label we do not
+        // actually ship is the whole defect, so the shipped text must quote the label the backend
+        // WAS MEASURED to emit — and must not quote the one that belongs to a sibling send.
+        Check("the quoted envelope label matches the MEASURED self header, not the sibling one", () =>
+        {
+            string self = PromptWizard.ComposeOpenNotice(ch, selfNotice: true);
+            string close = PromptWizard.ComposeCloseNotice(ch, selfNotice: true);
+            string mine = "\"" + LabelOf(MeasuredSelfEnvelope) + "\"";      // "yourself"
+            string theirs = "\"" + LabelOf(MeasuredSiblingEnvelope) + "\""; // "your peer"
+            return self.Contains(mine) && close.Contains(mine)
+                && !self.Contains(theirs) && !close.Contains(theirs);
         });
         Check("DISCRIMINATOR: the waking-mail body carries NO such disclaimer (its header is honest)", () =>
             !PromptWizard.ComposeOpenNotice(ch, selfNotice: false).Contains("FROM YOURSELF")

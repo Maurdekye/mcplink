@@ -2156,15 +2156,22 @@ internal static class PromptWizard
     ///
     /// A self-addressed notice is the only form that reaches a mailbox without waking it and
     /// without silently granting an audience (§7.3), but it necessarily arrives labelled FROM the
-    /// agent itself, relationship "your peer". An agent reading only the header would conclude it
-    /// had written to itself, or that some peer had. So the header is not allowed to be the only
+    /// agent itself, relationship "yourself". So the header is not allowed to be the only
     /// provenance signal: the body says who really did this. On the waking-mail fallback the
     /// header is honest (the mail is from the user, who really did open or close the panel), so
-    /// no disclaimer is added there — a correction that corrects nothing is just noise.</summary>
+    /// no disclaimer is added there — a correction that corrects nothing is just noise.
+    ///
+    /// ⚠ THE LABEL CHANGED UNDER US ONCE ALREADY, AND THE DISCLAIMER MATTERS MORE NOW, NOT LESS.
+    /// Until Orgtree's 2026-08-27 ruling the self case fell through to the SIBLING clause and the
+    /// header read "your peer", so an agent had two wrong readings available (it wrote to itself,
+    /// or a peer did). Today it reads "yourself" — measured verbatim, see PanelChecks — which
+    /// asserts the single wrong thing confidently. The body must therefore keep saying plainly
+    /// that the USER did this. Only the quoted LABEL is version-specific; the correction is not.
+    /// If the header ever changes again, the tell is PanelChecks' measured-envelope fixture.</summary>
     internal static string Provenance(bool selfNotice) => selfNotice
         ? " (McpLink in-game panel system event — your mailbox will show this as FROM YOURSELF, "
-          + "labelled \"your peer\". That is an artifact of how panel events are delivered: you did "
-          + "not send it and no peer of yours did either. The USER did the thing described below.)"
+          + "labelled \"yourself\". That is an artifact of how panel events are delivered: you did "
+          + "not send it. The USER did the thing described below.)"
         : "";
 
     internal static string ComposeOpenNotice(PanelChannel ch, bool selfNotice = false)
