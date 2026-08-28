@@ -352,13 +352,73 @@ internal static class OrgtreeClient
         return Result<string>.Ok(r.Value?["node"]?.GetValue<string>() ?? req.Name);
     }
 
-    /// <summary>Send user mail to a node (kickoff or follow-up) — persisted, drives the node.</summary>
-    internal static async Task<Result<JsonNode>> MessageNodeAsync(string slug, string nodeId, string text)
+    /// <summary>Send user mail to a node (kickoff or follow-up) — persisted, drives the node.
+    /// `attachments` are file NAMES already placed in the node's uploads/ by UploadAsync.</summary>
+    internal static async Task<Result<JsonNode>> MessageNodeAsync(string slug, string nodeId, string text,
+        IEnumerable<string>? attachments = null)
     {
         var body = new JsonObject { ["text"] = text };
+        if (attachments != null)
+        {
+            var arr = new JsonArray();
+            foreach (var name in attachments)
+                arr.Add(name);
+            if (arr.Count > 0)
+                body["attachments"] = arr;
+        }
         return await RequestAsync(HttpMethod.Post,
             $"/api/orgs/{Uri.EscapeDataString(slug)}/nodes/{Uri.EscapeDataString(nodeId)}/message", body)
             .ConfigureAwait(false);
+    }
+
+    /// <summary>Put a file into a node's uploads/ — the raw request body IS the file (no multipart).
+    /// Returns the stored name, which is what MessageNodeAsync's `attachments` takes.
+    ///
+    /// This is how an image reaches an agent AT ALL. Mail carries text; the panel's attached image
+    /// objects become real files in the recipient's own working folder, at the relative path
+    /// `uploads/&lt;name&gt;` that every agent — sandboxed or not — can read. Note what that does and
+    /// does not buy: the agent gets a FILE, not pixels already in its context. Reading it is one
+    /// step, and the message body is what tells it the step is worth taking.</summary>
+    internal static async Task<Result<string>> UploadAsync(string slug, string nodeId, string name, byte[] bytes)
+    {
+        try
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+            string path = $"/api/orgs/{Uri.EscapeDataString(slug)}/nodes/{Uri.EscapeDataString(nodeId)}"
+                          + $"/upload?name={Uri.EscapeDataString(name)}";
+            using var request = new HttpRequestMessage(HttpMethod.Post, BaseUrl + path)
+            {
+                Content = new ByteArrayContent(bytes),
+            };
+            using var response = await Http.SendAsync(request, timeout.Token).ConfigureAwait(false);
+            string text = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+            if (!response.IsSuccessStatusCode)
+            {
+                string detail = text;
+                try { detail = JsonNode.Parse(text)?["detail"]?.GetValue<string>() ?? text; }
+                catch { }
+                return Result<string>.Fail($"{(int)response.StatusCode}: {Truncate(detail, 300)}");
+            }
+            // Return the backend's OWN path ("uploads/<final>"), never the name we asked for.
+            // Two reasons, and the second is why there is no fallback here:
+            //  1. it de-duplicates — an existing foo.png makes the stored file foo-2.png;
+            //  2. `attachments` takes SCRATCH-RELATIVE PATHS, which the message endpoint resolves
+            //     against the node's scratch and SILENTLY DROPS when they do not exist. A guessed
+            //     name would therefore not error — the image would simply never arrive, which is
+            //     the silent-drop failure we are meant to be eliminating. So an answer we cannot
+            //     read is a failure, not something to paper over with our own guess.
+            string? stored = null;
+            try { stored = JsonNode.Parse(text)?["path"]?.GetValue<string>(); }
+            catch { }
+            return string.IsNullOrWhiteSpace(stored)
+                ? Result<string>.Fail("upload succeeded but returned no path — refusing to guess one, "
+                                      + "since an attachment path that does not resolve is dropped silently")
+                : Result<string>.Ok(stored!);
+        }
+        catch (Exception e)
+        {
+            return Result<string>.Fail(e.InnerException?.Message ?? e.Message);
+        }
     }
 
     /// <summary>Set a node's thinking-effort override ("" clears it back to the org default).

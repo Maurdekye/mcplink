@@ -118,10 +118,7 @@ internal sealed class McpDispatcher
 
                     return ResultResponse(id, new JsonObject
                     {
-                        ["content"] = new JsonArray
-                        {
-                            new JsonObject { ["type"] = "text", ["text"] = resultText },
-                        },
+                        ["content"] = ComposeContent(resultText),
                         ["isError"] = isError,
                     });
                 }
@@ -136,6 +133,63 @@ internal sealed class McpDispatcher
             return isNotification ? null : ErrorResponse(id, -32603, inner.Message);
         }
     }
+
+    // ======================= tool-result content blocks (2.11.0) =======================
+
+    /// <summary>The sentinel key a tool sets to emit images. Deliberately underscore-prefixed and
+    /// namespaced: it is transport plumbing, not part of any tool's documented result.</summary>
+    internal const string ImagesKey = "_mcpImages";
+
+    /// <summary>
+    /// Shape a tool's result string into MCP content blocks.
+    ///
+    /// Until 2.11.0 this was one line — every result became a single {"type":"text"} block — which
+    /// is why "load a texture into your context" was impossible. The export was never the hard
+    /// part; THE PIPE COULD ONLY CARRY TEXT.
+    ///
+    /// ⚠ THE COMPATIBILITY GUARANTEE, AND WHY IT IS WRITTEN THIS WAY. Every tool's output flows
+    /// through here, so the failure mode of getting this wrong is "everything, subtly". A result
+    /// without the sentinel is therefore returned BYTE-FOR-BYTE in a single text block — the same
+    /// string object, never re-serialized — because a JSON round-trip would silently renormalize
+    /// key order, number formatting and escaping across all 97 tools. The substring test runs
+    /// before any parse so the untouched path does not even pay for one.
+    ///
+    /// Pure and internal so the suite can pin the passthrough rather than trust it.
+    /// </summary>
+    internal static JsonArray ComposeContent(string resultText)
+    {
+        // no sentinel anywhere in the payload ⇒ nothing to lift, and nothing to risk
+        if (resultText.IndexOf(ImagesKey, StringComparison.Ordinal) < 0)
+            return [TextBlock(resultText)];
+
+        JsonObject? obj = null;
+        try { obj = JsonNode.Parse(resultText) as JsonObject; }
+        catch { /* not an object, or not JSON at all — fall through to passthrough */ }
+        // the substring can also appear inside ordinary content (a tool reporting a file listing,
+        // say). Only a real top-level array of images counts.
+        if (obj?[ImagesKey] is not JsonArray images)
+            return [TextBlock(resultText)];
+
+        obj.Remove(ImagesKey);
+        var content = new JsonArray { TextBlock(obj.ToJsonString()) };
+        foreach (var entry in images)
+        {
+            if (entry is not JsonObject image)
+                continue;
+            string? data = image["data"]?.GetValue<string>();
+            if (string.IsNullOrEmpty(data))
+                continue; // an image block with no payload is worse than no block at all
+            content.Add(new JsonObject
+            {
+                ["type"] = "image",
+                ["data"] = data,
+                ["mimeType"] = image["mimeType"]?.GetValue<string>() ?? "image/png",
+            });
+        }
+        return content;
+    }
+
+    private static JsonObject TextBlock(string text) => new() { ["type"] = "text", ["text"] = text };
 
     private static Exception Unwrap(Exception e) =>
         e is AggregateException { InnerExceptions.Count: 1 } agg ? Unwrap(agg.InnerExceptions[0])
