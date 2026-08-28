@@ -230,7 +230,12 @@ from mathutils import Matrix
 
 def load_ibms(garment):
     path = os.path.join(base, GROUND[garment]["file"])
-    with open(path) as f:
+    # encoding= IS LOAD-BEARING. Python's text mode defaults to locale.getpreferredencoding(),
+    # which is cp1252 on Windows -- so a UTF-8 glTF read without it silently mojibakes every
+    # non-ASCII name (measured: an accented node name came back with each byte re-read as a
+    # separate cp1252 character). glTF is UTF-8 by spec and Blender node/material names carry
+    # accents readily, so this is reachable, not theoretical.
+    with open(path, encoding="utf-8") as f:
         doc = json.load(f)
     with open(os.path.splitext(path)[0] + ".bin", "rb") as f:
         blob = f.read()

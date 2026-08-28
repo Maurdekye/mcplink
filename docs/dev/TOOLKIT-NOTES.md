@@ -1111,3 +1111,94 @@ in the past when i asked a friend to try it out."* **Prediction held.**
   a non-owner can EDIT the input field before the owner sends — a different action that the same
   decompilation does NOT cover, because the field's content is an ordinary synced value rather than
   a local event. Do not let a confirmed prediction quietly widen into the neighbouring claim.
+
+## 2026-08-28 — the same encoding bug in a third language, and repairing an artifact that is its own only record
+
+Published release notes for v2.9.0, v2.9.1 and v2.10.0 shipped with a UTF-8 BOM as a visible
+character and every em-dash rendered `â€"` — that quoted sample is **deliberately** mojibake'd, so a
+sweep for the byte run `C3 A2 E2 82 AC` will match this line and `CHANGELOG.md`'s 1.8.0 entry
+legitimately. It had been public for weeks. **Nobody saw it because
+every tool we look at releases with — the browser, `gh`, a terminal — renders mojibake back into
+something readable.** It surfaced only when someone piped the body through `cat -A`.
+
+**Causation, established rather than assumed.** Running the *real* pre-fix `release.ps1` path over
+a fixture on this machine (PowerShell 5.1.26100.9168, ANSI codepage Windows-1252):
+
+```
+in:   e2 80 94                        (U+2014 em-dash, UTF-8)
+out:  ef bb bf ... c3 a2 e2 82 ac e2 80 9d ... 0d 0a
+```
+
+Exactly the published bytes. **Two independent defects in three lines:** `Get-Content -Raw` with no
+`-Encoding` falls back to the system ANSI codepage for a BOM-less file, *and* `Set-Content -Encoding
+utf8` on 5.1 writes a **BOM**. The fixed path round-trips the fixture byte-identical.
+
+**⚠ The worse variant, measured while sweeping:** *bare* `Set-Content` — no `-Encoding` at all —
+wrote the em-dash as a lone `0x97` and turned `⏏` into a literal `?`. **Silent data destruction,
+strictly worse than the recoverable mojibake**, because there is nothing left to invert.
+
+### The third instance: the class is per-language, and fixing one does not inoculate the others
+
+The class is **an API that answers with the machine's locale when you ask it nothing**. McpLink had
+already fixed it once in C# (1.8.0, a null `HttpListenerRequest.ContentEncoding`). The sweep found
+it a third time:
+
+- **Python — live.** `locale.getpreferredencoding()` is `cp1252` here, and `open(p)` in text mode
+  inherits it. Four glTF reads did this (`tools/dev/blender/{garment_check,make_mutants}.py`).
+  glTF is UTF-8 *by spec* and Blender node/material names carry accents readily, so it was
+  reachable, not theoretical. Fixed with explicit `encoding="utf-8"`.
+  **The nuance that stopped it becoming a sweep:** `json.dump` defaults to `ensure_ascii=True`, so
+  the **write** side is genuinely safe and was deliberately left alone. Verified, not assumed.
+- **C#/.NET — cleared empirically.** On `net10.0`, `File.WriteAllText` with no encoding writes
+  UTF-8 **without** a BOM and round-trips U+2014 and U+23CF exactly. All ~12 call sites are
+  non-issues. Worth knowing precisely because the PowerShell intuition does *not* carry over.
+- **PowerShell — one file, fixed.**
+
+⇒ **Do not generalise "language X's default is broken" into "defaults are broken."** Three
+languages, three different answers. Measure each.
+
+### The method worth keeping: TWO INDEPENDENT DERIVATIONS, not a control
+
+Repairing the published notes had a problem a control cannot solve: **the corrupted artifact was
+also the only record of what it should have said.** So it was reconstructed two ways that share no
+inputs:
+
+- **(A) Invert the corruption** on the published text — uses **no repo state**.
+- **(B) Regenerate** from `git show <tag>:CHANGELOG.md` plus that era's footer — uses **no
+  published state**.
+
+Neither alone is evidence: **(A) faithfully reproduces a mistake; (B) silently "updates" old notes
+to a later CHANGELOG wording.** They agreed **byte-for-byte** on the two tags where both could run,
+which is what licensed using (B) alone on the third — where (A) was *impossible*, because GitHub
+stores the mangled `⏏` as literal `â^O^O`: the C1 control characters became caret notation during
+publishing and the information is simply gone. (Confirmed with two independent readers, `gh --jq`
+and `gh api` + Python `json`, so it was not the reader lying.)
+
+⇒ **When the thing you are repairing is also the only record of what it should be, reconstruct it
+twice from disjoint sources and require agreement.** That is stronger than a control, because a
+control proves an instrument works while agreement proves the *answer* is right.
+
+### Two bugs shipped into the repair tool itself, both the house shape
+
+1. **A lookup table for invisible characters, built out of those characters.** The CP1252 table was
+   written with literals; its five *undefined* slots (`81 8D 8F 90 9D`) are invisible control codes
+   and silently became **empty strings**. The broken table then reported a genuinely corrupt release
+   as "not double-encoded" — **a broken instrument reading as a clean verdict.** Rewritten with
+   explicit codepoints plus `assert len(_ENCODE) == 256`, so the table proves itself rather than
+   being trusted. ⇒ Never build a table of invisible characters *out of* those characters.
+2. **`except ValueError` before `except UnicodeDecodeError`.** The latter is a **subclass** of the
+   former, so the decode failure was caught by the wrong handler and reported as "no Windows-1252
+   inverse" — a confident, specific, *wrong* diagnosis of a different fault. ⇒ Narrowest `except`
+   first; and a handler that names a cause is a claim, so it has to be the right one.
+
+### Procedure notes
+
+- **Re-query the artifact after every write.** `gh release edit` returning 0 is not the claim; the
+  notes were re-fetched from GitHub and re-scanned after each edit.
+- **Keep one corrupted tag as a control and repair it LAST.** Mid-run, with two repaired, the held
+  tag still measured `BOM=True mojibake=13` — proving the scanner had not gone blind before it was
+  spent. Repairing everything at once would have left no way to distinguish "all clean" from "the
+  check stopped working."
+- **Not everything old was broken.** v2.9.2 and v2.8.1 were never corrupted — they never went
+  through that write path. An assumption that "presumably every earlier release" was affected would
+  have had the repair tool run over healthy artifacts.
