@@ -40,7 +40,16 @@ $verMatch = Select-String -Path "$root\Source\McpLinkMod.cs" -Pattern 'VERSION\s
 $version = $verMatch.Matches[0].Groups[1].Value
 Write-Host "Releasing McpLink $version from $root"
 
-$changelog = Get-Content "$root\CHANGELOG.md" -Raw
+# ⚠ -Encoding UTF8 IS LOAD-BEARING. Windows PowerShell 5.1's Get-Content defaults to the system
+# ANSI codepage for a file with no BOM, so a UTF-8 CHANGELOG came back with every em-dash decoded
+# as "â€”" — and those bytes went straight into the published release notes. Measured on this
+# file: the default read yields 9 em-dashes and 202 mojibake sequences; the UTF-8 read yields 190
+# and 0. Releases v2.9.0 through v2.11.0 all shipped notes with it.
+#
+# This is the SAME BUG CLASS we already fixed once on the C# side (1.8.0, "Encoding fix": a null
+# HttpListenerRequest.ContentEncoding silently returning the ANSI codepage). Same root cause —
+# an API that answers with the machine's locale when asked nothing — different language.
+$changelog = Get-Content "$root\CHANGELOG.md" -Raw -Encoding UTF8
 if ($changelog -notmatch [regex]::Escape("## $version")) {
     throw "CHANGELOG.md has no '## $version' entry. A release without its changelog section is not a release -- write it first."
 }
@@ -87,7 +96,9 @@ $section
 **Which build am I running?** MCP ``initialize`` -> ``serverInfo.version`` = ``$version``; the ``session_info`` tool -> ``build.informationalVersion`` = ``g$stamp``. Trust those, never file timestamps -- and restart your MCP client after updating so cached tool schemas refresh.
 "@
 $notesFile = Join-Path $env:TEMP "mcplink-relnotes-$version.md"
-Set-Content -Path $notesFile -Value $notes -Encoding utf8
+# UTF-8 WITHOUT a BOM: PS 5.1's -Encoding utf8 writes one, and gh passes it through into the
+# published body, where it renders as a stray glyph before the first heading.
+[IO.File]::WriteAllText($notesFile, $notes, (New-Object Text.UTF8Encoding($false)))
 
 if ($DryRun) {
     Write-Host ""
