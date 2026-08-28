@@ -45,6 +45,16 @@
 #               until this script is invoked again - treat as action-required)
 #
 # The machine-readable outcome of every invocation is written to <StageDir>\last-deploy.json.
+#
+# *** FIRST-REAL-DEPLOY MILESTONE - remove this block once it has happened and verified. ***
+# As of 2026-08-28 every gate here is control-tested (53-check harness, build-control on both
+# trees) but the system has NEVER performed a real deploy: the waiter has never fired on an
+# actual game close, and a real payload has never landed in the real slots through this
+# script. All of that proves it writes nothing when it should write nothing; none of it
+# proves it writes the right thing when it should. Treat the first real deploy as a
+# MILESTONE TO WATCH, not a routine event: report it with full before/after hashes, and if
+# ANYTHING looks wrong, STOP and fall back to a hash-verified manual copy with the game
+# closed - never debug this script live against the user's install.
 
 param(
     [string]$Src = 'E:\Libraries\Desktop\resonite\mcplink\bin\Release\McpLink.dll',
