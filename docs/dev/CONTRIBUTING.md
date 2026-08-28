@@ -34,6 +34,16 @@ The most valuable habit in this project — keep any check you add honest:
   what actually shipped or ran unless something checked the output directly.
 - **Do not substring-match a git ref name in this repo** — a prefix-collision pair exists
   (`tools/apiprobe` vs `tools/apiprobe-abstention`). Use exact matching.
+- **Always name the encoding when you read or write text.** An API asked for no encoding answers
+  with the *machine's* locale, and the damage is silent because every tool you'd inspect it with
+  renders it back as readable. Measured on this repo's own machine (ANSI codepage Windows-1252):
+  bare `Set-Content` — no `-Encoding` at all — wrote an em-dash as a lone `0x97` and turned `⏏`
+  into a literal `?`. **That is data destruction, strictly worse than the recoverable mojibake we
+  spent an hour undoing across four published releases.** So: PowerShell `Get-Content`/
+  `Set-Content` need `-Encoding UTF8` (and note `-Encoding utf8` on 5.1 *writes a BOM* — use
+  `[IO.File]::WriteAllText($p, $s, (New-Object Text.UTF8Encoding($false)))` when that matters);
+  Python `open()` needs `encoding="utf-8"`. .NET's `File.ReadAllText`/`WriteAllText` are already
+  UTF-8 without a BOM, so those are fine as-is — verified, not assumed.
 
 ## Records
 
