@@ -1,5 +1,83 @@
 # McpLink changelog
 
+## 2.11.0 (2026-08-28)
+
+**Images. An agent can now be handed an actual picture — by calling `read_texture` on a texture in
+the world, or by the user attaching one to a prompt panel.** Three separate changes ship here; the
+first affects every tool, including the 96 that have nothing to do with images.
+
+### Tool results can carry image blocks (affects ALL tools)
+
+The MCP dispatcher can now put **image content blocks** in a tool result, not just text. A tool opts
+in by placing a top-level `_mcpImages` array of `{data, mimeType}` in its JSON; the dispatcher lifts
+it into real image blocks and strips it from the text.
+
+- **If you parse McpLink's output, read this.** A tool response's `content` array could previously
+  only contain one text block. It can now contain a text block **followed by one or more image
+  blocks**. Nothing else about the shape changed.
+- **Tools that do not opt in are byte-for-byte unchanged.** A result with no sentinel is returned as
+  *the original string*, never re-serialized — so no tool's output can drift through a JSON
+  round-trip it never asked for. The suite asserts byte identity, not merely equivalent JSON,
+  because a passthrough that reformats is a passthrough that broke something.
+- **Why blocks rather than base64 in the text:** Anthropic's published documentation puts an image
+  block at roughly an eighth of the token cost of the same bytes as base64 text. **That figure is
+  theirs, not ours — we cannot observe token accounting from inside the mod and have not measured
+  it.** The structural reason stands on its own: base64 in a text block is not viewable.
+
+### `read_texture` — load a texture from the world as an image
+
+Give it the id of a slot or component holding a texture. The asset is fetched through the engine's
+gatherer (cloud assets download; works as a guest), re-encoded to PNG, and returned as an image.
+
+- **Procedural textures are refused by name** (`SimplexTexture`, `GradientStripTexture`,
+  `SolidColorTexture`, …) rather than silently returning nothing — they have no asset file, and
+  reading one would need pixel readback, which is not implemented.
+- **Dimensions are read back from the encoded bytes** (PNG `IHDR` / JPEG `SOF`), never from
+  `Texture2D.Size` — the engine's metadata and the exported file were measured disagreeing on a
+  real texture (744 vs 743). Reporting metadata for a file we just wrote would be a small lie.
+- **PNG first, JPEG if it does not fit.** A photographic texture can blow the size ceiling as
+  lossless PNG at a resolution JPEG clears easily.
+- **An oversized image result now says to lower `maxSize`**, rather than the generic advice to
+  narrow the query, which does not apply to a single image.
+
+### Prompt panels can send attached textures to the agent
+
+Attach an image object to a prompt panel and it now travels with your message as a real file in the
+agent's own working folder, alongside the object reference it came from.
+
+- **The message tells the agent the file is there, names it, and says to open it — and that is the
+  feature, not a fallback.** Whether an attached image is *also* loaded directly into the agent's
+  context depends on when the mail lands: measured against the live backend, delivery to an agent
+  that is **mid-task is text-only, permanently** — the backend's own wording is that it "was NOT
+  loaded into your context and will NOT load later". Panels message working agents as the ordinary
+  case. **So do not form the belief that images always land in context; most of the time the agent
+  has to open the file, and the sentence naming it is what makes that possible.**
+- **Every attached image gets an outcome, including the ones that did not make it.** Too large,
+  over the message's image budget, past the 8-image limit, undecodable, upload failed — each is
+  reported *beside the specific reference it came from*. A reader who knows which image they did
+  not get can ask for it; a reader told only "some images were dropped" cannot.
+- **Sized to the limits that decide whether an image is ever seen** — 8 images, 5 MB each, 12 MB
+  per message — which are stricter than the upload limits. Sizing to the looser pair would produce
+  images that upload cleanly with a success code and are then never shown.
+- **Panels running in `promptOutbox` fallback mode have no upload channel at all**, since they
+  write to a file for an orchestrator rather than talking to a backend. Attached images are named
+  in the message with that specific reason instead of being quietly discarded.
+- **Upload filenames are built to survive the backend's sanitiser unchanged**, so the name we ask
+  for is the name it stores. Where it de-duplicates anyway (`foo.png` → `foo-2.png`), we use the
+  path it returns and never one we construct — **an attachment path that does not resolve is
+  discarded silently, with no error and no trace in the delivered mail** (measured 2026-08-28
+  against the live backend; the outcome-line machinery only ever sees paths that already
+  resolved). Guessing a filename here would make images vanish behind a success code.
+
+### Known gaps, stated rather than discovered later
+
+- **`read_texture` has never run end to end against a live engine.** Every seam is covered offline
+  — argument validation, the sentinel lift, dimension parsing, the size ceiling — but the whole
+  pipeline (resolve → gather → encode → base64) has not executed against a running game. It is
+  queued behind the next time Resonite is open.
+- **The upload round trip *has* been exercised against the real backend** (2026-08-28), which is
+  how the de-duplication and silent-drop behaviour above are known rather than assumed.
+
 ## 2.10.0 (2026-08-27)
 
 **`notify` stops claiming it showed you something it cannot see.** The tool returned

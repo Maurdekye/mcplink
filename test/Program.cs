@@ -1915,6 +1915,7 @@ Check("retires-on-close: bound body only — window/fallback/fired/nodeless neve
 
 Console.WriteLine();
 PanelChecks.Run(Check);
+SendPathChecks.Run(Check);
 
 Console.WriteLine();
 Console.WriteLine("== list truncation is out-of-band (get_component) ==");

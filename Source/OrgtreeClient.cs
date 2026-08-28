@@ -353,7 +353,12 @@ internal static class OrgtreeClient
     }
 
     /// <summary>Send user mail to a node (kickoff or follow-up) — persisted, drives the node.
-    /// `attachments` are file NAMES already placed in the node's uploads/ by UploadAsync.</summary>
+    ///
+    /// `attachments` are SCRATCH-RELATIVE PATHS ("uploads/foo.png") as returned by UploadAsync —
+    /// NOT bare filenames. The distinction matters more than it looks: the backend resolves each
+    /// path against the node's scratch and DISCARDS the ones that do not exist, without an error
+    /// and without any trace in the delivered mail. Pass a name where a path belongs and the
+    /// image simply never arrives, behind a 200 and {"accepted":true}.</summary>
     internal static async Task<Result<JsonNode>> MessageNodeAsync(string slug, string nodeId, string text,
         IEnumerable<string>? attachments = null)
     {
@@ -372,7 +377,17 @@ internal static class OrgtreeClient
     }
 
     /// <summary>Put a file into a node's uploads/ — the raw request body IS the file (no multipart).
-    /// Returns the stored name, which is what MessageNodeAsync's `attachments` takes.
+    /// Returns the backend's own STORED PATH ("uploads/foo.png"), which is what MessageNodeAsync's
+    /// `attachments` takes — not the name we asked for, and never a name we construct.
+    ///
+    /// ⚠ RATIFIED 2026-08-28, DO NOT "TIDY" THIS INTO GUESSING A NAME. The guarantee one would
+    /// otherwise lean on — "nothing is ever silently dropped agent-side; every attachment gets an
+    /// outcome line" — DOES NOT HOLD. Measured against the live backend: a message whose only
+    /// attachment was a path that had never been uploaded produced ZERO attachment lines, no
+    /// error, HTTP 200, {"accepted":true}. The outcome-line machinery only ever sees paths that
+    /// already resolved, so the drop happens upstream of it. Guessing a filename here would turn
+    /// every de-duplicated upload (foo.png stored as foo-2.png) into an image that vanishes behind
+    /// a success code.
     ///
     /// This is how an image reaches an agent AT ALL. Mail carries text; the panel's attached image
     /// objects become real files in the recipient's own working folder, at the relative path

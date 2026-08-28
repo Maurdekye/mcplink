@@ -980,3 +980,54 @@ And then the derivation argues against having the constant at all: our reconcile
 window a TTL adds is crash → next launch, which orgtree's 24 h already backstops from the far side;
 and a short threshold would read a paused game or a suspended laptop as death. **Fast path = our
 reconciler, backstop = their 24 h, nothing in between.**
+
+## 2026-08-28 — two bugs only a CONTROL could see, and they need opposite fixtures
+
+Both were caught building `read_texture` + the dispatcher's image blocks, and they are worth
+recording together because the lesson is a **matched pair**: the fixture that catches one is
+exactly the fixture that hides the other.
+
+**(1) The passthrough mutant — only a BYTE-IDENTITY control caught it.** The dispatcher returns a
+tool's result unchanged when there is no image sentinel. The obvious assertion is "the output
+parses to the same JSON", and a mutant that reformatted the result (re-serializing through
+`JsonNode`) **passed that assertion** — the JSON *was* equivalent. What it broke was key order and
+whitespace for all 96 other tools. Only asserting the returned string is **byte-for-byte the input
+string** killed it. ⇒ *For a passthrough, "equivalent" is not the contract; "untouched" is.*
+
+**(2) The JPEG off-by-one — only a MINIMAL fixture could catch it.** `ImageSize`'s scan loop
+guarded with `i + 9 < Length`, which skips an `SOF` marker sitting at the very end of the buffer.
+**Every real JPEG hides this forever**, because real files have scan data after the header, so the
+marker is never last. It could only surface in a hand-built minimal fixture that ends right after
+the frame header. Fixed to `i + 8`. ⇒ *A corpus of real files is not a test suite. Real inputs are
+systematically biased away from boundary conditions — that is what makes them real.*
+
+**The pair:** a real-file corpus would have caught (1) and never (2); a minimal fixture catches (2)
+and cannot see (1) at all, since there is no "other 96 tools" in a fixture. Neither is the safe
+default. Ask which failure mode the input shape can physically express.
+
+## 2026-08-28 — a grep for FAIL that could not see a failure, and a decompiled backend that was 30 days stale
+
+Two pieces of friction from the same session, both of the house failure shape — **a check that
+abstains reads exactly like a check that passes.**
+
+**The suite prints `! FAIL`, not `  FAIL`.** Mutation-testing the new send-path checks, the run
+reported `322 passed, 10 failed`; a follow-up `grep -E "^  FAIL"` to list *which* returned **no
+output at all**. Taken at face value that reads as "no failures" — the precise opposite of the
+truth, and it would have retired a mutant as survived. The count line is what caught it, because
+`10 failed` and an empty failure list cannot both be right. ⇒ **Never conclude "clean" from an
+empty grep whose pattern you have not proven against a known positive.** Where a count is
+available, cross-check the list against it; a list and a tally that disagree is the cheapest
+inconsistency detector available.
+
+**`~/.claude/orgtree/backend/orgtree/api.py` is a STALE COPY** — mtime 2026-07-29, a month behind
+the running backend, and it does not contain the upload endpoint at all. Grepping it for
+`attachments` and `upload` returns nothing, which looks exactly like "this feature does not exist"
+rather than "you are reading the wrong file". The control that distinguished them: `grep -c "def "`
+on the same file returned 38, proving the grep could read it. ⇒ **When a grep for the feature
+returns nothing, prove the file is the right file before concluding the feature is absent** — and
+prefer measuring the LIVE service over reading any checked-out source. The endpoint contract used
+here was ultimately settled by sending real HTTP at `127.0.0.1:7360` and reading what came back,
+which took less time than locating the correct source file.
+
+**Related, on the same day:** a `find` over `%USERPROFILE%` with no `-maxdepth` bound exceeded the
+120 s tool timeout twice. Bound the depth or start from a known subtree.
