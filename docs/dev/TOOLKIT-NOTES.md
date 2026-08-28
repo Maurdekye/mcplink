@@ -1074,3 +1074,40 @@ removed; the live assignment two lines below was correct. That is the *match-ins
 failure from this very file, committed by the author of the fix, hours after citing it. ⇒ A
 name-presence grep does not distinguish code from prose. Grep for the **live form**
 (`^WT = `), not the name.
+
+## 2026-08-28 — reading the engine gave the right answer, and a real two-user test then confirmed it
+
+Recorded deliberately as a **success**, because this file is mostly a catalogue of checks that
+abstained, and a method that WORKS deserves the same write-up as one that failed. The question was
+whether a non-owner in a Resonite session could send a message from someone else's prompt panel —
+a security question we could not test, since it needs two humans and the game was closed.
+
+**What was decompiled, and the two pieces of evidence.** McpLink wires its send with
+`send.LocalPressed += …` and `editor.LocalSubmitPressed += …`.
+1. In `FrooxEngine.UIX.Button`, `LocalPressed` is a plain `public event ButtonEventHandler`, while
+   the neighbouring `Pressed` is a `SyncDelegate`. **The type difference is the whole answer**: a
+   plain C# event fires only where a handler is registered, and ours is registered only on the
+   owner's machine.
+2. `RunPressed` — which raises it — opens with `base.LocalUser.ClearFocus()`. **If that ran on
+   every client whenever anybody pressed a button, every user's focus would clear on every press.**
+   That would be intolerable in normal use, so `RunPressed` must run only on the presser's machine.
+
+⇒ Predicted: *a non-owner pressing Send produces nothing on our side; their press never reaches us.*
+
+**Stated as a falsifiable PREDICTION, not a conclusion — that is the part worth copying.** It was
+handed onward in exactly that form, so it could be killed by one action. The user then answered
+from a real test done previously: *"only i can send, no one else can. i confirmed this at one point
+in the past when i asked a friend to try it out."* **Prediction held.**
+
+**The transferable rules:**
+- **A member's TYPE can settle a behavioural question that its NAME only hints at.** `LocalPressed`
+  vs `Pressed` reads like a naming convention; `event` vs `SyncDelegate` is a fact about replication.
+- **A side effect can prove a dispatch model.** `ClearFocus()` is not about buttons at all, but its
+  mere presence bounds where the method can possibly run. Look for the incidental call whose
+  consequences would be absurd under the hypothesis you are trying to reject.
+- **Phrase an untestable answer as a prediction and hand it on with the falsifier attached.** It
+  costs nothing, and it converts "we think" into something a single later action can settle.
+- ⚠ **And keep the scope honest.** The test confirmed only *sending*. It says nothing about whether
+  a non-owner can EDIT the input field before the owner sends — a different action that the same
+  decompilation does NOT cover, because the field's content is an ordinary synced value rather than
+  a local event. Do not let a confirmed prediction quietly widen into the neighbouring claim.
