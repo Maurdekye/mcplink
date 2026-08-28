@@ -1994,10 +1994,59 @@ internal static class PromptWizard
                 state.KickoffSent = true;
                 state.AwaitingReply = true; // arms the status poll's no-reply nudge
                 AppendChat(state, "you", DateTime.Now, text, refElements);
+                ReportSendWarnings(state, r.Value);
                 state.Input.TargetString = "";
                 ClearAttachments(state);
             });
         });
+    }
+
+    /// <summary>Surface anything the backend flagged about a message it nonetheless ACCEPTED.
+    ///
+    /// The case this exists for: an attachment path that does not resolve is discarded by the
+    /// backend, the message is still delivered, and the status is still 200 — deliberately, since
+    /// the message genuinely WAS delivered and a non-200 for delivered mail would be its own lie.
+    /// Before the backend grew this list (orgtree 6b38437) that outcome was indistinguishable from
+    /// a clean send from our side, which is the silent drop our upload path refuses to risk.
+    ///
+    /// ⚠ ABSENT IS NOT "FINE" — IT IS "NO INFORMATION", so this reports failures and never reports
+    /// success. The field is OMITTED when the list is empty (`api.py:2292`,
+    /// `**({"warnings": warn} if warn else {})`), so on a current backend absence does mean nothing
+    /// went wrong — but an OLDER backend omits it too, and from one response the two are
+    /// indistinguishable. The rule that survives both: never turn absence into a positive claim.
+    /// Nothing here ever tells the user an image arrived; it only tells them when one did not.
+    ///
+    /// Every warning is printed verbatim rather than parsed. `warnings` is a general channel — the
+    /// backend puts non-attachment notices through it too — so classifying them here would mean
+    /// guessing at strings we do not own, and a mis-parse would either invent a failure or hide
+    /// one. The backend's own text already names the file.</summary>
+    private static void ReportSendWarnings(WizardState state, JsonNode? response)
+    {
+        foreach (string text in SendWarningLines(response))
+        {
+            AppendSystem(state, $"<color=#f88>⚠ {Escape(text)}</color>");
+            McpLinkMod.LogError($"PromptWizard: the backend accepted the message with a warning — {text}");
+        }
+    }
+
+    /// <summary>The decision half of ReportSendWarnings, pure and internal so the suite can drive
+    /// it with REAL responses captured from the live backend rather than invented ones.
+    ///
+    /// Returns the warning lines to show, verbatim, and an EMPTY list for every "we were told
+    /// nothing" shape — no `warnings` key, a non-array value, an empty array. Empty means "say
+    /// nothing", never "say it worked": the caller has no success branch to reach.</summary>
+    internal static List<string> SendWarningLines(JsonNode? response)
+    {
+        var lines = new List<string>();
+        if (response?["warnings"] is not JsonArray warnings)
+            return lines;
+        foreach (var w in warnings)
+        {
+            string text = w?.ToString() ?? "";
+            if (text.Length > 0)
+                lines.Add(text);
+        }
+        return lines;
     }
 
     // ======================= the panel channel (2.9.0) =======================
