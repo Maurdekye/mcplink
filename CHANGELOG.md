@@ -47,11 +47,17 @@ agent's own working folder, alongside the object reference it came from.
 
 - **The message tells the agent the file is there, names it, and says to open it — and that is the
   feature, not a fallback.** Whether an attached image is *also* loaded directly into the agent's
-  context depends on when the mail lands: measured against the live backend, delivery to an agent
-  that is **mid-task is text-only, permanently** — the backend's own wording is that it "was NOT
-  loaded into your context and will NOT load later". Panels message working agents as the ordinary
-  case. **So do not form the belief that images always land in context; most of the time the agent
-  has to open the file, and the sentence naming it is what makes that possible.**
+  context depends entirely on **when** the mail lands, and both cases are now measured against the
+  live backend:
+  - **Delivered while the agent is idle → the image IS loaded into its context**, and it can look
+    at the picture directly.
+  - **Delivered while the agent is mid-task → text-only, permanently.** The backend's own wording
+    is that it "was NOT loaded into your context and will NOT load later". There is no retry and
+    no later pickup.
+
+  **Panels message working agents as the ordinary case**, so the second is the one to design for.
+  Do not form the belief that images always land in context — much of the time the agent has to
+  open the file, and the sentence naming it is what makes that possible.
 - **Every attached image gets an outcome, including the ones that did not make it.** Too large,
   over the message's image budget, past the 8-image limit, undecodable, upload failed — each is
   reported *beside the specific reference it came from*. A reader who knows which image they did
