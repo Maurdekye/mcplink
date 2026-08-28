@@ -538,6 +538,60 @@ internal static class ToolsAssets
                 return result;
             }));
 
+        add(new ToolDef("read_texture",
+            "LOAD A TEXTURE FROM THE WORLD INTO YOUR CONTEXT AS AN ACTUAL IMAGE — you will see it, not a " +
+            "description of it. Give the 'id' of a slot or component holding a texture (an imported image object, " +
+            "a StaticTexture2D, a material's texture, …). The asset is fetched through the engine's gatherer " +
+            "(cloud assets download; works while you are a guest), re-encoded to PNG and handed back as an image " +
+            "block. Only textures backed by an ASSET URL can be read: procedurally generated ones " +
+            "(SimplexTexture, GradientStripTexture, SolidColorTexture, …) are refused by name rather than " +
+            "silently returning nothing. Large images are downscaled to 'maxSize' on the long edge.",
+            $"{{\"type\":\"object\",\"properties\":{{{WorldProp}," +
+            "\"id\":{\"type\":\"string\",\"description\":\"Slot or component holding the texture.\"}," +
+            $"\"maxSize\":{{\"type\":\"integer\",\"default\":{DefaultImageMaxSize},\"description\":\"Long-edge pixel cap; the image is downscaled to fit.\"}}," +
+            "\"timeoutMs\":{\"type\":\"integer\",\"default\":60000}}," +
+            "\"required\":[\"id\"]}",
+            args =>
+            {
+                // argument validation BEFORE touching the world: a caller who forgot 'id' should be
+                // told that, not told the engine is not ready
+                string id = OptString(args, "id") ?? throw new ArgumentException("'id' is required");
+                var world = GetWorld(args);
+                int maxSize = Math.Clamp(OptInt(args, "maxSize", DefaultImageMaxSize), 32, 8000);
+                int timeoutMs = Math.Clamp(OptInt(args, "timeoutMs", 60000), 5000, 600000);
+                var engine = Engine.Current ?? throw new InvalidOperationException("Engine not ready");
+
+                string url = WorldRunner.Run(world, () => ResolveTextureUrl(world, id));
+                var (bytes, mime, path) = EncodeTexture(url, maxSize, timeoutMs);
+                if (bytes.Length > MaxImageBytes)
+                    throw new InvalidOperationException(
+                        $"Texture is {bytes.Length:N0} bytes re-encoded, over the {MaxImageBytes:N0}-byte " +
+                        $"per-image limit even as {mime}. Retry with a smaller 'maxSize' (it is {maxSize} now).");
+
+                var (width, height) = ImageSize(bytes);
+                var result = new JsonObject
+                {
+                    ["url"] = url,
+                    // reported from the DECODED FILE, never from Texture2D.Size — the engine's metadata
+                    // and the exported file were measured disagreeing (744 vs 743 on the same texture)
+                    ["width"] = width,
+                    ["height"] = height,
+                    ["bytes"] = bytes.Length,
+                    ["mimeType"] = mime,
+                    ["maxSize"] = maxSize,
+                    ["path"] = Path.GetFullPath(path),
+                };
+                result[McpDispatcher.ImagesKey] = new JsonArray
+                {
+                    new JsonObject
+                    {
+                        ["data"] = Convert.ToBase64String(bytes),
+                        ["mimeType"] = mime,
+                    },
+                };
+                return result;
+            }));
+
         add(new ToolDef("inventory",
             "Browse cloud inventory records: items and folders at a path (default the inventory root). Items carry " +
             "their spawnable record URI (pass to spawn_object) and asset URI; folders recurse by calling this with " +
@@ -819,6 +873,166 @@ internal static class ToolsAssets
             ["findings"] = MaterialShape.Diagnose(albedo, emissive, hasAlbedoTexture),
         };
     }
+
+    // ======================= textures into an agent's context (2.11.0) =======================
+
+    /// <summary>Long-edge pixel cap applied when a caller does not pass one. Not a context-cost
+    /// dial: a proper image content block costs tokens by DIMENSION (⌈w/28⌉×⌈h/28⌉ ≈ 945 for a
+    /// 743×968 texture), so the cap exists because a request carrying more than 20 image blocks is
+    /// held to ≤2000 px or refused outright, and because the per-image byte limit is real.</summary>
+    internal const int DefaultImageMaxSize = 2048;
+
+    /// <summary>Per-image ceiling on the ENCODED bytes. The API limit is 10 MB of base64, and
+    /// base64 inflates by 4/3, so the raw file has to stay under ~7.5 MB.</summary>
+    internal const int MaxImageBytes = 7_500_000;
+
+    /// <summary>Find the asset URL behind a texture the caller named, or refuse by name.
+    ///
+    /// Runs on the world thread. Two lookups, in this order and for a reason:
+    /// 1. `TextureExportable` — the component Resonite puts on a deliberately imported image
+    ///    object. It is A TAG, NOT A DETECTOR: its AssetRef is wired at creation and it performs no
+    ///    search of its own, so when it is present it names the intended texture unambiguously.
+    /// 2. otherwise the first Texture2D provider in the subtree — right for "read that texture",
+    ///    and a guess for anything more complicated.
+    ///
+    /// A provider with no asset URL is REFUSED rather than served. The only other route is
+    /// Texture2D.GetOriginalTextureData(), which is awaited — i.e. deferred — and we will not
+    /// acquire a path whose completion we cannot report in order to cover the ~5% of in-world
+    /// textures that are procedurally generated.</summary>
+    private static string ResolveTextureUrl(World world, string id)
+    {
+        var element = Resolve.Element(world, id);
+        var provider = element as IAssetProvider<Texture2D>;
+        if (provider == null)
+        {
+            var slot = element as Slot ?? (element as Component)?.Slot ?? element.FindNearestParent<Slot>()
+                       ?? throw new ArgumentException($"{id} is not in a slot hierarchy");
+            provider = slot.GetComponentInChildren<TextureExportable>()?.Texture.Target
+                       ?? slot.GetComponentInChildren<IAssetProvider<Texture2D>>();
+        }
+        if (provider == null)
+            throw new ArgumentException(
+                $"{id} has no Texture2D on it or under it — nothing to read as an image.");
+        if (provider is StaticTexture2D { URL.Value: { } uri } && !string.IsNullOrWhiteSpace(uri.ToString()))
+            return uri.ToString();
+        throw new ArgumentException(
+            $"{id} resolves to a {TypeUtil.FriendlyName(provider.GetType())}, which generates its pixels " +
+            "procedurally and has no asset file to fetch. Reading it would need pixel readback, which is " +
+            "not implemented — so this is refused rather than returned empty.");
+    }
+
+    /// <summary>The panel's variant of ResolveTextureUrl: a NON-IMAGE attachment is an ordinary
+    /// case there, not an error, so this answers null instead of throwing. Runs on the world
+    /// thread. Deliberately shares the same two-step lookup so "which texture?" cannot drift
+    /// between the tool an agent calls and the attachments a panel sends.</summary>
+    internal static string? TryResolveTextureUrl(IWorldElement element)
+    {
+        try
+        {
+            var provider = element as IAssetProvider<Texture2D>;
+            if (provider == null)
+            {
+                var slot = element as Slot ?? (element as Component)?.Slot ?? element.FindNearestParent<Slot>();
+                if (slot == null)
+                    return null;
+                provider = slot.GetComponentInChildren<TextureExportable>()?.Texture.Target
+                           ?? slot.GetComponentInChildren<IAssetProvider<Texture2D>>();
+            }
+            return provider is StaticTexture2D { URL.Value: { } uri } && !string.IsNullOrWhiteSpace(uri.ToString())
+                ? uri.ToString()
+                : null;
+        }
+        catch
+        {
+            return null; // a half-destroyed attachment must not break the send
+        }
+    }
+
+    /// <summary>Fetch an asset URL and re-encode it into something an API will actually accept.
+    /// Shared by `read_texture` and by the panel's attachment path so the two cannot diverge.
+    ///
+    /// ALWAYS re-encodes rather than passing gathered bytes through: the gathered extension comes
+    /// from the URL, and ~9% of in-world textures have none or carry .tif/.exr — formats that are
+    /// rejected outright rather than merely awkward. Re-encoding also applies maxSize in the same
+    /// call and leaves one format whose dimensions we can read back from the bytes we send.</summary>
+    internal static (byte[] Bytes, string Mime, string Path) EncodeTexture(
+        string url, int maxSize, int timeoutMs)
+    {
+        var engine = Engine.Current ?? throw new InvalidOperationException("Engine not ready");
+        var gather = engine.AssetManager.GatherAssetFile(new Uri(url, UriKind.Absolute), 10f).AsTask();
+        if (!gather.Wait(timeoutMs))
+            throw new TimeoutException($"Texture fetch did not finish within {timeoutMs} ms");
+        string source = gather.Result
+                        ?? throw new InvalidOperationException($"Texture '{url}' could not be fetched");
+
+        string dir = Path.Combine(Path.GetTempPath(), "McpLink", "images");
+        Directory.CreateDirectory(dir);
+        // unique per call ON PURPOSE: TextureEncoder writes with File.OpenWrite, which does NOT
+        // truncate — reusing a path could leave the tail of a longer previous image behind and
+        // produce a file that is corrupt in a way nothing here would notice.
+        string stamp = $"{DateTime.UtcNow:yyyyMMdd_HHmmss_fff}_{Guid.NewGuid():N}"[..24];
+        string path = Path.Combine(dir, $"tex_{stamp}.png");
+        string mime = "image/png";
+        try { TextureEncoder.ConvertToPNG(source, path, maxSize); }
+        catch (Exception e)
+        {
+            throw new InvalidOperationException(
+                $"Texture '{url}' could not be decoded into an image ({e.Message}). The asset exists but is " +
+                "not in a format the encoder reads.");
+        }
+        byte[] bytes = File.ReadAllBytes(path);
+
+        // PNG is lossless, so a photographic texture can exceed the ceiling at a size JPEG clears
+        // comfortably. Try that before refusing outright.
+        if (bytes.Length > MaxImageBytes)
+        {
+            string jpg = Path.Combine(dir, $"tex_{stamp}.jpg");
+            try
+            {
+                TextureEncoder.ConvertToJPG(source, jpg, maxSize);
+                byte[] smaller = File.ReadAllBytes(jpg);
+                if (smaller.Length < bytes.Length)
+                    (bytes, path, mime) = (smaller, jpg, "image/jpeg");
+            }
+            catch { /* keep the PNG and let the caller's size check speak */ }
+        }
+        return (bytes, mime, Path.GetFullPath(path));
+    }
+
+    /// <summary>Pixel dimensions read from the ENCODED BYTES we are actually sending, because the
+    /// engine's own Texture2D.Size disagreed with the exported file on a real texture (744 vs 743).
+    /// Reporting metadata for a file we just wrote would be a small lie. Internal + pure for the
+    /// suite. Returns (0,0) when the header is not recognised, which the caller reports honestly
+    /// rather than papering over with a guess.</summary>
+    internal static (int Width, int Height) ImageSize(byte[] bytes)
+    {
+        // PNG: 8-byte signature, then the IHDR chunk — width at 16, height at 20, big-endian
+        if (bytes.Length >= 24 && bytes[0] == 0x89 && bytes[1] == 0x50 && bytes[2] == 0x4E && bytes[3] == 0x47)
+            return (ReadBE32(bytes, 16), ReadBE32(bytes, 20));
+        // JPEG: walk the segment chain to a SOFn frame header (height then width, big-endian)
+        if (bytes.Length >= 4 && bytes[0] == 0xFF && bytes[1] == 0xD8)
+        {
+            int i = 2;
+            // i + 8 is the last byte a frame header read touches, so it must be a VALID index —
+            // `i + 9 < Length` looked right and silently skipped a SOF sitting at the very end of
+            // the buffer. A real JPEG has scan data after the header so it never showed there; the
+            // minimal test fixture is exactly where it surfaced.
+            while (i + 8 < bytes.Length)
+            {
+                if (bytes[i] != 0xFF) { i++; continue; }
+                byte marker = bytes[i + 1];
+                if (marker is >= 0xC0 and <= 0xCF && marker is not (0xC4 or 0xC8 or 0xCC))
+                    return ((bytes[i + 7] << 8) | bytes[i + 8], (bytes[i + 5] << 8) | bytes[i + 6]);
+                int length = (bytes[i + 2] << 8) | bytes[i + 3];
+                if (length <= 0) break;
+                i += 2 + length;
+            }
+        }
+        return (0, 0);
+    }
+
+    private static int ReadBE32(byte[] b, int at) =>
+        (b[at] << 24) | (b[at + 1] << 16) | (b[at + 2] << 8) | b[at + 3];
 
     private static IField? FindUriField(Worker worker)
     {

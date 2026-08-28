@@ -352,13 +352,88 @@ internal static class OrgtreeClient
         return Result<string>.Ok(r.Value?["node"]?.GetValue<string>() ?? req.Name);
     }
 
-    /// <summary>Send user mail to a node (kickoff or follow-up) — persisted, drives the node.</summary>
-    internal static async Task<Result<JsonNode>> MessageNodeAsync(string slug, string nodeId, string text)
+    /// <summary>Send user mail to a node (kickoff or follow-up) — persisted, drives the node.
+    ///
+    /// `attachments` are SCRATCH-RELATIVE PATHS ("uploads/foo.png") as returned by UploadAsync —
+    /// NOT bare filenames. The distinction matters more than it looks: the backend resolves each
+    /// path against the node's scratch and DISCARDS the ones that do not exist, without an error
+    /// and without any trace in the delivered mail. Pass a name where a path belongs and the
+    /// image simply never arrives, behind a 200 and {"accepted":true}.</summary>
+    internal static async Task<Result<JsonNode>> MessageNodeAsync(string slug, string nodeId, string text,
+        IEnumerable<string>? attachments = null)
     {
         var body = new JsonObject { ["text"] = text };
+        if (attachments != null)
+        {
+            var arr = new JsonArray();
+            foreach (var name in attachments)
+                arr.Add(name);
+            if (arr.Count > 0)
+                body["attachments"] = arr;
+        }
         return await RequestAsync(HttpMethod.Post,
             $"/api/orgs/{Uri.EscapeDataString(slug)}/nodes/{Uri.EscapeDataString(nodeId)}/message", body)
             .ConfigureAwait(false);
+    }
+
+    /// <summary>Put a file into a node's uploads/ — the raw request body IS the file (no multipart).
+    /// Returns the backend's own STORED PATH ("uploads/foo.png"), which is what MessageNodeAsync's
+    /// `attachments` takes — not the name we asked for, and never a name we construct.
+    ///
+    /// ⚠ RATIFIED 2026-08-28, DO NOT "TIDY" THIS INTO GUESSING A NAME. The guarantee one would
+    /// otherwise lean on — "nothing is ever silently dropped agent-side; every attachment gets an
+    /// outcome line" — DOES NOT HOLD. Measured against the live backend: a message whose only
+    /// attachment was a path that had never been uploaded produced ZERO attachment lines, no
+    /// error, HTTP 200, {"accepted":true}. The outcome-line machinery only ever sees paths that
+    /// already resolved, so the drop happens upstream of it. Guessing a filename here would turn
+    /// every de-duplicated upload (foo.png stored as foo-2.png) into an image that vanishes behind
+    /// a success code.
+    ///
+    /// This is how an image reaches an agent AT ALL. Mail carries text; the panel's attached image
+    /// objects become real files in the recipient's own working folder, at the relative path
+    /// `uploads/&lt;name&gt;` that every agent — sandboxed or not — can read. Note what that does and
+    /// does not buy: the agent gets a FILE, not pixels already in its context. Reading it is one
+    /// step, and the message body is what tells it the step is worth taking.</summary>
+    internal static async Task<Result<string>> UploadAsync(string slug, string nodeId, string name, byte[] bytes)
+    {
+        try
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+            string path = $"/api/orgs/{Uri.EscapeDataString(slug)}/nodes/{Uri.EscapeDataString(nodeId)}"
+                          + $"/upload?name={Uri.EscapeDataString(name)}";
+            using var request = new HttpRequestMessage(HttpMethod.Post, BaseUrl + path)
+            {
+                Content = new ByteArrayContent(bytes),
+            };
+            using var response = await Http.SendAsync(request, timeout.Token).ConfigureAwait(false);
+            string text = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+            if (!response.IsSuccessStatusCode)
+            {
+                string detail = text;
+                try { detail = JsonNode.Parse(text)?["detail"]?.GetValue<string>() ?? text; }
+                catch { }
+                return Result<string>.Fail($"{(int)response.StatusCode}: {Truncate(detail, 300)}");
+            }
+            // Return the backend's OWN path ("uploads/<final>"), never the name we asked for.
+            // Two reasons, and the second is why there is no fallback here:
+            //  1. it de-duplicates — an existing foo.png makes the stored file foo-2.png;
+            //  2. `attachments` takes SCRATCH-RELATIVE PATHS, which the message endpoint resolves
+            //     against the node's scratch and SILENTLY DROPS when they do not exist. A guessed
+            //     name would therefore not error — the image would simply never arrive, which is
+            //     the silent-drop failure we are meant to be eliminating. So an answer we cannot
+            //     read is a failure, not something to paper over with our own guess.
+            string? stored = null;
+            try { stored = JsonNode.Parse(text)?["path"]?.GetValue<string>(); }
+            catch { }
+            return string.IsNullOrWhiteSpace(stored)
+                ? Result<string>.Fail("upload succeeded but returned no path — refusing to guess one, "
+                                      + "since an attachment path that does not resolve is dropped silently")
+                : Result<string>.Ok(stored!);
+        }
+        catch (Exception e)
+        {
+            return Result<string>.Fail(e.InnerException?.Message ?? e.Message);
+        }
     }
 
     /// <summary>Set a node's thinking-effort override ("" clears it back to the org default).

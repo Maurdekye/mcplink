@@ -99,6 +99,127 @@ Check("unknown notification is swallowed", () =>
     return json == null;
 });
 
+Console.WriteLine();
+Console.WriteLine("== tool-result content blocks: the passthrough guarantee (2.11.0) ==");
+// EVERY tool's output flows through ComposeContent, so the failure mode of getting this wrong is
+// "everything, subtly". These checks exist to make that impossible to ship quietly.
+Check("PASSTHROUGH: a result with no sentinel yields exactly one text block", () =>
+{
+    var content = McpDispatcher.ComposeContent("""{"ok":true}""");
+    return content.Count == 1
+        && content[0]!["type"]!.GetValue<string>() == "text"
+        && content[0]!["text"]!.GetValue<string>() == """{"ok":true}""";
+});
+Check("THE GUARANTEE: passthrough is BYTE-IDENTICAL, not merely equivalent JSON", () =>
+{
+    // deliberately chosen so a JSON round-trip would visibly change it: key order that
+    // re-serialization may normalize, a trailing zero, and whitespace. If ComposeContent ever
+    // parses-and-reserializes the untouched path, this is the check that notices.
+    const string awkward = """{"b":1,"a":2,"n":1.50,  "s":"xé"}""";
+    var content = McpDispatcher.ComposeContent(awkward);
+    return content.Count == 1 && content[0]!["text"]!.GetValue<string>() == awkward;
+});
+Check("passthrough survives a result that is not JSON at all", () =>
+{
+    var content = McpDispatcher.ComposeContent("not json {");
+    return content.Count == 1 && content[0]!["text"]!.GetValue<string>() == "not json {";
+});
+Check("the sentinel IS lifted into an image block, and stripped from the text", () =>
+{
+    var content = McpDispatcher.ComposeContent(
+        $$"""{"path":"a.png","{{McpDispatcher.ImagesKey}}":[{"data":"QUJD","mimeType":"image/png"}]}""");
+    return content.Count == 2
+        && content[0]!["type"]!.GetValue<string>() == "text"
+        && !content[0]!["text"]!.GetValue<string>().Contains(McpDispatcher.ImagesKey)
+        && content[0]!["text"]!.GetValue<string>().Contains("a.png")
+        && content[1]!["type"]!.GetValue<string>() == "image"
+        && content[1]!["data"]!.GetValue<string>() == "QUJD"
+        && content[1]!["mimeType"]!.GetValue<string>() == "image/png";
+});
+Check("DISCRIMINATOR: the sentinel as ordinary CONTENT is not lifted (only a real top-level array)", () =>
+{
+    // a tool legitimately reporting the string — e.g. a file listing or an error quoting it
+    var content = McpDispatcher.ComposeContent(
+        $$"""{"note":"the key is called {{McpDispatcher.ImagesKey}}"}""");
+    return content.Count == 1 && content[0]!["type"]!.GetValue<string>() == "text";
+});
+Check("an image entry with no data is dropped, not emitted empty", () =>
+{
+    var content = McpDispatcher.ComposeContent(
+        $$"""{"{{McpDispatcher.ImagesKey}}":[{"mimeType":"image/png"},{"data":"QUJD"}]}""");
+    return content.Count == 2 && content[1]!["data"]!.GetValue<string>() == "QUJD";
+});
+Check("mimeType defaults to image/png when a tool omits it", () =>
+{
+    var content = McpDispatcher.ComposeContent(
+        $$"""{"{{McpDispatcher.ImagesKey}}":[{"data":"QUJD"}]}""");
+    return content.Count == 2 && content[1]!["mimeType"]!.GetValue<string>() == "image/png";
+});
+
+Check("BASE64 MUST NOT LAND IN THE TEXT BLOCK (an image block costs ~8x less for the same bytes)", () =>
+{
+    // the failure mode this whole design exists to avoid: returning base64 inside {"type":"text"}
+    // "works" and costs roughly 8x the tokens of a real image block for identical pixels
+    const string payload = "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo";
+    var content = McpDispatcher.ComposeContent(
+        $$"""{"w":10,"{{McpDispatcher.ImagesKey}}":[{"data":"{{payload}}","mimeType":"image/png"}]}""");
+    return content.Count == 2
+        && !content[0]!["text"]!.GetValue<string>().Contains(payload)   // not in the text block
+        && content[1]!["data"]!.GetValue<string>() == payload;          // in the image block
+});
+
+Console.WriteLine();
+Console.WriteLine("== reading a texture into context: size, limits, hints (2.11.0) ==");
+Check("read_texture is registered, and validates its args BEFORE reaching for the engine", () =>
+{
+    // engine-free, so this also pins the ordering: a caller who omits 'id' must be told that,
+    // not told the engine is not ready
+    try { ToolRegistry.Call("read_texture", new JsonObject()); return false; }
+    catch (ArgumentException e) { return e.Message.Contains("'id'"); }
+});
+Check("image size: PNG dimensions come from the IHDR header", () =>
+{
+    byte[] png = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
+                  0, 0, 0, 13, (byte)'I', (byte)'H', (byte)'D', (byte)'R',
+                  0, 0, 0x02, 0xE7,   // 743
+                  0, 0, 0x03, 0xC8];  // 968
+    return ToolsAssets.ImageSize(png) == (743, 968);
+});
+Check("DISCRIMINATOR: it reads the bytes rather than returning a constant", () =>
+{
+    byte[] png = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
+                  0, 0, 0, 13, (byte)'I', (byte)'H', (byte)'D', (byte)'R',
+                  0, 0, 0x00, 0x40,   // 64
+                  0, 0, 0x00, 0x20];  // 32
+    return ToolsAssets.ImageSize(png) == (64, 32);
+});
+Check("image size: JPEG dimensions come from the SOF frame header (height then width)", () =>
+{
+    byte[] jpg = [0xFF, 0xD8,
+                  0xFF, 0xE0, 0x00, 0x04, 0x00, 0x00,        // a segment to skip over
+                  0xFF, 0xC0, 0x00, 0x11, 0x08,
+                  0x03, 0xC8,   // height 968
+                  0x02, 0xE7];  // width 743
+    return ToolsAssets.ImageSize(jpg) == (743, 968);
+});
+Check("image size: an unrecognised header reports (0,0) rather than guessing", () =>
+    ToolsAssets.ImageSize([1, 2, 3, 4]) == (0, 0)
+    && ToolsAssets.ImageSize([]) == (0, 0));
+Check("truncation hint: an image result is told to lower maxSize, not to 'narrow the query'", () =>
+{
+    string hint = ToolRegistry.ImageAwareTruncationHint($$"""{"{{McpDispatcher.ImagesKey}}":[]}""");
+    return hint.Contains("maxSize") && !hint.Contains("lower depth");
+});
+Check("DISCRIMINATOR: an ordinary oversized result still gets the query advice", () =>
+{
+    string hint = ToolRegistry.ImageAwareTruncationHint("""{"slots":[1,2,3]}""");
+    return hint.Contains("lower depth") && !hint.Contains("maxSize");
+});
+Check("the per-image byte ceiling leaves room for base64 inflation under the 10 MB API limit", () =>
+    // base64 is 4/3, so the encoded form of the cap must still clear 10 MB
+    ToolsAssets.MaxImageBytes * 4 / 3 < 10 * 1024 * 1024);
+
+Console.WriteLine();
 Console.WriteLine("== tools/list & schemas ==");
 JsonArray tools = null!;
 Check("tools/list returns tools", () =>
@@ -1794,6 +1915,7 @@ Check("retires-on-close: bound body only — window/fallback/fired/nodeless neve
 
 Console.WriteLine();
 PanelChecks.Run(Check);
+SendPathChecks.Run(Check);
 
 Console.WriteLine();
 Console.WriteLine("== list truncation is out-of-band (get_component) ==");

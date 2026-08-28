@@ -1938,36 +1938,51 @@ internal static class PromptWizard
             return;
         if (text.Length == 0)
             text = "(see the attached references)";
-        var refs = CaptureRefs(state);
+        var images = new List<ImageCandidate>();
+        var refs = CaptureRefs(state, images);
         var refElements = state.Attachments
             .Where(a => a.Target is not IDestroyable { IsDestroyed: true })
             .Select(a => ((IWorldElement?)a.Target, a.Display)).ToList();
 
         if (state.FallbackMode)
         {
-            FallbackSend(state, text, refs);
+            FallbackSend(state, text, refs, images);
             AppendChat(state, "you", DateTime.Now, text, refElements);
             state.Input.TargetString = "";
             ClearAttachments(state);
             return;
         }
 
-        // A panel message is marked and carries its channel whenever there IS a channel to name;
-        // a handle-less panel (old backend / refused attach) falls back to the pre-2.9.0 bare
-        // text, because naming a handle that does not exist is worse than naming none.
-        string body = state.KickoffSent
-            ? state.Channel != null
-                ? ComposePanelMessage(state.Channel, text, refs)
-                : ComposeFollowUp(text, refs)
-            : state.WindowMode
-                ? BuildWindowKickoff(state, text, refs, state.Peer!)
-                : BuildKickoff(state, text, refs, state.Peer!);
+        // ⚠ ORDERING (2.11.0): the body is now composed INSIDE the task, AFTER the uploads, and
+        // that is deliberate. It states which images were attached and names the ones that were
+        // not — neither of which is known until the uploads have actually happened. Composing
+        // first (as this did through 2.10.0) would mean either staying silent about the images
+        // or claiming attachments that might never have arrived.
+        //
+        // Everything the composers read from the WORLD is snapshotted here, on the world thread:
+        // `state.Channel` already holds the panel's user/world/session/slot, captured at bind
+        // time, which is why the kickoff composers can take a PanelChannel and run off-thread.
+        // The rest are plain flags, copied so the task cannot race the panel's own state.
+        var channel = state.Channel ?? NewChannel(state, state.Peer ?? "?", state.WindowMode);
+        bool kickoffSent = state.KickoffSent, windowMode = state.WindowMode, haveChannel = state.Channel != null;
+        string peer = state.Peer!;
         state.Busy = true;
         var world = state.Root.World;
         string slug = state.OrgSlug!, node = state.NodeId!;
         Task.Run(async () =>
         {
-            var r = await OrgtreeClient.MessageNodeAsync(slug, node, body).ConfigureAwait(false);
+            var attachments = await UploadPanelImages(slug, node, images, refs).ConfigureAwait(false);
+            // A panel message is marked and carries its channel whenever there IS a channel to name;
+            // a handle-less panel (old backend / refused attach) falls back to the pre-2.9.0 bare
+            // text, because naming a handle that does not exist is worse than naming none.
+            string body = kickoffSent
+                ? haveChannel
+                    ? ComposePanelMessage(channel, text, refs)
+                    : ComposeFollowUp(text, refs)
+                : windowMode
+                    ? BuildWindowKickoff(channel, text, refs, peer)
+                    : BuildKickoff(channel, text, refs, peer);
+            var r = await OrgtreeClient.MessageNodeAsync(slug, node, body, attachments).ConfigureAwait(false);
             RunSync(world, state, () =>
             {
                 state.Busy = false;
@@ -2149,7 +2164,7 @@ internal static class PromptWizard
     /// refused attach) has no channel to name, so its messages stay exactly as they were before
     /// 2.9.0 — bare text, references appended. Claiming a handle that doesn't exist would be
     /// worse than saying nothing.</summary>
-    private static string ComposeFollowUp(string text, JsonArray refs)
+    internal static string ComposeFollowUp(string text, JsonArray refs)
     {
         if (refs.Count == 0)
             return text;
@@ -3402,13 +3417,21 @@ internal static class PromptWizard
 
     // ======================= payload helpers =======================
 
-    private static JsonArray CaptureRefs(WizardState state)
+    /// <summary>Snapshot the attached references, and — when `images` is supplied — note which of
+    /// them are textures we could send as pictures. BOTH halves must happen HERE, on the world
+    /// thread, because both read live components; the export and upload that follow do not touch
+    /// the world and run off it. An image always rides alongside a ref entry, never on its own,
+    /// which is what lets the outcome be reported beside the thing the user actually attached.</summary>
+    private static JsonArray CaptureRefs(WizardState state, List<ImageCandidate>? images = null)
     {
         var refs = new JsonArray();
         foreach (var a in state.Attachments)
         {
             if (a.Target is not IWorldElement target || target is IDestroyable { IsDestroyed: true })
                 continue;
+            if (images != null && ToolsAssets.TryResolveTextureUrl(target) is { Length: > 0 } textureUrl)
+                images.Add(new ImageCandidate(refs.Count, textureUrl,
+                    (target as Slot ?? (target as Component)?.Slot)?.Name ?? a.Display ?? "texture"));
             var entry = new JsonObject
             {
                 ["id"] = target.ReferenceID.ToString(),
@@ -3453,7 +3476,152 @@ internal static class PromptWizard
             sb.AppendLine($"- [[ref:{id}|{label}]] ({r?["type"]})"
                           + (r?["name"] != null ? $" on slot \"{r["name"]}\" ({r["slotId"]}) path {r["slotPath"]}" : "")
                           + (r?["objectRootId"] != null ? $", object root {r["objectRootName"]} ({r["objectRootId"]})" : ""));
+            AppendImageLine(sb, r);
         }
+    }
+
+    /// <summary>THE IMAGE SENTENCE (2.11.0) — emitted here, at the ONE point every outgoing panel
+    /// body funnels through, so it cannot be present on some send paths and missing on others.
+    /// All four composers (ComposePanelMessage, ComposeFollowUp, BuildKickoff, BuildWindowKickoff)
+    /// call AppendRefLines, and FallbackSend annotates the same entries; a fifth path that skipped
+    /// this would be a silent omission, which is what SendPathChecks exists to catch.
+    ///
+    /// ⚠ WHY THIS SENTENCE IS THE PRIMARY PATH AND NOT A FALLBACK — measured 2026-08-28, not
+    /// assumed. An attached image reaches an agent as a real file plus, SOMETIMES, an inlined
+    /// image block. Which one you get depends on when the mail lands: delivery MID-TURN (the agent
+    /// is busy) is text-only, and the backend says so in as many words — "it was NOT loaded into
+    /// your context and will NOT load later". A panel messages an agent that is working as the
+    /// normal case, so most panel images are a file the reader must choose to open. Telling them
+    /// the file is there, and worth opening, is therefore the feature — not a consolation prize
+    /// for when the nice path fails.
+    ///
+    /// It names the SPECIFIC image beside the SPECIFIC reference it came from, because a reader
+    /// told only "some images were attached" cannot ask for the one they did not get.</summary>
+    internal static void AppendImageLine(StringBuilder sb, JsonNode? r)
+    {
+        if (r?["imagePath"]?.ToString() is { Length: > 0 } path)
+            sb.AppendLine($"  {ImageMark} that texture is attached to this message as \"{path}\" — a real file "
+                          + "in your own working folder. READ IT to actually see the image; depending on how "
+                          + "this mail was delivered it may not have been loaded into your context for you.");
+        else if (r?["imageNote"]?.ToString() is { Length: > 0 } note)
+            sb.AppendLine($"  {ImageMark} no image was attached for this reference: {note}");
+    }
+
+    /// <summary>Leads both image lines so a reader (and the suite) can find them without
+    /// matching prose that is free to be reworded.</summary>
+    internal const string ImageMark = "[IMAGE]";
+
+    // ======================= panel image attachments (2.11.0) =======================
+
+    // ⚠ These are orgtree's INLINE limits, which are STRICTER than its upload limits, and the
+    // inline ones are the ones that decide whether an image is ever seen. Upload accepts 25 MB
+    // and the first 10 attachments; inlining accepts 5 MB, 8 images, 12 MB of raw bytes per turn.
+    // Sizing to the upload caps would produce images that upload cleanly with a success code and
+    // then are simply never shown — a silent gap dressed up as a working feature. So we size to
+    // the tighter pair and say plainly when something did not fit.
+    private const int PanelImageMaxCount = 8;
+    private const int PanelImageMaxBytes = 5 * 1024 * 1024;
+    private const long PanelImageTotalBytes = 12L * 1024 * 1024;
+    private const int PanelImageMaxSize = 2048;
+    private const int PanelImageTimeoutMs = 60000;
+
+    /// <summary>One attachment that resolved to a texture. `RefIndex` ties it to the entry in the
+    /// refs array so the outcome can be written back beside the reference the user attached —
+    /// resolution happens on the WORLD THREAD, the encode and upload do not.</summary>
+    internal sealed record ImageCandidate(int RefIndex, string Url, string Label);
+
+    /// <summary>Build an upload filename that survives the backend's own sanitiser UNCHANGED.
+    /// It rewrites anything outside [\w .()+-] to '_' and truncates the stem to 120 chars; if we
+    /// let it do that work, the name we asked for and the name it stored would differ, and we
+    /// would be guessing at the difference. We do not guess at names here — see UploadAsync.</summary>
+    internal static string SafeUploadName(string label, string id, string ext)
+    {
+        var sb = new StringBuilder();
+        foreach (char c in label)
+            sb.Append(char.IsLetterOrDigit(c) || c == '_' || c is ' ' or '.' or '(' or ')' or '+' or '-' ? c : '_');
+        string stem = sb.ToString().Trim();
+        if (stem.Length == 0)
+            stem = "texture";
+        // the id keeps two identically-named slots from colliding into the backend's de-dup path,
+        // where they would come back as name-2.png and be harder to map to their reference
+        string full = $"panel-{stem}-{id}";
+        return (full.Length > 120 ? full[..120] : full) + ext;
+    }
+
+    /// <summary>Record "no image, and here is why" against every candidate's ref entry. For send
+    /// paths that cannot carry an attachment AT ALL, where the alternative is that the picture the
+    /// user attached simply never gets mentioned.</summary>
+    internal static void MarkImagesUndeliverable(JsonArray refs, List<ImageCandidate>? images, string reason)
+    {
+        if (images == null)
+            return;
+        foreach (var img in images)
+            if (refs.Count > img.RefIndex && refs[img.RefIndex] is JsonObject entry)
+                entry["imageNote"] = reason;
+    }
+
+    /// <summary>Export, upload and account for the panel's attached textures, writing the outcome
+    /// of EACH ONE back onto its ref entry. Runs OFF the world thread (the encode blocks on an
+    /// asset gather and the upload is network I/O); the URLs were resolved on the world thread.
+    ///
+    /// Every candidate gets an outcome — an `imagePath` when it went, an `imageNote` saying why
+    /// when it did not. Nothing here may fail quietly: the whole point of the feature is that a
+    /// reader can tell "I was shown this" from "there is a file I have not opened" from "this one
+    /// did not make it", and a candidate that vanished with no line at all defeats that.</summary>
+    private static async Task<List<string>> UploadPanelImages(
+        string slug, string node, List<ImageCandidate> images, JsonArray refs)
+    {
+        var attachments = new List<string>();
+        int sent = 0;
+        long budget = PanelImageTotalBytes;
+        foreach (var img in images)
+        {
+            if (refs.Count <= img.RefIndex || refs[img.RefIndex] is not JsonObject entry)
+                continue;
+            if (sent >= PanelImageMaxCount)
+            {
+                entry["imageNote"] = $"only the first {PanelImageMaxCount} images in a message can be "
+                                     + "shown to an agent, and this one is past that limit — attach fewer, "
+                                     + "or ask for this one on its own.";
+                continue;
+            }
+            try
+            {
+                var (bytes, mime, _) = ToolsAssets.EncodeTexture(img.Url, PanelImageMaxSize, PanelImageTimeoutMs);
+                if (bytes.Length > PanelImageMaxBytes)
+                {
+                    entry["imageNote"] = $"it is {bytes.Length:N0} bytes re-encoded as {mime}, over the "
+                                         + $"{PanelImageMaxBytes:N0}-byte per-image limit.";
+                    continue;
+                }
+                if (bytes.Length > budget)
+                {
+                    entry["imageNote"] = $"the message's {PanelImageTotalBytes:N0}-byte image budget was "
+                                         + "already used by the images before it.";
+                    continue;
+                }
+                string ext = mime == "image/jpeg" ? ".jpg" : ".png";
+                var up = await OrgtreeClient.UploadAsync(
+                    slug, node, SafeUploadName(img.Label, entry["id"]?.ToString() ?? "", ext), bytes)
+                    .ConfigureAwait(false);
+                if (up.Error != null || string.IsNullOrWhiteSpace(up.Value))
+                {
+                    entry["imageNote"] = $"the upload failed ({up.Error ?? "no path returned"}).";
+                    continue;
+                }
+                // the backend's OWN path, never the name we asked for — it de-duplicates, and an
+                // attachment path that does not resolve is dropped SILENTLY (measured 2026-08-28)
+                entry["imagePath"] = up.Value;
+                attachments.Add(up.Value!);
+                budget -= bytes.Length;
+                sent++;
+            }
+            catch (Exception e)
+            {
+                entry["imageNote"] = $"it could not be exported as an image ({e.Message}).";
+            }
+        }
+        return attachments;
     }
 
     private const string CharterText =
@@ -3471,13 +3639,15 @@ internal static class PromptWizard
         "remember it. If a [PANEL CLOSED] mail arrives, your panel is gone but you remain hired: " +
         "stop using the handle and work via org channels.";
 
-    private static string BuildKickoff(WizardState state, string prompt, JsonArray refs, string peer)
+    /// <summary>Takes a PanelChannel rather than the live WizardState (2.11.0) so it can run OFF
+    /// the world thread — the body is composed after the image uploads, which must not block a
+    /// frame. The channel is snapshotted at bind time and holds every world fact read here.</summary>
+    internal static string BuildKickoff(PanelChannel ch, string prompt, JsonArray refs, string peer)
     {
-        var world = state.Root.World;
         var sb = new StringBuilder();
         sb.AppendLine($"{MarkOpened} You were created from an IN-GAME PROMPT PANEL (McpLink Prompt Wizard) "
-                      + $"— the user \"{world.LocalUser?.UserName}\" hired you from inside the Resonite world "
-                      + $"\"{world.Name}\" (session {world.SessionId}) and chats with you through that panel.");
+                      + $"— the user \"{ch.UserName}\" hired you from inside the Resonite world "
+                      + $"\"{ch.WorldName}\" (session {ch.SessionId}) and chats with you through that panel.");
         sb.AppendLine();
         sb.AppendLine("THE PROMPT:");
         sb.AppendLine(prompt);
@@ -3498,7 +3668,7 @@ internal static class PromptWizard
                       + "per-node handles: escalate your answer text to your superior and ask them to relay it "
                       + $"to @mcp:{peer} on your behalf.");
         sb.AppendLine($"- For a rich standalone answer you may ALSO use the mcplink spawn_markdown tool "
-                      + $"(panel slot {state.Root.ReferenceID}, or inFrontOf \"{world.LocalUser?.UserName}\") — "
+                      + $"(panel slot {ch.PanelId}, or inFrontOf \"{ch.UserName}\") — "
                       + "but the handle message is the required minimum.");
         sb.AppendLine($"- Follow-ups arrive as more user mail, each opening with {MarkMessage} and repeating this "
                       + "handle and panel slot — you never have to remember them. They may carry "
@@ -3519,12 +3689,11 @@ internal static class PromptWizard
     /// explicit — presence goes ambient, the transcript does not. An agent that treated its new
     /// handle as a place to narrate would violate that ruling on the user's behalf, in front of
     /// whoever else is in the world.</summary>
-    private static string BuildWindowKickoff(WizardState state, string prompt, JsonArray refs, string peer)
+    internal static string BuildWindowKickoff(PanelChannel ch, string prompt, JsonArray refs, string peer)
     {
-        var world = state.Root.World;
         var sb = new StringBuilder();
-        sb.AppendLine($"{MarkOpened} The user \"{world.LocalUser?.UserName}\" has OPENED AN IN-GAME CHAT PANEL "
-                      + $"onto you from inside the Resonite world \"{world.Name}\" (session {world.SessionId}). "
+        sb.AppendLine($"{MarkOpened} The user \"{ch.UserName}\" has OPENED AN IN-GAME CHAT PANEL "
+                      + $"onto you from inside the Resonite world \"{ch.WorldName}\" (session {ch.SessionId}). "
                       + "You were not re-hired and nothing about your role has changed — you simply have "
                       + "a live audience in-world now, and an address to answer it on.");
         sb.AppendLine();
@@ -3556,15 +3725,28 @@ internal static class PromptWizard
                       + $"employment. When it closes you get a {MarkClosed} mail and the handle above is taken "
                       + "off you: work through normal org channels from then on.");
         sb.AppendLine("- You may also use the mcplink tools against that live world "
-                      + $"(panel slot {state.Root.ReferenceID}) if your work calls for it.");
+                      + $"(panel slot {ch.PanelId}) if your work calls for it.");
         return sb.ToString();
     }
 
     /// <summary>v1 path — backend unreachable: append the classic JSON line for the file-watching
     /// orchestrator. The queued system entry's Text RefID rides as statusTextId, so orchestrator
     /// status updates (via set_member) land inside this chat.</summary>
-    private static void FallbackSend(WizardState state, string prompt, JsonArray refs)
+    private static void FallbackSend(WizardState state, string prompt, JsonArray refs,
+        List<ImageCandidate>? images = null)
     {
+        // ⚠ THE FALLBACK PATH HAS NO BACKEND, SO IT HAS NO UPLOAD ENDPOINT. This writes a JSON
+        // file to promptOutbox for a file-watching orchestrator; there is no node to POST an
+        // attachment to. Attached textures therefore CANNOT travel this path.
+        //
+        // They are named anyway, with the specific reason (user ruling via coordinator, option
+        // (ii), 2026-08-28). Dropping them silently was the alternative and it is the worse
+        // failure: a reader who is told which image did not arrive, and why, can ask for it. A
+        // reader told nothing believes they saw everything the user attached.
+        MarkImagesUndeliverable(refs, images,
+            "this panel is running in promptOutbox fallback mode, which writes to a file for an "
+            + "orchestrator instead of talking to an orgtree backend — there is no upload channel "
+            + "on this path, so the picture could not be sent with the message.");
         try
         {
             string outbox = McpLinkMod.PromptOutbox;

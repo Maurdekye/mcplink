@@ -185,11 +185,22 @@ internal static class ToolRegistry
                     ["truncated"] = true,
                     ["bytes"] = System.Text.Encoding.UTF8.GetByteCount(json),
                     ["maxBytes"] = maxBytes,
-                    ["hint"] = "Narrow the query (lower depth, add filters, use summary modes) or raise maxBytes.",
+                    // an image result is dominated by its base64, and every one of the usual levers
+                    // ("lower depth", "add filters") is the wrong one — pointing a caller at them
+                    // would send them looking for a query to narrow that does not exist
+                    ["hint"] = ImageAwareTruncationHint(json),
                 }.ToJsonString();
         }
         return json;
     }
+
+    /// <summary>Which advice actually helps, given what blew the budget. Internal + pure so the
+    /// suite can pin both branches — a hint is only useful if it names a lever the caller has.</summary>
+    internal static string ImageAwareTruncationHint(string json) =>
+        json.IndexOf(McpDispatcher.ImagesKey, StringComparison.Ordinal) >= 0
+            ? "This result carries an image, and its base64 dominates the byte count. 'maxBytes' is a text " +
+              "budget and cannot shrink it: lower 'maxSize' to downscale the image, or raise maxBytes."
+            : "Narrow the query (lower depth, add filters, use summary modes) or raise maxBytes.";
 
     // ---------- shared argument helpers ----------
 
