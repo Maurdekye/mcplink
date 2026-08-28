@@ -1,8 +1,12 @@
-# docs/dev — the engineering record
+# docs/dev — engineering record & contributor guidance
 
-These are the project's internal working documents, published as-is. McpLink was built AI-first
-— developed, tested, and maintained by Claude Code agents working against the live game — and
-these files are that process's paper trail, kept because the lessons in them are real:
+Working on this repo? Start at **[CONTRIBUTING.md](CONTRIBUTING.md)** — repo workflow, the
+release process, and the verification discipline this project holds itself to.
+
+The rest of this folder is the project's internal working documents, published as-is. McpLink
+was built AI-first — developed, tested, and maintained by Claude Code agents working against the
+live game — and these files are that process's paper trail, kept because the lessons in them are
+real:
 
 - **[TOOLKIT-NOTES.md](TOOLKIT-NOTES.md)** — the friction diary. Append-only log of everything
   a tool made an agent guess at, work around, or that quietly returned a wrong answer — each

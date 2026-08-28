@@ -1,5 +1,9 @@
 # McpLink
 
+*For anyone browsing this repo on GitHub — what McpLink is, why, and how to install it.
+Developing it? See [`CLAUDE.md`](CLAUDE.md). Driving it from an agent? See
+[`CLAUDE-MCPLINK.md`](CLAUDE-MCPLINK.md).*
+
 **An MCP server that runs inside Resonite.** McpLink is a
 [ResoniteModLoader](https://github.com/resonite-modding-group/ResoniteModLoader) mod that embeds
 a [Model Context Protocol](https://modelcontextprotocol.io/) server in the game process, so an

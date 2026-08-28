@@ -1,5 +1,7 @@
 # McpLink — Setup Guide, from zero
 
+*For anyone installing McpLink — the full step-by-step setup guide.*
+
 This is the long-form walkthrough. If you just want the short version, the
 [README's section 1](README.md#1-get-the-mod-set-up) covers a working setup in five steps;
 everything there is repeated here with more detail, plus configuration, troubleshooting,

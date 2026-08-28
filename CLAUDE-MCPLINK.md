@@ -1,5 +1,11 @@
 # McpLink — using Resonite from Claude
 
+*For agents driving McpLink's tools — whether reading this in the McpLink repo itself or (more
+commonly) copied into a consumer project. Not named `CLAUDE.md` on purpose: that name is
+reserved for the consumer's own project file, and this one gets copied in alongside it without
+colliding (see [INSTALL.md §5](INSTALL.md#5-teach-the-agent-how-to-use-it)). Developing McpLink
+itself instead? See [`CLAUDE.md`](CLAUDE.md).*
+
 This project has **McpLink** connected: an MCP server running *inside* the Resonite process
 (`mcp__mcplink__*` tools, 97 of them). It gives you deep read/write access to the user's live
 Resonite worlds: slots, components, ProtoFlux, assets, screenshots, C# eval. This guide is how
