@@ -1279,3 +1279,80 @@ present in `api.py` and absent from the live endpoint's responses, because the s
 restarted since. **Bytes on disk, behaviour of the running service, and the commit in the repo are
 three different questions.** Measure the one you actually care about, and prefer probing the live
 service over reading any checked-out source.
+
+## 2026-08-28 — AN INSTRUMENT THAT CANNOT REGISTER THE CHANGE IT EXISTS TO REGISTER
+
+Same family as the mutation-marker entry above: **a check that survives the defect it was written
+for is indistinguishable from one that caught it.**
+
+The panel self-notice told agents their mailbox would show the event labelled `"your peer"`.
+Orgtree changed that label to `"yourself"` on 2026-08-27. The text went false; the test stayed
+green for a day and nobody noticed.
+
+**Why it stayed green.** The check asserted:
+
+```csharp
+self.Contains("FROM YOURSELF") && self.Contains("you did not send it")
+```
+
+Both remained true across the entire label change — the envelope really is still *from the agent
+itself*, and we really did still say so. The check pinned **the half that never moves.** The half
+that moved, the quoted label, was never asserted at all. Mutation-proved rather than argued:
+restoring `"your peer"` kills the new check and **leaves the pre-existing one passing**.
+
+⇒ Ask of any check protecting a claim about someone else's output: **which token in it can the
+other party actually change?** Pin that one. A check pinned to the invariant part of a
+mostly-invariant string is decoration.
+
+**The shape that fixes it — derive the expectation, do not restate it.** Both real envelope
+headers are checked in as fixtures, and the expected label is *extracted from the fixture* rather
+than typed again beside it:
+
+```csharp
+const string MeasuredSelfEnvelope    = "NOTICE FROM probe-a (yourself) · …";
+const string MeasuredSiblingEnvelope = "NOTICE FROM probe-b (your peer) · …";
+// expectation = LabelOf(MeasuredSelfEnvelope), never the literal "yourself"
+```
+
+A restated expectation and the measurement it came from are two copies that drift silently.
+Extraction makes drift impossible: update the fixture and the expectation moves with it.
+
+**And the extractor needs its own control, because an extractor abstains.** `LabelOf` returning
+`""` on a header it cannot parse would make every `Contains` comparison vacuous. Second mutation:
+force `LabelOf` to always return `""` — it is killed by the control check that asserts the
+extractor pulls `yourself` from one fixture, `your peer` from the other, and `""` from a string
+with no parentheses. **A helper that can silently abstain must be tested for abstention, or the
+check it feeds is only as good as it is.**
+
+### HOW TO MEASURE WHAT AN AGENT'S ENVELOPE ACTUALLY SAYS
+
+Reading the store after the fact **does not work — node mail is CONSUMED at delivery.** The probe
+showed 0 entries; the control (the same reader seeing 7 other nodes' mail) proved that was an
+honest empty and not a broken reader. Do it live instead:
+
+1. Hire **two** throwaway haiku probes as **siblings** — the second exists only to be a peer.
+2. Send the test *and* the control through the real route — `POST /api/agent`, tool
+   `orgtree_send_notice` — both **into the same probe**.
+3. Wake it and have it echo its `[MAIL]` block **verbatim, character for character**.
+
+Both land in one turn, milliseconds apart, through the same renderer, which is what makes the
+control genuinely simultaneous rather than a second anecdote. Here it is what proved the label had
+not gone away — the sibling header still read `(your peer)` while the self header read
+`(yourself)`.
+
+### TWO FACTS THAT MAKE A LATER MEASUREMENT LOOK CONTRADICTORY FOR NO REASON
+
+- **The relationship label is stamped into the mail entry at SEND time, not at render**
+  (`ledger.py`, `entry["relationship"] = self.relationship(sender, to)`). Old mail keeps the old
+  label forever. Re-reading an existing message will *not* show a label change; only a fresh send
+  will.
+- **Never trust a recorded PID.** A note here recorded the backend as PID 23144; within a day it
+  was 15556, having restarted twice. Re-derive it (`netstat -ano | grep 7360`) every time, and use
+  the process **start time** against the fix's commit date when you need to know whether the
+  running service can possibly contain a change.
+
+**Corollary to the whole entry:** a doc comment asserting two things that were once true together
+will read as *wholly* true after one of them decays. Ours claimed the addressing permission and the
+relationship label both fell through Orgtree's sibling clause. The label got an explicit self branch;
+the permission did not. Splitting the claim was the repair — **when half a compound claim dies, the
+sentence does not announce it.**
