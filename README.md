@@ -324,11 +324,13 @@ Prereqs: **.NET 10 SDK**, internet for one NuGet restore (the eval companion pul
 dotnet build -c Release -p:ResonitePath="C:\path\to\Resonite"
 ```
 
-(`ResonitePath` defaults to the Steam location.) A build **never deploys into your game folder
-from a clone** — that's deliberate; deploy explicitly with `-p:CopyToMods=true`, or use
-`tools\install.ps1 -FromBuild`. While the game runs, `rml_mods\McpLink.dll` is file-locked: a
-deploying build then emits warning `MCPLINK001` and stages only the hot-reload copy — never
-trust "it built" as "it's installed"; ask `session_info`.
+(`ResonitePath` defaults to the Steam location.) A build **never writes into your game folder** —
+from a clone, a worktree, or the canonical tree; that's deliberate (a build side effect nobody
+chose is a deploy nobody verified). Deploy with `tools\deploy.ps1` (game open or closed — it
+stages, waits for the file lock if needed, backs up the outgoing DLLs, and verifies both mod
+slots against a pinned hash), or use `tools\install.ps1 -FromBuild` for a first install. For a
+hot-reload *development* loop, stage the reload slot explicitly with `-p:StageHotReload=true` —
+that is prototyping, not a deploy. Never trust "it built" as "it's installed"; ask `session_info`.
 
 The offline smoke suite — dispatcher, every schema, type resolution, codecs, real Roslyn eval, a
 real Harmony patch/unpatch cycle, 255 checks, no game needed — is the gate for every change:

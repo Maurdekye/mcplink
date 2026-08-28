@@ -13,11 +13,12 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- CopyToMods pinned false: THE OFFLINE SUITE MUST NEVER DEPLOY. Without this, building
-         the suite fires the mod's DeployToMods and silently restages the (never-locked)
-         rml_mods\HotReloadMods DLL that hot_reload loads — the suite reaching production.
-         The mod csproj gates its own default too; this pin holds even if that gate drifts. -->
-    <ProjectReference Include="..\McpLink.csproj" AdditionalProperties="CopyToMods=false" />
+    <!-- StageHotReload pinned false: THE OFFLINE SUITE MUST NEVER TOUCH THE GAME FOLDER.
+         The mod csproj's staging is opt-in-off by default, but this pin holds even if that
+         default drifts — building the suite must never restage the (never-locked)
+         rml_mods\HotReloadMods DLL that hot_reload loads. (CopyToMods was the old gate's
+         name; the pin follows the gate.) -->
+    <ProjectReference Include="..\McpLink.csproj" AdditionalProperties="StageHotReload=false" />
     <Reference Include="FrooxEngine">
       <HintPath>$(ResonitePath)\FrooxEngine.dll</HintPath>
       <Private>false</Private>

@@ -76,6 +76,9 @@ try {
 } catch { if ($_.Exception.Message -match 'already has a release') { throw } }
 
 # --- build + gate (package.ps1 runs the offline smoke suite; deploys pinned off) ---
+# StageHotReload gates the main csproj's dev-loop staging; CopyToMods still gates the eval
+# csproj's McpLink_libs write. Both default off, but a release build pins both anyway.
+$env:StageHotReload = "false"
 $env:CopyToMods = "false"
 powershell -NoProfile -File "$root\package.ps1"
 if ($LASTEXITCODE -ne 0) { throw "package.ps1 failed -- nothing was tagged or published." }
