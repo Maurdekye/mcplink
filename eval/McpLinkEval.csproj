@@ -23,18 +23,14 @@
          target can be exercised against a throwaway directory. NO TEST MAY TOUCH PRODUCTION.
          Overriding it does not bypass the CopyToMods gate below. -->
     <ModsDeployRoot Condition="'$(ModsDeployRoot)' == ''">$(ResonitePath)</ModsDeployRoot>
-    <!-- Same decision-not-side-effect gate as McpLink.csproj, and for the same reason with an
-         eval twist: the running mod lazily loads McpLink_libs into an AssemblyLoadContext, so a
-         stray build from another agent's worktree silently replacing those DLLs mixes eval/Roslyn
-         generations under a live game (found as a near-miss during the 2.8.1 release packaging).
-         Default is true ONLY for a direct build of the canonical checkout; -p:CopyToMods=true|false
-         is an explicit decision and always wins.
-         Before you "clean up" the literal path (same rationale as McpLink.csproj): a .git
-         file-vs-directory test was rejected because a stranger's fresh clone is ALSO a main
-         checkout — it would default deploys ON for every public user; a gitignored sentinel
-         fails safe but is invisible state a re-clone silently loses. Only this exact tree
-         opts in. -->
-    <CopyToMods Condition="'$(CopyToMods)' == '' AND '$(MSBuildStartupDirectory)' == '$(MSBuildProjectDirectory)' AND '$(MSBuildProjectDirectory)' == 'E:\Libraries\Desktop\resonite\mcplink\eval'">true</CopyToMods>
+    <!-- BUILDS NEVER WRITE THE GAME FOLDER BY DEFAULT (user ruling 2026-08-28, same as
+         McpLink.csproj — a build side effect nobody chose is a deploy nobody verified; the
+         canonical-path auto-opt-in that used to live here deployed an unshipped Debug build of
+         the MAIN mod the moment the game happened to be closed). The eval twist still applies:
+         the running mod lazily loads McpLink_libs into an AssemblyLoadContext, so a stray build
+         silently replacing those DLLs mixes eval/Roslyn generations under a live game (near-miss
+         during the 2.8.1 release packaging). CopyToMods is therefore EXPLICIT-ONLY:
+         -p:CopyToMods=true is a deliberate decision every time, no tree opts in by default. -->
     <CopyToMods Condition="'$(CopyToMods)' == ''">false</CopyToMods>
   </PropertyGroup>
 
@@ -66,7 +62,7 @@
   <!-- the skip is LOUD, same as the main csproj: a silent no-deploy reads exactly like a
        deploy to whoever builds and then wonders why eval still runs the old closure -->
   <Target Name="DeployEvalLibsSkipped" AfterTargets="Build" Condition="'$(CopyToMods)' != 'true'">
-    <Message Text="McpLinkEval: deploy SKIPPED (CopyToMods='$(CopyToMods)') — referenced/worktree/foreign-cwd builds never write rml_mods\McpLink_libs. A direct build in the canonical eval tree, or -p:CopyToMods=true, deploys." Importance="high" />
+    <Message Text="McpLinkEval: rml_mods\McpLink_libs untouched (builds never write the game folder by default). Writing the eval closure is an explicit decision: -p:CopyToMods=true." Importance="high" />
   </Target>
 
 </Project>

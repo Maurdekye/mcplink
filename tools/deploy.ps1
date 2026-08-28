@@ -1,52 +1,76 @@
-# McpLink deploy-on-close: waits for the game to release the locked mod DLL (game close),
-# then deploys a PINNED build to BOTH mod slots and seeds config keys the shipped build
-# expects. One-shot: exits after one successful deploy or one refusal. Re-arm per deploy.
+# McpLink deploy - THE single entry point for every deploy, game open or closed.
+# Policy this implements: docs/dev/CONTRIBUTING.md "Deploy policy" (user ruling 2026-08-28).
+# No hand-rolled copies, ever - including by agents in a hurry.
 #
-# WHY THE PIN IS MANDATORY: this script re-reads -Src at copy time, so between arming and
-# the game closing, anything that rebuilds the canonical tree silently changes the payload.
-# -ExpectedSha256 freezes INTENT at arm time: if the bytes at -Src no longer match when the
-# lock finally releases, the script REFUSES and logs instead of deploying whatever happens
-# to be there. (2026-08-27: a stale pre-engine-update DLL nearly shipped exactly this way.)
+#   Game CLOSED  -> deploys immediately. No arming, no scheduled task, no waiting.
+#   Game OPEN    -> stages a SNAPSHOT and arms a detached waiter that deploys the moment the
+#                   file lock releases AND the game process is gone. Nothing is ever written
+#                   into the game folder while Resonite runs.
 #
-# WHY BOTH SLOTS: rml_mods\McpLink.dll is what a cold launch loads; rml_mods\HotReloadMods\
-# McpLink.dll is what the hot_reload tool loads. Deploying only the first leaves a stale
-# (possibly broken) build one hot_reload away, and session_info reports deployConsistent
-# false. The HotReloadMods copy is made FROM the verified destination, not from -Src, so the
-# two slots are identical even if -Src changes mid-deploy.
+# IDEMPOTENT BY REPLACEMENT (user's exact requirement): calling this again while a deploy is
+# still waiting re-stages a fresh snapshot that REPLACES the pending one. At most one deploy
+# is ever pending, always the newest; re-running is always safe.
 #
-# WHY THE SEED HAPPENS HERE: ResoniteModLoader's shutdown hook rewrites the config file from
-# the RUNNING mod's known keys at every game close, erasing keys hand-added while it played
-# (ilspy: ModConfiguration.ShutdownHook; AutoSave defaults true). Seeding strictly after the
-# lock releases lands after RML's save. Seed-if-absent only: a value the user later changes
-# in-game is never stomped by a redeploy. Seed values arrive as parameters (empty = skip)
-# so the repo carries no machine-specific paths; flat strings, not a hashtable, because
-# powershell.exe -File (how the scheduled task invokes this) passes arguments as strings.
+# THE PIN: the payload is snapshotted into the stage directory and ITS hash is measured at
+# stage time. The waiter deploys the snapshot and verifies against that pin - never re-reads
+# bin\Release. This kills the old copier's deepest flaw (payload re-read at close time) and
+# with it LIFTS a real constraint: nobody has to freeze canonical Release builds while a
+# deploy is pending anymore. If you see that freeze practiced, it is folklore from before
+# this script existed - point people here.
 #
-# OPERATIONAL CAVEATS THAT LIVE OUTSIDE THIS SCRIPT:
-#   - The scheduled task that arms it has an execution time limit (72 h on this machine's
-#     \McpLinkCopyOnGameClose): if the game does not close within that window, the task is
-#     killed and the deploy silently does not happen. Re-arm if the window slips.
-#   - Post-deploy verification of the RUNNING game (session_info version/stamp) is external
-#     by design; this script verifies bytes on disk against the pin, nothing more.
+# BACKUP IS A HARD GATE, not a step: the deploy REFUSES to touch the game folder unless it
+# has already written a backup of every outgoing DLL and verified the backup's hash against
+# the file it is about to overwrite. No verified backup, no deploy, loud failure.
+# (2026-08-28: a deploy overwrote 2.10.0 with no backup taken because backing up was a step
+# that could be skipped without the run failing. A skippable step is an abstention.)
 #
-# EXIT CODES: 0 deployed (seed attempted, seed failure is non-fatal and logged)
-#             2 post-copy verification failed (.PENDING left in place)
-#             3 refused: source hash did not match the pin
+# HOT RELOAD IS NOT A DEPLOY: hot reloading is for rapid prototyping during implementation.
+# A stable deploy is always file-copy plus the user's next launch. The success criterion of
+# this script is "the files are on disk in both slots" - NEVER "the running game picked it
+# up", and no outcome this script reports means that.
+#
+# STAMP-BLINDNESS WARNING, learned 2026-08-28: a Debug and a Release build of the same
+# commit carry the SAME informational-version stamp. A stamp-only check calls the wrong one
+# "arrived". That is why the outcome file and the expectation pair carry FILE HASHES, and
+# why post-deploy verification must compare hashes, not stamps alone.
+#
+# EXIT CODES: 0 deployed, or staged-and-waiting (see outcome file for which)
+#             2 verification CRITICAL (corrupt stage / post-copy mismatch); .PENDING kept
+#             3 refused: -ExpectedSha256 given and the source does not match it
 #             4 copy failed for a non-lock reason
-#             5 source file missing or unreadable
+#             5 source missing or unreadable
+#             6 refused: backup could not be written or verified (game folder untouched)
+#             8 refused: build stamp does not name the repo HEAD, or stamp unverifiable
+#             9 staged, but the waiter task could not be armed (deploy will NOT happen
+#               until this script is invoked again - treat as action-required)
+#
+# The machine-readable outcome of every invocation is written to <StageDir>\last-deploy.json.
+
 param(
-    [Parameter(Mandatory = $true)][string]$ExpectedSha256,
     [string]$Src = 'E:\Libraries\Desktop\resonite\mcplink\bin\Release\McpLink.dll',
     [string]$Dst = 'C:\Program Files (x86)\Steam\steamapps\common\Resonite\rml_mods\McpLink.dll',
     [string]$DstHotReload = 'C:\Program Files (x86)\Steam\steamapps\common\Resonite\rml_mods\HotReloadMods\McpLink.dll',
     [string]$Cfg = 'C:\Program Files (x86)\Steam\steamapps\common\Resonite\rml_config\McpLink.json',
-    [string]$Log = (Join-Path $env:LOCALAPPDATA 'McpLink\deploy-on-close-log.txt'),
+    [string]$StageDir = (Join-Path $env:LOCALAPPDATA 'McpLink\deploy'),
+    [string]$Log = (Join-Path $env:LOCALAPPDATA 'McpLink\deploy-log.txt'),
+    [string]$RepoPath = 'E:\Libraries\Desktop\resonite\mcplink',
+    [string]$GitExe = '',
+    [string]$VersionLabel = '',
+    [string]$ExpectedSha256 = '',
     [string]$SeedPromptDefaultOrg = '',
     [string]$SeedPromptHireDir = '',
-    [int]$RetrySeconds = 60
+    [string]$GameProcessName = 'Resonite',
+    [int]$RetrySeconds = 60,
+    [ValidateSet('schtask', 'none')][string]$WaiterLaunch = 'schtask',
+    [string]$WaiterTaskName = 'McpLinkDeployWaiter',
+    [switch]$SkipStampCheck,
+    [switch]$Waiter
 )
 
 $ErrorActionPreference = 'Stop'
+$StagedDll = Join-Path $StageDir 'staged-McpLink.dll'
+$ManifestPath = Join-Path $StageDir 'staged.json'
+$OutcomePath = Join-Path $StageDir 'last-deploy.json'
 
 function Write-Log([string]$msg) {
     $dir = Split-Path $Log -Parent
@@ -54,81 +78,315 @@ function Write-Log([string]$msg) {
     Add-Content $Log ("{0} {1}" -f (Get-Date -Format s), $msg)
 }
 
-$ExpectedSha256 = $ExpectedSha256.Trim().ToUpperInvariant()
-Write-Log "armed: pin=$ExpectedSha256 src=$Src dst=$Dst hotreload=$DstHotReload retry=${RetrySeconds}s"
+function Get-Sha([string]$path) { return (Get-FileHash $path -Algorithm SHA256).Hash }
 
-# Wait for the destination lock to release. Each iteration re-verifies the source against
-# the pin FIRST, so a payload swapped in during the wait is refused, not shipped. Only a
-# genuine sharing/lock violation keeps the loop alive; every other failure is loud.
-while ($true) {
+function Write-Outcome([hashtable]$o) {
+    if (-not (Test-Path $StageDir)) { New-Item -ItemType Directory -Force $StageDir | Out-Null }
+    $o['writtenAtUtc'] = [DateTime]::UtcNow.ToString('o')
+    $tmp = "$OutcomePath.tmp"
+    $o | ConvertTo-Json -Depth 8 | Out-File $tmp -Encoding utf8
+    Move-Item $tmp $OutcomePath -Force
+}
+
+# "Closed" means BOTH: no game process, and the destination file writable. The process check
+# catches the launcher window where the game is starting but has not locked the file yet.
+function Test-GameClosed([string]$dstPath, [string]$procName) {
+    if (Get-Process $procName -ErrorAction SilentlyContinue) { return $false }
+    if (-not (Test-Path $dstPath)) { return $true }
     try {
-        $srcHash = (Get-FileHash $Src -Algorithm SHA256).Hash
-    } catch {
-        Write-Log "SOURCE MISSING or unreadable: $Src ($($_.Exception.Message)) - not deploying"
-        exit 5
-    }
-    if ($srcHash -ne $ExpectedSha256) {
-        Write-Log "REFUSED: source sha256 $srcHash does not match pinned $ExpectedSha256 - not deploying"
-        exit 3
+        $fs = [System.IO.File]::Open($dstPath, 'Open', 'ReadWrite', 'None')
+        $fs.Close()
+        return $true
+    } catch { return $false }
+}
+
+function Read-Manifest {
+    if (-not (Test-Path $ManifestPath)) { return $null }
+    try { return (Get-Content $ManifestPath -Raw | ConvertFrom-Json) } catch { return $null }
+}
+
+# The deploy itself. $m is the manifest object. Returns 'deployed' or 'busy' (game re-opened
+# or re-locked between the probe and the copy - caller decides whether to wait); every other
+# failure exits the process with its code after writing the outcome.
+function Invoke-Deploy($m) {
+    $pin = $m.pinSha256
+
+    # ---- BACKUP HARD GATE ------------------------------------------------------------
+    # Refuse to touch the game folder unless every outgoing DLL has a hash-verified backup.
+    $stampDir = [DateTime]::Now.ToString('yyyyMMdd-HHmmss')
+    $bakDir = Join-Path $StageDir ("backups\" + $stampDir)
+    $old = @{}
+    foreach ($slot in @(@{name = 'rmlMods'; path = $m.dst }, @{name = 'hotReloadMods'; path = $m.dstHotReload })) {
+        if (Test-Path $slot.path) {
+            $old[$slot.name] = @{
+                sha            = Get-Sha $slot.path
+                productVersion = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($slot.path).ProductVersion
+            }
+        } else {
+            $old[$slot.name] = @{ sha = 'absent'; productVersion = 'absent' }
+        }
     }
     try {
-        Copy-Item $Src $Dst -Force
-        break
-    } catch [System.IO.IOException] {
-        Start-Sleep -Seconds $RetrySeconds
-    } catch {
-        Write-Log "COPY FAILED (non-lock): $($_.Exception.Message) - not deploying"
-        exit 4
-    }
-}
-
-# Destination landed; verify it against the pin, then mirror the VERIFIED bytes into the
-# HotReloadMods slot so the pair cannot diverge even if -Src changes under us right now.
-$dstHash = (Get-FileHash $Dst -Algorithm SHA256).Hash
-if ($dstHash -ne $ExpectedSha256) {
-    Write-Log "CRITICAL: post-copy verify FAILED: dst=$dstHash pin=$ExpectedSha256 - .PENDING left in place"
-    exit 2
-}
-try {
-    Copy-Item $Dst $DstHotReload -Force
-} catch {
-    Write-Log "CRITICAL: HotReloadMods copy failed: $($_.Exception.Message) - slots inconsistent, .PENDING left in place"
-    exit 2
-}
-$hrHash = (Get-FileHash $DstHotReload -Algorithm SHA256).Hash
-if ($hrHash -ne $ExpectedSha256) {
-    Write-Log "CRITICAL: HotReloadMods verify FAILED: hotreload=$hrHash pin=$ExpectedSha256 - .PENDING left in place"
-    exit 2
-}
-Write-Log "deployed: $Dst and $DstHotReload sha256=$dstHash (pin verified on both)"
-
-# Both slots verified: the build's half-done-deploy note is now false, so remove it.
-Remove-Item "$Dst.PENDING" -Force -ErrorAction SilentlyContinue
-
-# Config seed (only the keys actually requested, only when absent, logged by what was
-# actually added - not by what was requested).
-$want = [ordered]@{}
-if ($SeedPromptDefaultOrg) { $want['promptDefaultOrg'] = $SeedPromptDefaultOrg }
-if ($SeedPromptHireDir)    { $want['promptHireDir']    = $SeedPromptHireDir }
-if ($want.Count -gt 0) {
-    try {
-        $j = Get-Content $Cfg -Raw | ConvertFrom-Json
-        if ($null -eq $j.values) { throw "no 'values' object in $Cfg" }
-        $added = @()
-        foreach ($k in $want.Keys) {
-            if ($null -eq $j.values.PSObject.Properties[$k]) {
-                $j.values | Add-Member -NotePropertyName $k -NotePropertyValue $want[$k]
-                $added += $k
+        New-Item -ItemType Directory -Force $bakDir | Out-Null
+        $lines = @("Outgoing files backed up $stampDir before deploying pin $pin")
+        foreach ($slot in @(@{name = 'rmlMods'; path = $m.dst }, @{name = 'hotReloadMods'; path = $m.dstHotReload })) {
+            if ($old[$slot.name].sha -ne 'absent') {
+                $bakFile = Join-Path $bakDir ($slot.name + '-McpLink.dll')
+                Copy-Item $slot.path $bakFile -Force
+                $bakSha = Get-Sha $bakFile
+                if ($bakSha -ne $old[$slot.name].sha) { throw "backup hash mismatch for $($slot.name): $bakSha vs $($old[$slot.name].sha)" }
+                $lines += "$($slot.name): sha256 $bakSha (stamp $($old[$slot.name].productVersion))"
+            } else {
+                $lines += "$($slot.name): absent before this deploy (nothing to back up)"
             }
         }
-        if ($added.Count -gt 0) {
-            $j | ConvertTo-Json -Depth 5 | Out-File $Cfg -Encoding utf8
-            Write-Log ("seeded config keys: " + ($added -join ', '))
-        } else {
-            Write-Log 'config seed: nothing to do (all requested keys present)'
-        }
+        Set-Content (Join-Path $bakDir 'hashes.txt') ($lines -join "`r`n") -Encoding utf8
     } catch {
-        Write-Log "CONFIG SEED FAILED: $_"
+        Write-Log "REFUSED: backup could not be written/verified ($($_.Exception.Message)) - game folder untouched"
+        Write-Outcome @{ outcome = 'refused-backup'; error = "$($_.Exception.Message)"; pin = $pin; backupDir = $bakDir; needsUserAction = 'none - deploy did not happen; fix the backup location and re-run' }
+        exit 6
     }
+
+    # Re-probe at the last moment: the game may have launched between the caller's probe and
+    # here. Never write into the game folder while it runs.
+    if (-not (Test-GameClosed $m.dst $m.gameProcessName)) { return 'busy' }
+
+    try {
+        Copy-Item $StagedDll $m.dst -Force
+    } catch [System.IO.IOException] {
+        return 'busy'
+    } catch {
+        Write-Log "COPY FAILED (non-lock): $($_.Exception.Message)"
+        Write-Outcome @{ outcome = 'failed-copy'; error = "$($_.Exception.Message)"; pin = $pin }
+        exit 4
+    }
+    $dstSha = Get-Sha $m.dst
+    if ($dstSha -ne $pin) {
+        Write-Log "CRITICAL: post-copy verify FAILED: dst=$dstSha pin=$pin"
+        Write-Outcome @{ outcome = 'critical-verify-failed'; slot = 'rmlMods'; got = $dstSha; pin = $pin }
+        exit 2
+    }
+
+    # BOTH slots, deliberately - and this is the OPPOSITE of relying on hot reload. The
+    # HotReloadMods copy keeps the pair consistent so a stale second copy cannot be picked
+    # up by a later hot_reload. Do not "simplify" this to a single copy: removing it
+    # re-opens the stale-hot-reload hazard (see docs/dev/CONTRIBUTING.md, deploy policy).
+    # Mirrored FROM the verified destination, not from the stage, so the two slots cannot
+    # diverge even if the stage is replaced right now.
+    try {
+        Copy-Item $m.dst $m.dstHotReload -Force
+    } catch {
+        Write-Log "CRITICAL: HotReloadMods copy failed: $($_.Exception.Message) - slots inconsistent"
+        Write-Outcome @{ outcome = 'critical-verify-failed'; slot = 'hotReloadMods'; error = "$($_.Exception.Message)"; pin = $pin }
+        exit 2
+    }
+    $hrSha = Get-Sha $m.dstHotReload
+    if ($hrSha -ne $pin) {
+        Write-Log "CRITICAL: HotReloadMods verify FAILED: got=$hrSha pin=$pin"
+        Write-Outcome @{ outcome = 'critical-verify-failed'; slot = 'hotReloadMods'; got = $hrSha; pin = $pin }
+        exit 2
+    }
+    Write-Log "deployed: $($m.dst) and $($m.dstHotReload) sha256=$pin (verified on both)"
+
+    # Both slots verified: the build's half-done-deploy note is now false.
+    Remove-Item "$($m.dst).PENDING" -Force -ErrorAction SilentlyContinue
+
+    # Config seed: only requested keys, only when absent, logged by what was ACTUALLY added.
+    $added = @()
+    $want = [ordered]@{}
+    if ($m.seedPromptDefaultOrg) { $want['promptDefaultOrg'] = $m.seedPromptDefaultOrg }
+    if ($m.seedPromptHireDir) { $want['promptHireDir'] = $m.seedPromptHireDir }
+    if ($want.Count -gt 0) {
+        try {
+            $j = Get-Content $m.cfg -Raw | ConvertFrom-Json
+            if ($null -eq $j.values) { throw "no 'values' object in $($m.cfg)" }
+            foreach ($k in $want.Keys) {
+                if ($null -eq $j.values.PSObject.Properties[$k]) {
+                    $j.values | Add-Member -NotePropertyName $k -NotePropertyValue $want[$k]
+                    $added += $k
+                }
+            }
+            if ($added.Count -gt 0) {
+                $j | ConvertTo-Json -Depth 5 | Out-File $m.cfg -Encoding utf8
+                Write-Log ("seeded config keys: " + ($added -join ', '))
+            } else {
+                Write-Log 'config seed: nothing to do (all requested keys present)'
+            }
+        } catch {
+            Write-Log "CONFIG SEED FAILED (deploy itself succeeded): $_"
+        }
+    }
+
+    # Success criterion: files on disk in both slots; the user's NEXT LAUNCH runs this
+    # build. Nothing here means or reports "the running game picked it up".
+    Write-Outcome @{
+        outcome         = 'deployed'
+        pin             = $pin
+        productVersion  = $m.productVersion
+        versionLabel    = $m.versionLabel
+        slots           = @{
+            rmlMods       = @{ old = $old.rmlMods; new = $dstSha }
+            hotReloadMods = @{ old = $old.hotReloadMods; new = $hrSha }
+        }
+        backupDir       = $bakDir
+        seededKeys      = $added
+        expectation     = @{
+            expected     = @{ versionLabel = $m.versionLabel; productVersion = $m.productVersion; sha256 = $pin }
+            neverArrived = @{ productVersion = $old.rmlMods.productVersion; sha256 = $old.rmlMods.sha }
+            note         = 'three outcomes: expected values = arrived; neverArrived values = never arrived; NEITHER = wrong payload. Compare HASHES, not stamps alone - Debug and Release builds of one commit share a stamp.'
+        }
+        needsUserAction = 'none - the next game launch runs this build'
+        resolved        = @{ src = $m.sourcePath; dst = $m.dst; dstHotReload = $m.dstHotReload; cfg = $m.cfg; stageDir = $StageDir; log = $m.log }
+    }
+    Remove-Item $ManifestPath -Force -ErrorAction SilentlyContinue
+    return 'deployed'
+}
+
+function Invoke-Waiter {
+    # One waiter per stage directory, machine-wide; a second instance exits immediately.
+    $md5 = [System.Security.Cryptography.MD5]::Create()
+    $dirKey = -join ($md5.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($StageDir.ToLowerInvariant())) | ForEach-Object { $_.ToString('x2') })
+    $created = $false
+    $mutex = New-Object System.Threading.Mutex($true, "Global\McpLinkDeployWaiter_$dirKey", [ref]$created)
+    if (-not $created) {
+        Write-Log 'waiter: another waiter already holds this stage directory - exiting'
+        exit 0
+    }
+    try {
+        $corruptTicks = 0
+        while ($true) {
+            $m = Read-Manifest
+            if ($null -eq $m) { Write-Log 'waiter: nothing staged - exiting'; exit 0 }
+            if (-not (Test-Path $StagedDll)) { $stagedSha = 'missing' } else { $stagedSha = Get-Sha $StagedDll }
+            if ($stagedSha -ne $m.pinSha256) {
+                # Usually a replacement mid-write; give it a few ticks, then refuse loudly.
+                $corruptTicks++
+                if ($corruptTicks -ge 4) {
+                    Write-Log "REFUSED: staged payload sha $stagedSha does not match manifest pin $($m.pinSha256) after $corruptTicks checks - corrupt stage, not deploying"
+                    Write-Outcome @{ outcome = 'refused-corrupt-stage'; stagedSha = $stagedSha; pin = $m.pinSha256; needsUserAction = 'restage by running tools/deploy.ps1 again' }
+                    exit 2
+                }
+                Start-Sleep -Seconds 2
+                continue
+            }
+            $corruptTicks = 0
+            if (Test-GameClosed $m.dst $m.gameProcessName) {
+                $r = Invoke-Deploy $m
+                if ($r -eq 'deployed') { exit 0 }
+                # 'busy': game snuck back between probe and copy - fall through to wait.
+            }
+            Start-Sleep -Seconds ([int]$m.retrySeconds)
+            # Loop re-reads the manifest, so a payload staged while we waited replaces the
+            # old one automatically - the newest snapshot always wins.
+        }
+    } finally {
+        $mutex.ReleaseMutex() | Out-Null
+        $mutex.Dispose()
+    }
+}
+
+# ======================= main =======================
+
+if ($Waiter) { Invoke-Waiter; exit 0 }
+
+if (-not (Test-Path $Src)) {
+    Write-Log "SOURCE MISSING: $Src - nothing staged"
+    Write-Outcome @{ outcome = 'failed-source-missing'; src = $Src }
+    exit 5
+}
+$srcSha = Get-Sha $Src
+if ($ExpectedSha256) {
+    $want = $ExpectedSha256.Trim().ToUpperInvariant()
+    if ($srcSha -ne $want) {
+        Write-Log "REFUSED: source sha $srcSha does not match -ExpectedSha256 $want - nothing staged"
+        Write-Outcome @{ outcome = 'refused-source-pin'; got = $srcSha; expected = $want }
+        exit 3
+    }
+}
+
+$productVersion = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($Src).ProductVersion
+if (-not $SkipStampCheck) {
+    # The payload must be a clean build of the repo's current HEAD. Fail-loud when the check
+    # cannot run: an unverifiable stamp is a refusal, not a pass (a check that abstains
+    # reads exactly like a pass - docs/dev/CONTRIBUTING.md, verification discipline).
+    $git = $GitExe
+    if (-not $git) {
+        $cmd = Get-Command git.exe -ErrorAction SilentlyContinue
+        if ($cmd) { $git = $cmd.Source }
+        elseif (Test-Path 'C:\Program Files\Git\cmd\git.exe') { $git = 'C:\Program Files\Git\cmd\git.exe' }
+    }
+    $head = $null
+    if ($git) { try { $head = (& $git -C $RepoPath rev-parse --short=12 HEAD 2>$null | Select-Object -First 1) } catch { $head = $null } }
+    if (-not $head) {
+        Write-Log "REFUSED: cannot resolve repo HEAD (git='$git', repo='$RepoPath') - stamp unverifiable. Pass -SkipStampCheck to override (loudly)."
+        Write-Outcome @{ outcome = 'refused-stamp-unverifiable'; gitExe = "$git"; repoPath = $RepoPath }
+        exit 8
+    }
+    $expectedStamp = "g$($head.Trim())"
+    if ($productVersion -ne $expectedStamp) {
+        Write-Log "REFUSED: payload stamp '$productVersion' is not '$expectedStamp' (repo HEAD, clean) - wrong or dirty build. Nothing staged."
+        Write-Outcome @{ outcome = 'refused-stamp'; payloadStamp = "$productVersion"; expectedStamp = $expectedStamp; repoPath = $RepoPath }
+        exit 8
+    }
+} else {
+    Write-Log "WARNING: -SkipStampCheck passed - payload stamp '$productVersion' NOT verified against the repo"
+}
+
+# Stage the snapshot. This REPLACES any pending stage: idempotent by replacement.
+if (-not (Test-Path $StageDir)) { New-Item -ItemType Directory -Force $StageDir | Out-Null }
+Copy-Item $Src $StagedDll -Force
+$pin = Get-Sha $StagedDll
+$manifest = [ordered]@{
+    schemaVersion       = 1
+    pinSha256           = $pin
+    productVersion      = "$productVersion"
+    versionLabel        = $VersionLabel
+    sourcePath          = $Src
+    sourceShaAtStage    = $srcSha
+    stagedAtUtc         = [DateTime]::UtcNow.ToString('o')
+    dst                 = $Dst
+    dstHotReload        = $DstHotReload
+    cfg                 = $Cfg
+    log                 = $Log
+    seedPromptDefaultOrg = $SeedPromptDefaultOrg
+    seedPromptHireDir   = $SeedPromptHireDir
+    gameProcessName     = $GameProcessName
+    retrySeconds        = $RetrySeconds
+    stampChecked        = (-not $SkipStampCheck)
+}
+$tmp = "$ManifestPath.tmp"
+$manifest | ConvertTo-Json -Depth 4 | Out-File $tmp -Encoding utf8
+Move-Item $tmp $ManifestPath -Force
+Write-Log "staged: pin=$pin stamp=$productVersion (replaces any pending stage)"
+
+$m = Read-Manifest
+if (Test-GameClosed $Dst $GameProcessName) {
+    $r = Invoke-Deploy $m
+    if ($r -eq 'deployed') { exit 0 }
+    # fell to 'busy': game appeared mid-deploy - arm the waiter below.
+}
+
+if ($WaiterLaunch -eq 'schtask') {
+    try {
+        $tr = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`" -Waiter -StageDir `"$StageDir`""
+        schtasks /create /f /tn $WaiterTaskName /sc once /st 23:59 /tr $tr | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "schtasks /create exited $LASTEXITCODE" }
+        schtasks /run /tn $WaiterTaskName | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "schtasks /run exited $LASTEXITCODE" }
+    } catch {
+        Write-Log "STAGED BUT WAITER NOT ARMED: $($_.Exception.Message) - the deploy will NOT happen until deploy.ps1 runs again"
+        Write-Outcome @{ outcome = 'staged-no-waiter'; pin = $pin; productVersion = "$productVersion"; error = "$($_.Exception.Message)"; needsUserAction = 'waiter could not be armed - re-run tools/deploy.ps1' }
+        exit 9
+    }
+}
+Write-Log "staged-waiting: game is open; waiter mode '$WaiterLaunch' will deploy on close"
+Write-Outcome @{
+    outcome         = 'staged-waiting'
+    pin             = $pin
+    productVersion  = "$productVersion"
+    versionLabel    = $VersionLabel
+    waiterMode      = $WaiterLaunch
+    needsUserAction = 'ask the user to close the game so the pending deploy can land (frame it as a request they can decline)'
+    resolved        = @{ src = $Src; dst = $Dst; dstHotReload = $DstHotReload; cfg = $Cfg; stageDir = $StageDir; log = $Log }
 }
 exit 0

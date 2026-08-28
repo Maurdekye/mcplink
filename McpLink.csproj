@@ -11,30 +11,30 @@
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
     <!-- Resonite install; override with -p:ResonitePath=... -->
     <ResonitePath Condition="'$(ResonitePath)' == ''">C:\Program Files (x86)\Steam\steamapps\common\Resonite</ResonitePath>
-    <!-- Where DeployToMods writes its rml_mods\ tree. Defaults to the real install, so behaviour
-         is unchanged. It is separable ONLY so the deploy target itself can be exercised against a
-         throwaway directory — the locked-copy warning below is the kind of thing that must be seen
-         to FIRE, and NO TEST MAY TOUCH PRODUCTION. Overriding this does not bypass the CopyToMods
-         gate; it only redirects where an already-authorised copy lands. -->
+    <!-- Where StageHotReloadSlot writes its rml_mods\ tree. Defaults to the real install. It is
+         separable ONLY so the staging target and the build-never-deploys control
+         (tools\dev\verify-build-never-deploys.ps1) can be exercised against a throwaway
+         directory — NO TEST MAY TOUCH PRODUCTION. Overriding it does not bypass the
+         StageHotReload opt-in; it only redirects where an already-requested staging lands. -->
     <ModsDeployRoot Condition="'$(ModsDeployRoot)' == ''">$(ResonitePath)</ModsDeployRoot>
-    <!-- Deploying is a DECISION, not a build side effect. rml_mods\McpLink.dll is
-         lock-protected while the game runs, but rml_mods\HotReloadMods\ — the path
-         hot_reload actually loads — is NEVER locked, so any stray build (the offline
-         suite's ProjectReference, a worktree branch build) would silently restage it
-         with unreviewed code (found live 2026-08-21). Default is therefore true ONLY
-         for a DIRECT build of the maintainer's canonical checkout (the literal path
-         below — deliberately not "wherever this builds", so clones and worktrees never
-         deploy by surprise). On your own machine, deploy explicitly: -p:CopyToMods=true,
-         or use tools\install.ps1. -p:CopyToMods=false forces off. The offline suite's
-         ProjectReference additionally pins it false from its side.
-         Before you "clean up" the literal path: a .git file-vs-directory test (worktree
-         vs. main checkout) was considered and REJECTED, because a stranger's fresh clone
-         is ALSO a main checkout — it would default deploys ON for every public user. A
-         gitignored sentinel file fails safe but is invisible state a re-clone silently
-         loses. The literal is the load-bearing half of the safe-off public default:
-         only this exact tree opts in. -->
-    <CopyToMods Condition="'$(CopyToMods)' == '' AND '$(MSBuildStartupDirectory)' == '$(MSBuildProjectDirectory)' AND '$(MSBuildProjectDirectory)' == 'E:\Libraries\Desktop\resonite\mcplink'">true</CopyToMods>
-    <CopyToMods Condition="'$(CopyToMods)' == ''">false</CopyToMods>
+    <!-- THE BUILD NEVER DEPLOYS (user ruling 2026-08-28; docs/dev/CONTRIBUTING.md "Deploy
+         policy"). rml_mods\McpLink.dll is written by tools/deploy.ps1 EXCLUSIVELY - snapshot
+         payload, hash pinned at stage time, hard-gated verified backups, both slots. History:
+         until 2026-08-28 a direct canonical build auto-deployed both slots, and that machinery
+         deployed an unshipped DEBUG build the moment the game happened to be closed - same
+         commit stamp as the release build, only the file hash told them apart. A build side
+         effect nobody chose is a deploy nobody verified, whichever slot it writes; the old
+         CopyToMods gate narrowed WHO could trip it, not WHETHER it was a deploy.
+         StageHotReload is the ONE exception, opt-in, default OFF everywhere (canonical tree
+         included): a developer deliberately in a hot-reload prototyping loop builds with
+         -p:StageHotReload=true and gets the rml_mods\HotReloadMods staging. That slot is never
+         locked and is read ONLY by an explicit hot_reload call - RML's startup scan never loads
+         it (measured, not reasoned: ResoniteModLoader.AssemblyLoader.GetAssemblyPathsFromDir
+         uses the two-argument Directory.EnumerateFiles overload = TopDirectoryOnly, so nothing
+         in a subdirectory of rml_mods is loaded at launch and it cannot shadow the real mod).
+         Hot reload is for rapid prototyping during implementation; it is never a deploy, and
+         nothing this file does constitutes one. -->
+    <StageHotReload Condition="'$(StageHotReload)' == ''">false</StageHotReload>
   </PropertyGroup>
 
   <ItemGroup>
@@ -135,54 +135,23 @@
     </PropertyGroup>
   </Target>
 
-  <Target Name="DeployToMods" AfterTargets="Build" Condition="'$(CopyToMods)' == 'true'">
-    <PropertyGroup>
-      <_ModsDir>$(ModsDeployRoot)\rml_mods</_ModsDir>
-      <_PendingStamp>$(_ModsDir)\McpLink.dll.PENDING</_PendingStamp>
-    </PropertyGroup>
-
-    <!-- HotReloadLib reads this copy on 'hot_reload'; the file is never locked (loaded from
-         memory), so a failure HERE is a genuine fault and is allowed to fail the build. -->
-    <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(_ModsDir)\HotReloadMods" />
-
-    <!-- The restart path. rml_mods\McpLink.dll IS locked while the game runs, so this copy failing
-         is the normal case mid-development — but it must never again be SILENT. Until 2026-08-22
-         this was ContinueOnError with no reporting, so a blocked copy left the hot-reload path new
-         and the restart path old with nothing said; that is precisely how a stale exporter stayed
-         live for hours while its rebuilt tool sat in the tool list looking correct.
-         SkipUnchangedFiles is pinned false on purpose: a skipped file is absent from CopiedFiles
-         and would be indistinguishable from a blocked one. -->
-    <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(_ModsDir)"
-          SkipUnchangedFiles="false" ContinueOnError="true">
-      <Output TaskParameter="CopiedFiles" ItemName="_RestartCopied" />
-    </Copy>
-    <PropertyGroup>
-      <_RestartCopyOk Condition="'@(_RestartCopied)' != ''">true</_RestartCopyOk>
-    </PropertyGroup>
-
-    <!-- Success: both paths agree, and any note left by an earlier blocked build is now false. -->
-    <Delete Condition="'$(_RestartCopyOk)' == 'true'" Files="$(_PendingStamp)" ContinueOnError="true" />
-    <Message Condition="'$(_RestartCopyOk)' == 'true'"
-             Text="McpLink.dll deployed to rml_mods + rml_mods\HotReloadMods (hot_reload tool or restart to load)"
+  <!-- Dev-loop staging ONLY: the slot the hot_reload tool loads. Deliberately NOT paired with
+       a rml_mods\McpLink.dll write - that file is tools/deploy.ps1's exclusive property, and a
+       build that wrote it would be a deploy nobody verified. The two slots may diverge while
+       you prototype; that divergence is confined to your own explicit hot_reload calls (RML
+       never loads this slot at startup - see the StageHotReload comment above), and the next
+       real deploy rewrites BOTH slots from one verified payload, which re-converges them. -->
+  <Target Name="StageHotReloadSlot" AfterTargets="Build" Condition="'$(StageHotReload)' == 'true'">
+    <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(ModsDeployRoot)\rml_mods\HotReloadMods" />
+    <Message Text="McpLink: staged $(TargetPath) -> rml_mods\HotReloadMods for the hot-reload DEV loop. This is NOT a deploy: the restart path (rml_mods\McpLink.dll) is untouched and tools/deploy.ps1 owns it."
              Importance="high" />
-
-    <!-- Failure: a real MSBuild warning (counted in the summary, surfaced by every tool that reads
-         build output) plus a note on disk next to the DLL it failed to replace. -->
-    <WriteLinesToFile Condition="'$(_RestartCopyOk)' != 'true'"
-                      File="$(_PendingStamp)" Overwrite="true" ContinueOnError="true"
-                      Lines="McpLink: rml_mods\McpLink.dll was NOT updated by the build at $([System.DateTime]::UtcNow.ToString(&quot;o&quot;)) — the file was locked (game running). The built DLL is at $(TargetPath) and was staged to rml_mods\HotReloadMods only. Close Resonite and rebuild (or copy it by hand) before relying on a restart. TO HAVE THE NEXT GAME CLOSE DEPLOY IT INSTEAD, ARM THE ONE-SHOT COPIER: schtasks /run /tn McpLinkCopyOnGameClose — it retries a copy of bin\Release into rml_mods every 60s until the lock releases, then deletes this note and exits. Arming is a SEPARATE MANUAL ACT on purpose, so that no build can cold-deploy itself into a running game; arm it only after building the exact code you want deployed, and note it copies bin\Release specifically. Leaving this note unarmed means the next close deploys NOTHING (that is what happened on 2026-08-27). This note is deleted by the next build that succeeds in copying." />
-    <Warning Condition="'$(_RestartCopyOk)' != 'true' AND '$(RequireModsDeploy)' != 'true'"
-             Code="MCPLINK001"
-             Text="DEPLOY HALF-DONE: rml_mods\HotReloadMods\McpLink.dll is NEW but rml_mods\McpLink.dll could NOT be replaced (locked — Resonite is running). 'hot_reload' will load the new code; RESTARTING THE GAME WILL LOAD THE OLD CODE. Close Resonite and rebuild to finish — OR arm the one-shot copier so the next close deploys it: schtasks /run /tn McpLinkCopyOnGameClose (retries a copy of bin\Release into rml_mods until the lock releases, then exits). ARMING IS NOT AUTOMATIC AND NO BUILD DOES IT FOR YOU — that is deliberate, so a blocked experimental build can never cold-deploy itself; but it also means that if you stop reading here, THE NEXT CLOSE WILL DEPLOY NOTHING. That is exactly what happened on 2026-08-27: the build staged and warned correctly, nobody armed, and a real game close came and went with the old DLL still in place. Arm only after building the code you actually want deployed. Left a note at $(_PendingStamp). Ask the live mod which build it is with session_info (build.deployConsistent). Use -p:RequireModsDeploy=true to make this an error instead." />
-    <Error Condition="'$(_RestartCopyOk)' != 'true' AND '$(RequireModsDeploy)' == 'true'"
-           Code="MCPLINK001"
-           Text="DEPLOY FAILED: rml_mods\McpLink.dll could not be replaced (locked — Resonite is running), and RequireModsDeploy=true was requested. Close the game and build again." />
   </Target>
 
-  <!-- the skip is LOUD: a silent no-deploy reads exactly like a deploy to whoever builds
-       and then wonders why hot_reload loaded old code -->
-  <Target Name="DeployToModsSkipped" AfterTargets="Build" Condition="'$(CopyToMods)' != 'true'">
-    <Message Text="McpLink: deploy SKIPPED (CopyToMods='$(CopyToMods)') — referenced/worktree/foreign-cwd builds never restage rml_mods. A direct build in the canonical tree, or -p:CopyToMods=true, deploys." Importance="high" />
+  <!-- Not a warning, because nothing is wrong: builds not deploying is the designed behavior.
+       The message exists so nobody infers from a green build that anything reached the game. -->
+  <Target Name="BuildDoesNotDeploy" AfterTargets="Build" Condition="'$(StageHotReload)' != 'true'">
+    <Message Text="McpLink: game folder untouched - builds never deploy (user ruling 2026-08-28). Deploy with tools\deploy.ps1; stage the hot-reload dev slot with -p:StageHotReload=true."
+             Importance="high" />
   </Target>
 
 </Project>
