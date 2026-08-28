@@ -1031,3 +1031,46 @@ which took less time than locating the correct source file.
 
 **Related, on the same day:** a `find` over `%USERPROFILE%` with no `-maxdepth` bound exceeded the
 120 s tool timeout twice. Bound the depth or start from a known subtree.
+
+## 2026-08-28 — a ref-name prefix that matched the wrong branch, and the shelf life of a control
+
+Three findings from the branch/dead-code cleanup, all about **instruments rather than code**.
+
+**Never substring-match a ref name.** A branch-delete gate refused to run, reporting
+`tools/apiprobe HAS A WORKTREE`. It does not. The check was
+`git worktree list --porcelain | grep -q "refs/heads/tools/apiprobe"`, and it matched
+**`refs/heads/tools/apiprobe-abstention`** — a different branch that merely starts with the same
+text. This repo actively contains that collision pair, and `tools/dev/` now holds three
+`verify-deploy*` scripts, so the hazard is structural rather than incidental. Here it failed
+**safe** (refused to delete). Mirrored — `grep -q "$branch"` against a list where the *longer*
+name is the merged one — the identical bug is a **silent wrong pass** that deletes real work. ⇒
+Match refs **exactly**: `grep -Fxq "$b" <(git worktree list --porcelain | sed -n 's|^branch refs/heads/||p')`.
+The control that settled it took four lines: assert `feat/texture-to-context` HAS, `tools/apiprobe`
+has NOT, and both of the pair separately.
+
+**"Merged into main" is not sufficient grounds to delete a branch.** `--merged` and
+`merge-base --is-ancestor` both answer a question about **commits**, and a branch can carry state
+that is not in any commit: a worktree with uncommitted work. A branch created off main and never
+committed to points at main's tip and is **indistinguishable from fully-merged** to every
+reachability check, while a worktree beside it holds hundreds of live lines. That exact branch
+existed here during this cleanup. ⇒ The complete gate is **`ancestor-of-main` AND
+`no worktree attached`** — only a worktree can hold uncommitted work, so a branch with none cannot
+be hiding any. Note the squash/rebase hazard runs the *other* way (content present, reads
+UNMERGED) and can therefore only cause you to delete **less**; it is not a safety problem.
+
+**A control that describes live state has a shelf life of minutes.** A calibration pair arrived as
+"branch X is 0 commits ahead with 467 uncommitted lines — a correct check must classify it
+DO-NOT-DELETE." By the time it was read, a peer had committed, and X was 1 ahead. The check passed,
+but **for a different reason than the one being tested**, which is not the same as passing. Same
+decay as a deploy marker being spent after one deploy. ⇒ Prefer controls you **construct** over
+controls you **observe** — a known-unmerged branch synthesized with `git commit-tree` cannot be
+moved by anyone else, and costs one command:
+`c=$(git commit-tree main^{tree} -p main -m ctrl); git update-ref refs/heads/ctrl-probe $c`.
+
+**And the one that lands closest to home:** verifying the above fixes on merged main, a grep for
+the dead path `mcplink-toolkit` returned **1 hit**, which read as "the defect survived the merge".
+It was matching the **explanatory comment** added by the fix itself, describing the path it had
+removed; the live assignment two lines below was correct. That is the *match-inside-a-comment*
+failure from this very file, committed by the author of the fix, hours after citing it. ⇒ A
+name-presence grep does not distinguish code from prose. Grep for the **live form**
+(`^WT = `), not the name.
