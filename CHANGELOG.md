@@ -1,5 +1,29 @@
 # McpLink changelog
 
+## 2.11.1 (2026-08-28)
+
+**A prompt panel now tells you when an attachment did not arrive.** Previously it could not: the
+backend delivers the message, returns success, and discards any attachment path that does not
+resolve — so from the panel's side a dropped image was indistinguishable from a clean send.
+
+- **What you will see.** If the backend reports that an attachment did not reach the agent, the
+  panel prints it as a warning line naming the file, and it is written to the engine log as well
+  so the trace survives closing the panel.
+- **It reports failures and never reports success**, deliberately. The backend omits the field
+  entirely when there is nothing to report — which on a current backend means "all fine", but an
+  older backend omits it identically. Those two cannot be told apart from a single response, so
+  rather than guess, this path has no success branch at all: **an absent field produces silence,
+  never a claim that your image arrived.**
+- **Warnings are shown verbatim.** That field is a general channel and carries notices unrelated to
+  attachments, so the text is passed through rather than parsed and re-worded — the backend is the
+  only party qualified to describe what it did, and it already names the file.
+- **Needs a recent companion backend.** Against an older one nothing changes: no warnings are sent,
+  and none are shown.
+
+*Fixed alongside: the release-notes generator read `CHANGELOG.md` using the machine's ANSI codepage
+rather than UTF-8, so every published release from 2.9.0 to 2.11.0 rendered its em-dashes as
+mojibake and carried a stray byte-order mark. This is the first release with clean notes.*
+
 ## 2.11.0 (2026-08-28)
 
 **Images. An agent can now be handed an actual picture — by calling `read_texture` on a texture in

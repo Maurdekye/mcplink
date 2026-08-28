@@ -190,6 +190,54 @@ internal static class SendPathChecks
             return refs[0]?["imageNote"] == null; // no throw, no misattribution onto the wrong ref
         });
 
+
+        // ── attachment warnings: the backend accepted the message but dropped an attachment ───
+        //
+        // ⚠ THE FIXTURES BELOW ARE REAL. Both were captured verbatim from the live backend on
+        // 2026-08-28 by sending one message with a non-resolving attachment path and one with a
+        // resolving one. Inventing them would have risked asserting against a shape the backend
+        // does not actually produce — which is the failure this whole area keeps having.
+        const string REAL_WARNING_RESPONSE =
+            "{\"accepted\":true,\"queued\":0,\"steering\":true,\"warnings\":[\"1 attachment(s) did NOT reach "
+            + "panel-continuity: uploads/never-uploaded-xyz.png — no such file in your working folder "
+            + "(never uploaded, or the upload failed)\"]}";
+        const string REAL_CLEAN_RESPONSE =
+            "{\"accepted\":true,\"queued\":0,\"steering\":true}";
+
+        Check("a dropped attachment is surfaced, naming the file the backend named", () =>
+        {
+            var lines = PromptWizard.SendWarningLines(JsonNode.Parse(REAL_WARNING_RESPONSE));
+            return lines.Count == 1
+                   && lines[0].Contains("uploads/never-uploaded-xyz.png")
+                   && lines[0].Contains("did NOT reach");
+        });
+
+        Check("DISCRIMINATOR: the real CLEAN response yields nothing to report", () =>
+            // the control half of the same live measurement -- proves the check above is reacting
+            // to the warnings key and not merely to "a response arrived"
+            PromptWizard.SendWarningLines(JsonNode.Parse(REAL_CLEAN_RESPONSE)).Count == 0);
+
+        Check("ABSENT IS NOT SUCCESS: every no-information shape yields an EMPTY list, never a claim", () =>
+            // absent (older backend OR nothing wrong -- indistinguishable from one response),
+            // null, empty array, and a non-array value all mean "say nothing"
+            PromptWizard.SendWarningLines(JsonNode.Parse("{\"accepted\":true}")).Count == 0
+            && PromptWizard.SendWarningLines(null).Count == 0
+            && PromptWizard.SendWarningLines(JsonNode.Parse("{\"warnings\":[]}")).Count == 0
+            && PromptWizard.SendWarningLines(JsonNode.Parse("{\"warnings\":\"oops\"}")).Count == 0);
+
+        Check("warnings are passed through VERBATIM, not parsed or classified", () =>
+        {
+            // `warnings` is a general backend channel -- it carries non-attachment notices too, so
+            // classifying here would mean guessing at strings we do not own
+            var lines = PromptWizard.SendWarningLines(
+                JsonNode.Parse("{\"warnings\":[\"/compact arguments are ignored\",\"second thing\"]}"));
+            return lines.Count == 2 && lines[0] == "/compact arguments are ignored" && lines[1] == "second thing";
+        });
+
+        Check("an empty or null warning entry is skipped rather than printed blank", () =>
+            PromptWizard.SendWarningLines(JsonNode.Parse("{\"warnings\":[\"\",null,\"real\"]}"))
+                .SequenceEqual(new[] { "real" }));
+
         // ── upload filenames must survive the backend's sanitiser UNCHANGED ───────────────────
         // The backend rewrites [^\w .()+-] to '_' and truncates the stem to 120 chars. If our name
         // changes under it, the name we asked for is not the name it stored — and we would be
