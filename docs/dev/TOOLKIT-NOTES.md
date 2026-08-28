@@ -1208,3 +1208,53 @@ control proves an instrument works while agreement proves the *answer* is right.
 - **Not everything old was broken.** v2.9.2 and v2.8.1 were never corrupted — they never went
   through that write path. An assumption that "presumably every earlier release" was affected would
   have had the repair tool run over healthy artifacts.
+
+## 2026-08-28 — WHERE THE ORGTREE BACKEND ACTUALLY LIVES, and how to find it again
+
+**The live orgtree backend source is `E:\Libraries\Desktop\claude-orgtree\backend\orgtree`.**
+
+`C:\Users\ncola_k8bx\.claude\orgtree` is a **RETIRED COPY**. An earlier note here says that tree is
+stale, which is true and not the useful half — this one names the right one.
+
+**The tell, so you can confirm it rather than take this on faith.** The retired copy's HEAD commit
+message reads, literally:
+
+```
+971419c retired: development moved to E:\Libraries\Desktop\claude-orgtree
+```
+
+⇒ `git -C <suspect-tree> log --oneline -1` identifies a corpse in one command. Do that before
+reading anything under a path you have not verified today.
+
+**How to re-derive the location, because a path in a doc goes stale and a method does not.** The
+running process does NOT reveal it directly:
+
+```
+Get-CimInstance Win32_Process -Filter "ProcessId = <pid on 7360>"
+  → "C:\Program Files\Python310\python.exe" -m orgtree.api      # no path anywhere
+```
+
+`-m` means the module is resolved from `sys.path` at launch. Ask **the same interpreter** where it
+resolves:
+
+```
+& "C:\Program Files\Python310\python.exe" -c "import orgtree,os;print(os.path.dirname(orgtree.__file__))"
+```
+
+Use the interpreter from the process's own command line, not whatever `python` your shell finds —
+a different interpreter has a different `sys.path` and will happily answer about a different install.
+
+**⚠ WHY THIS COST HOURS, AND WHY IT WILL AGAIN: reading the wrong source tree does not announce
+itself.** The retired `api.py` opened fine, parsed fine, and answered every grep. Searching it for
+`upload` and `attachments` returned **nothing** — which reads exactly like *"this feature does not
+exist"* rather than *"you are in the wrong repository."* The control that broke the tie was
+`grep -c "def " <file>` → 38, proving the grep could read the file at all; the emptiness was real,
+it was just an answer about the wrong thing. **A file that is merely OLD is indistinguishable from
+one that is WRONG unless you check its provenance**, and nothing about opening it prompts you to.
+
+**Corollary worth keeping separate:** even the correct tree only tells you what is ON DISK. The
+running process can predate the file — that exact case appeared the same day, where a fix was
+present in `api.py` and absent from the live endpoint's responses, because the service had not been
+restarted since. **Bytes on disk, behaviour of the running service, and the commit in the repo are
+three different questions.** Measure the one you actually care about, and prefer probing the live
+service over reading any checked-out source.
