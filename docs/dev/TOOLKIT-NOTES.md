@@ -1035,6 +1035,27 @@ prefer measuring the LIVE service over reading any checked-out source. The endpo
 here was ultimately settled by sending real HTTP at `127.0.0.1:7360` and reading what came back,
 which took less time than locating the correct source file.
 
+**⚠ THIRD INSTANCE, SAME DAY, AND THE WORST OF THE THREE: a mutation that never applied.** A
+`perl -0pi -e` edit meant to plant a mutant **silently matched nothing** (CRLF line endings), and the
+suite then reported **`337 passed, 0 failed`** — which reads *exactly* like "the mutant survived and
+your test does not catch it". **A failed-to-apply mutant and a surviving mutant are indistinguishable
+from the suite result alone**, and "survived" is the alarming reading, so the failure mode is that
+you go hunting a phantom hole in tests that were fine all along. What caught it was
+`grep -c "MUTANT" <file>` returning **0**.
+
+⇒ **A mutation run that does not verify the mutant actually landed is not a mutation test — it is a
+second run of the same suite wearing a costume.** Assert the marker is present *before* trusting the
+result. In-place regex edits are the sharp edge here: `sed -i`/`perl -0pi` report success when they
+match nothing, and this repo's files are CRLF, so multiline patterns anchored on `\n` quietly fail.
+Prefer inserting at a located line number and then counting the marker.
+
+**The three together are one lesson, which is why they share an entry.** In every case *the
+instrument silently did not run, and its silence was indistinguishable from a result*: a grep whose
+pattern could never match, a grep pointed at the wrong file, and an edit that changed nothing. The
+generalisation is not "be careful with grep" — it is **an instrument that cannot report its own
+failure to run must be given a known-positive control every time it is used**, because the reading
+you get when it is broken is a perfectly plausible reading.
+
 **Related, on the same day:** a `find` over `%USERPROFILE%` with no `-maxdepth` bound exceeded the
 120 s tool timeout twice. Bound the depth or start from a known subtree.
 
