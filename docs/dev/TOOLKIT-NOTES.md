@@ -743,10 +743,16 @@ build actually ran first.
 
 ### Checked and found sound — stated so nobody re-derives it
 
-- **`verify-deploy-artifact.sh` is the model to copy.** Explicit `CONTROL+` / `CONTROL-` pair, a
-  third control probing an unrelated DLL, and it keeps a byte copy of the *old* DLL so a marker
-  must be absent there and present here. (It also greps clean for `strings` — that word appears in
-  a usage message; it uses Python, not the binary this division was once burned by.)
+- **`verify-deploy-artifact.sh` is the model to copy** *for marker discrimination*. Explicit
+  `CONTROL+` / `CONTROL-` pair, a third control probing an unrelated DLL, and it keeps a byte copy
+  of the *old* DLL so a marker must be absent there and present here. (It also greps clean for
+  `strings` — that word appears in a usage message; it uses Python, not the binary this division
+  was once burned by.)
+  **Re-scoped 2026-08-28:** `tools/dev/verify-deploy-system.ps1` is now the larger probe (53 checks,
+  each gate with a can-fail control, idempotent replacement proven by doing) and is the model to
+  copy for *harness structure*. The two are complements, not rivals — the artifact probe answers
+  "did the thing I built reach disk", the system harness answers "does the deployer behave". Copy
+  the first for discriminating a payload, the second for exercising a mechanism.
 - **`McpLink.csproj`'s `DeployToMods` detects success POSITIVELY** — non-empty `CopiedFiles`, with
   `SkipUnchangedFiles="false"` pinned precisely so a skipped file cannot be mistaken for a blocked
   one. `ContinueOnError` there is deliberate (a locked DLL is the normal mid-development case) and

@@ -37,8 +37,13 @@ BUILT="${MCPLINK_BUILT:-$REPO/bin/Debug/McpLink.dll}"
 FOREIGN="$GAME/FrooxEngine.dll"
 
 FAILED=0
+SKIPPED=0
 ok()  { echo "  PASS  $*"; }
 bad() { echo "! FAIL  $*"; FAILED=$((FAILED+1)); }
+# A check that could not run is NOT a check that passed. It gets its own verb, its own counter,
+# and it is named in the summary line -- otherwise an abstention is indistinguishable from a pass
+# at a glance, which is this project's most-repeated failure.
+skip() { echo "~ SKIP  $*"; SKIPPED=$((SKIPPED+1)); }
 sha() { sha256sum "$1" | cut -d' ' -f1; }
 
 case "${1:-}" in
@@ -113,8 +118,54 @@ verify)
                      || bad "HotReloadMods differs from the build output at $BUILT"
   [ "$D" = "$H" ]    && ok "both deploy paths carry the SAME bytes (no divergence)" \
                      || bad "the two deploy paths DIVERGED — restart and hot-reload would differ"
-  [ -f "$MODS/McpLink.dll.PENDING" ] && bad "a PENDING note was left — the rml_mods copy was blocked" \
-                                     || ok "no PENDING note (the restart path was really written)"
+  # WAS: a check that the .PENDING note is absent, reported as "the restart path was really
+  # written". As of 2026-08-28 NOTHING CREATES .PENDING any more -- the build-time deploy that
+  # wrote it is gone, and tools/deploy.ps1 only ever removes pre-upgrade leftovers. So that check
+  # could no longer fail: a green PASS on every run, asserting something it had stopped
+  # verifying. Re-anchored onto what the deploy system actually produces.
+  #
+  # deploy.ps1 writes <StageDir>\last-deploy.json (BOM-less, deliberately, so a shell probe can
+  # parse it) with the outcome and the sha256 pin it verified against. The pin is the useful part:
+  # it carries INTENT, so it catches "a deploy happened, but not the one we meant" -- which a
+  # hash-equality check between two files on disk cannot.
+  STAGE_DIR="${MCPLINK_STAGE_DIR:-${LOCALAPPDATA:-$HOME/AppData/Local}/McpLink/deploy}"
+  OUTCOME="$STAGE_DIR/last-deploy.json"
+  if [ ! -f "$OUTCOME" ]; then
+    # NOT a pass. deploy.ps1 was not the route here (install.ps1, a manual copy, an older build),
+    # so this corroboration is unavailable -- say so and count it, rather than let an absent file
+    # read as a clean result.
+    skip "no $OUTCOME — deploy.ps1 was not the deploy route, so its pin cannot corroborate"
+  else
+    OUTCOME_JSON="$OUTCOME" DEPLOYED_SHA="$D" python - <<'PY'
+import json, os, sys
+path = os.environ["OUTCOME_JSON"]
+raw = open(path, "rb").read()
+# The BOM check is not pedantry: deploy.ps1 writes this file BOM-less on purpose so non-PowerShell
+# readers can parse it, and a BOM reappearing is a real regression in that contract.
+if raw[:3] == b"\xef\xbb\xbf":
+    print("! FAIL  %s has a UTF-8 BOM -- strict parsers reject it" % path); sys.exit(1)
+try:
+    doc = json.loads(raw.decode("utf-8"))
+except Exception as exc:
+    print("! FAIL  %s is not parseable JSON: %s" % (path, exc)); sys.exit(1)
+outcome, pin = doc.get("outcome"), (doc.get("pin") or "").lower()
+deployed = os.environ["DEPLOYED_SHA"].lower()
+rc = 0
+if outcome == "deployed":
+    print("  PASS  deploy.ps1 reports outcome=deployed")
+else:
+    print("! FAIL  deploy.ps1 reports outcome=%r, not 'deployed'" % outcome); rc = 1
+if not pin:
+    print("! FAIL  outcome file carries no pin, so it corroborates nothing"); rc = 1
+elif pin == deployed:
+    print("  PASS  its verified pin matches the DLL now in rml_mods")
+else:
+    print("! FAIL  pin %s does not match deployed %s -- a deploy landed, but not this one"
+          % (pin[:16], deployed[:16])); rc = 1
+sys.exit(rc)
+PY
+    [ $? -eq 0 ] || FAILED=$((FAILED + 1))
+  fi
 
   echo ""
   echo "=== markers (each must DISCRIMINATE old from new) ==="
@@ -148,7 +199,12 @@ sys.exit(fail)
 PY
   FAILED=$((FAILED + $?))
   echo ""
-  [ $FAILED -eq 0 ] && echo "artifact probe: ALL PASSED" || echo "artifact probe: $FAILED FAILED"
+  # The skip count rides in the headline deliberately. "ALL PASSED" next to a silent skip is how
+  # a probe stops covering something without anyone noticing.
+  SUFFIX=""
+  [ $SKIPPED -gt 0 ] && SUFFIX=" ($SKIPPED SKIPPED — not verified)"
+  [ $FAILED -eq 0 ] && echo "artifact probe: ALL PASSED$SUFFIX" \
+                    || echo "artifact probe: $FAILED FAILED$SUFFIX"
   exit $FAILED
   ;;
 
