@@ -111,6 +111,7 @@ Assert ($o.slots.rmlMods.old.sha -eq $oldHash) 'case0: outcome records old slot 
 Assert ($o.expectation.neverArrived.sha256 -eq $oldHash) 'case0: expectation pair carries never-arrived hash'
 Assert ($o.expectation.expected.sha256 -eq $hashA) 'case0: expectation pair carries expected hash'
 Assert ($o.resolved.dst -eq $dst) 'case0: outcome echoes the RESOLVED dst (no ambient paths)'
+Assert (([System.IO.File]::ReadAllBytes($outcomeFile))[0] -eq 0x7B) 'case0: outcome JSON is BOM-less (first byte is {, strict-parser safe)'
 $bakDir = $o.backupDir
 Assert ((Test-Path (Join-Path $bakDir 'rmlMods-McpLink.dll')) -and ((Get-FileHash (Join-Path $bakDir 'rmlMods-McpLink.dll') -Algorithm SHA256).Hash -eq $oldHash)) 'case0: rml_mods backup exists and hash-matches the outgoing file'
 Assert ((Test-Path (Join-Path $bakDir 'hotReloadMods-McpLink.dll')) -and ((Get-FileHash (Join-Path $bakDir 'hotReloadMods-McpLink.dll') -Algorithm SHA256).Hash -eq $oldHash)) 'case0: HotReloadMods backup exists and hash-matches'

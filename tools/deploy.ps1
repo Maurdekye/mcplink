@@ -35,7 +35,7 @@
 # why post-deploy verification must compare hashes, not stamps alone.
 #
 # EXIT CODES: 0 deployed, or staged-and-waiting (see outcome file for which)
-#             2 verification CRITICAL (corrupt stage / post-copy mismatch); .PENDING kept
+#             2 verification CRITICAL (corrupt stage / post-copy mismatch); nothing cleaned up
 #             3 refused: -ExpectedSha256 given and the source does not match it
 #             4 copy failed for a non-lock reason
 #             5 source missing or unreadable
@@ -72,10 +72,20 @@ $StagedDll = Join-Path $StageDir 'staged-McpLink.dll'
 $ManifestPath = Join-Path $StageDir 'staged.json'
 $OutcomePath = Join-Path $StageDir 'last-deploy.json'
 
+# BOM-less UTF-8 for EVERY file this script writes. On PS 5.1, -Encoding utf8 emits a BOM
+# (a BOM at offset 0 breaks strict JSON parsers reading the outcome/manifest contract
+# files - half of what corrupted four published release notes), and a bare
+# Set-Content/Add-Content uses the machine's ANSI codepage, which silently destroys
+# non-ASCII characters in paths. Measured on this machine; docs/dev/CONTRIBUTING.md.
+$script:Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+function Write-TextFile([string]$path, [string]$content) {
+    [System.IO.File]::WriteAllText($path, $content, $script:Utf8NoBom)
+}
+
 function Write-Log([string]$msg) {
     $dir = Split-Path $Log -Parent
     if ($dir -and -not (Test-Path $dir)) { New-Item -ItemType Directory -Force $dir | Out-Null }
-    Add-Content $Log ("{0} {1}" -f (Get-Date -Format s), $msg)
+    [System.IO.File]::AppendAllText($Log, ("{0} {1}`r`n" -f (Get-Date -Format s), $msg), $script:Utf8NoBom)
 }
 
 function Get-Sha([string]$path) { return (Get-FileHash $path -Algorithm SHA256).Hash }
@@ -84,7 +94,7 @@ function Write-Outcome([hashtable]$o) {
     if (-not (Test-Path $StageDir)) { New-Item -ItemType Directory -Force $StageDir | Out-Null }
     $o['writtenAtUtc'] = [DateTime]::UtcNow.ToString('o')
     $tmp = "$OutcomePath.tmp"
-    $o | ConvertTo-Json -Depth 8 | Out-File $tmp -Encoding utf8
+    Write-TextFile $tmp ($o | ConvertTo-Json -Depth 8)
     Move-Item $tmp $OutcomePath -Force
 }
 
@@ -140,7 +150,7 @@ function Invoke-Deploy($m) {
                 $lines += "$($slot.name): absent before this deploy (nothing to back up)"
             }
         }
-        Set-Content (Join-Path $bakDir 'hashes.txt') ($lines -join "`r`n") -Encoding utf8
+        Write-TextFile (Join-Path $bakDir 'hashes.txt') ($lines -join "`r`n")
     } catch {
         Write-Log "REFUSED: backup could not be written/verified ($($_.Exception.Message)) - game folder untouched"
         Write-Outcome @{ outcome = 'refused-backup'; error = "$($_.Exception.Message)"; pin = $pin; backupDir = $bakDir; needsUserAction = 'none - deploy did not happen; fix the backup location and re-run' }
@@ -188,7 +198,9 @@ function Invoke-Deploy($m) {
     }
     Write-Log "deployed: $($m.dst) and $($m.dstHotReload) sha256=$pin (verified on both)"
 
-    # Both slots verified: the build's half-done-deploy note is now false.
+    # .PENDING is a LEGACY artifact: nothing writes it anymore (the build's half-done-deploy
+    # machinery was removed with the auto-deploy, 2026-08-28). A note here can only be a
+    # leftover from a pre-upgrade build, and a verified deploy makes it false - clean it up.
     Remove-Item "$($m.dst).PENDING" -Force -ErrorAction SilentlyContinue
 
     # Config seed: only requested keys, only when absent, logged by what was ACTUALLY added.
@@ -207,7 +219,7 @@ function Invoke-Deploy($m) {
                 }
             }
             if ($added.Count -gt 0) {
-                $j | ConvertTo-Json -Depth 5 | Out-File $m.cfg -Encoding utf8
+                Write-TextFile $m.cfg ($j | ConvertTo-Json -Depth 5)
                 Write-Log ("seeded config keys: " + ($added -join ', '))
             } else {
                 Write-Log 'config seed: nothing to do (all requested keys present)'
@@ -355,7 +367,7 @@ $manifest = [ordered]@{
     stampChecked        = (-not $SkipStampCheck)
 }
 $tmp = "$ManifestPath.tmp"
-$manifest | ConvertTo-Json -Depth 4 | Out-File $tmp -Encoding utf8
+Write-TextFile $tmp ($manifest | ConvertTo-Json -Depth 4)
 Move-Item $tmp $ManifestPath -Force
 Write-Log "staged: pin=$pin stamp=$productVersion (replaces any pending stage)"
 
