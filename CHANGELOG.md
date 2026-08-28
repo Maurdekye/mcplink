@@ -1,5 +1,29 @@
 # McpLink changelog
 
+## 2.11.2 (2026-08-28)
+
+**The notice an agent gets when you open a panel on it now quotes the label its mailbox actually
+shows.** These notices are delivered as self-addressed mail, so the envelope reads *from the agent
+itself* — the note in the body exists to say who really did it. That note named the wrong label:
+it said the mail would be marked `"your peer"`, which was true until the companion backend changed
+the label for self-addressed mail to `"yourself"` on 2026-08-27.
+
+- **What you will see.** The opening line of a panel-opened or panel-closed notice now says the
+  mail is labelled `"yourself"`, matching the envelope in front of the agent.
+- **The explanation stays, and matters more than before.** It would have been easy to read a more
+  accurate header as making the note unnecessary. It is the opposite: `"your peer"` left an agent
+  two wrong readings to choose between, while `"yourself"` states the single wrong thing
+  confidently. So the notice still says plainly that the agent did not send this and the **user**
+  did. Only the now-meaningless *"and no peer of yours did either"* was dropped.
+- **Nothing else changed.** No tool gained, lost or altered a behaviour; no argument or return
+  value moved. If you drive McpLink over MCP, this release changes nothing for you.
+
+*Measured before it was changed, not assumed: a self-addressed notice and a peer-sent notice were
+delivered into the same agent in the same turn, and it read both envelopes back verbatim. The
+peer-sent one still says `"your peer"` — so the label did not go away, only the self-addressed case
+moved. Older backends that have not taken that change will show `"your peer"` where this notice now
+says `"yourself"`; the notice's actual point, that the user did this, is correct on both.*
+
 ## 2.11.1 (2026-08-28)
 
 **A prompt panel now tells you when an attachment did not arrive.** Previously it could not: the
