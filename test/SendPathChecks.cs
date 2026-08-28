@@ -39,6 +39,29 @@ internal static class SendPathChecks
 
         // THE REGISTRY. Every composer that turns refs into outgoing text belongs here, and the
         // completeness check below proves this list is not missing one.
+        //
+        // ⚠ THIS CHECK IS DOING SECURITY WORK, NOT TIDINESS WORK. Read this before deciding the
+        // completeness assertion is an obstacle to route around.
+        //
+        // Panel mail is delivered through `POST /nodes/{nid}/message`, and that endpoint posts AS
+        // THE USER. Measured 2026-08-28: mail sent through it arrives at the agent attributed to
+        // `@user`, carrying the user's own authority — the harness even urges the recipient to act
+        // on it as a user instruction. The transport attaches no marker of its own and performs no
+        // check on who composed the text.
+        //
+        // The ONLY thing separating "the user typed this" from "this came off a panel" is the
+        // `[PANEL MESSAGE] from "<name>"` prefix that these composers add. ⇒ THE MARKER IS APPLIED
+        // BY OUR CODE, NOT ENFORCED BY THE CHANNEL, which makes the composers a TRUST BOUNDARY
+        // rather than a formatting convenience.
+        //
+        // This was demonstrated accidentally and is worth knowing: hand-rolling the message JSON
+        // during a transport probe — bypassing these composers — produced mail INDISTINGUISHABLE
+        // from the user's own words. **The absence of the marker is not detectable by the
+        // recipient.** There is nothing on the receiving side that can tell the difference, so a
+        // composer that forgets the prefix cannot be caught downstream, only here.
+        //
+        // ⇒ If you are adding a send path, register it below. If you believe it should be exempt,
+        // that is a decision about attribution and authority, not about test bookkeeping.
         var paths = new[]
         {
             new SendPath("ComposePanelMessage", r => PromptWizard.ComposePanelMessage(ch, "look at this", r)),
