@@ -7,7 +7,7 @@ Developing it? See [`CLAUDE.md`](CLAUDE.md). Driving it from an agent? See
 **An MCP server that runs inside Resonite.** McpLink is a
 [ResoniteModLoader](https://github.com/resonite-modding-group/ResoniteModLoader) mod that embeds
 a [Model Context Protocol](https://modelcontextprotocol.io/) server in the game process, so an
-AI agent — Codex, Claude Code, or any MCP-capable client — can inspect and modify your live Resonite
+AI agent — Codex, Gemini CLI, Claude Code, or any MCP-capable client — can inspect and modify your live Resonite
 worlds: slots, components, ProtoFlux, assets, physics, screenshots, event streams, and (optionally)
 C# against the running engine. **97 tools**, no per-session setup, works in any world including
 Userspace.
@@ -46,12 +46,13 @@ and working — that's the one hard prerequisite, and its README covers installi
    [McpLink] MCP server listening on http://localhost:7357/mcp
    ```
 
-4. **Connect your agent.** For **Codex or Claude Code**, the recommended route is the bundled
+4. **Connect your agent.** For **Codex, Gemini CLI or Claude Code**, the recommended route is the bundled
    always-up proxy (a dependency-free Python 3.8+ script — the one extra requirement of this
    route). Copy the zip's `proxy\` folder somewhere permanent, then use the command for your client:
 
    ```
    codex mcp add mcplink -- python "C:\path\to\proxy\mcplink_proxy.py"
+   gemini mcp add mcplink python "C:\path\to\proxy\mcplink_proxy.py"
    claude mcp add mcplink -- python "C:\path\to\proxy\mcplink_proxy.py"
    ```
 
@@ -62,6 +63,7 @@ and working — that's the one hard prerequisite, and its README covers installi
 
    ```
    codex mcp add mcplink --url http://localhost:7357/mcp
+   gemini mcp add --transport http mcplink http://localhost:7357/mcp
    claude mcp add --transport http mcplink http://localhost:7357/mcp
    ```
 
@@ -75,7 +77,8 @@ and working — that's the one hard prerequisite, and its README covers installi
 5. **Teach the agent the craft.** The tools are self-describing, but the hazards and idioms
    (reading big ProtoFlux graphs cheaply, checkpointing before risky mutations, what silently
    no-ops) live in **[CLAUDE-MCPLINK.md](CLAUDE-MCPLINK.md)**. For Claude Code, copy it next to
-   your project's `CLAUDE.md` and add `@CLAUDE-MCPLINK.md` to it; for other agents, feed it in as
+   your project's `CLAUDE.md` and add `@CLAUDE-MCPLINK.md` to it; for Codex or Gemini CLI, fold the
+   relevant guidance into the project's `AGENTS.md` or `GEMINI.md`; for other agents, feed it in as
    standing context.
 
 *First-session note:* the proxy caches the tool list. Run one session (or reconnect via `/mcp`)
@@ -95,7 +98,7 @@ are required — set up whichever is useful to you; the rest of McpLink works wi
 ### Connect to orgtree
 
 McpLink pairs with **[claude-orgtree](https://github.com/Maurdekye/claude-orgtree)** — a custom
-orchestrator that organizes Codex and Claude Code agents into an authority hierarchy — and the
+orchestrator that organizes Codex, Gemini CLI and Claude Code agents into an authority hierarchy — and the
 integration runs deep: an in-world **Prompt Agent** panel lets you hire an agent from inside VR by clicking a
 node in your live org chart, name it, pick its model tier and thinking effort, and then *chat with
 it* in a floating panel that embodies the agent — presence ticker showing what it's doing right
@@ -118,9 +121,11 @@ McpLink never mentions it: the menu entry stays hidden and `open_prompt_wizard` 
    organization new panels open on; `promptHireDir` names a folder that panel-hired agents get
    read-write access to (empty = game folder only).
 
-The Prompt Agent tier picker reads orgtree's live provider catalog, so Claude and Codex tiers
-appear with their current credit costs and availability. If that catalog cannot be read, the
-panel says it is showing a legacy Claude-only fallback instead of silently hiding Codex. To
+The Prompt Agent tier picker reads orgtree's live provider catalog, so tiers from Claude, Codex
+and Gemini providers whose catalog entry has `hire_enabled: true` appear with their current credit
+costs. Providers marked false are omitted from model selection. If that catalog cannot be read,
+the panel visibly says it is showing an unfiltered legacy Claude-only fallback with unknown
+registration status instead of silently hiding non-Claude tiers. To
 exercise that diagnostic path on demand, set `MCPLINK_FORCE_PROVIDER_FALLBACK=1` before starting
 Resonite; unset it to restore the live catalog.
 

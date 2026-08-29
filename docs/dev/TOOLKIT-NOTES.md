@@ -1602,3 +1602,61 @@ Both names in one line so a future grep for either finds this entry:
   **any** world including `Local` — no rendering, no user-visible spawn. Only "does it look right in
   real lighting" needs a renderable world. Measured this way on 2.12.2: `ProviderRing` tint is
   `#159ACD` on luna/terra/sol and `#D97757` on the Claude tiers, with `TierBar` distinct on all five.
+
+---
+
+## Adding a provider: what generalized, what did not (Gemini, 2026-08-29)
+
+Gemini was the first test of the provider-generalization shipped in 2.12.0. The decisive baseline
+was taken before the Gemini theme change, against deployed 2.12.2: `wizard_drive tier flash` and
+`wizard_drive tier pro` were both accepted and both returned `provider: "google"`. Updating only
+the sanitized live `/api/providers` fixture from two providers to three produced one failure: the
+old control that explicitly expected two families. The generic parser check still passed every
+row in backend order. Therefore the data layer and caller contract really were dynamic; no
+`OrgtreeClient`, input-schema, accepted-vocabulary or returned-state change was needed.
+
+The remaining provider-shaped assumptions were:
+
+1. **Tier colours (`TierColor`) — irreducible authored theme data.** Every named tier needs a hue.
+   Gemini adds Flash `#aee2f9` and Pro `#6b45d6`. This raises the design question explicitly: a
+   tier colour is currently both a tier property and part of a provider family. The code must not
+   silently normalize a user's provider palette into some cross-provider scale.
+2. **Provider chrome (`ProviderColor`) — irreducible authored theme data.** Every provider needs an
+   accent; Gemini adds `#5f6fdb`. Provider and tier colours are separate authored values even when
+   they are visually close. On these inputs, the Pro bar is much closer to its provider ring than
+   the equivalent Codex pairs, so Flash is the clean ring-vs-bar discriminator and Pro needs a
+   human "does this look muddy" judgement rather than an exact-pixel rule.
+3. **Existing-node recovery (`ProviderForTier`) — compatibility duplication.** Current node rows
+   carry only a globally unique tier name. When `/api/providers` is available, provider recovery is
+   fully dynamic. When it is unavailable, preserving provider chrome requires a local tier-to-
+   provider fallback arm. A future provider only needs this entry for outage-time theming, not for
+   hiring or normal rendering. Eliminating it entirely would require the backend node payload to
+   carry provider identity or McpLink to persist the last healthy catalog.
+4. **Tool descriptions, charter text and fallback notices — avoidable provider lists.** Gemini
+   exposed stale Claude/Codex examples even though the behavior was dynamic. These were made
+   provider-neutral: the schema points to `/api/providers`, the charter says client surfaces
+   differ, and fallback says non-Claude tiers are hidden. A fourth provider should not touch them.
+5. **Setup commands — irreducible client-specific documentation.** Gemini CLI 0.57.0 measured
+   `gemini mcp add <name> <commandOrUrl> [args...]`, with `--transport http` for Streamable HTTP.
+   README, INSTALL, proxy help and installer output must name the real syntax because clients do
+   not share one command-line interface.
+6. **Picker registration filter — dynamic, but strict about its signal.** `/api/providers` exposes
+   `hire_enabled` as the authoritative model-selection signal. Codex and Gemini derive it from
+   `status.connected`; Claude currently publishes literal `true`, so connection and hireability
+   are not interchangeable fields. The new-model picker admits only tiers whose provider has that
+   flag true. The synthetic control makes them disagree (`hire_enabled:false`,
+   `status.connected:true`) so a filter that reads the wrong field fails. Missing or non-boolean
+   flags fail the whole catalog into the visible legacy fallback; treating a malformed value as
+   false would silently empty the list, while treating it as true would silently ignore the user's
+   filter. The decisive check contains one registered and one unregistered provider and asserts
+   presence and absence together. Existing-agent panels are separate: they still open and recover
+   known provider chrome from their tier even after that provider becomes unregistered.
+
+When the catalog cannot be read, McpLink shows a labelled Claude-only fallback. That list is
+knowingly unfiltered: Claude tiers appear even though registration status is unknown. The visible
+warning is what makes this a deliberate degraded mode rather than a false claim about registration.
+
+Pre-change authored-state control on deployed 2.12.2: both Google tiers used the fallback ring
+`#595E6B` and identical fallback bar `#8C949E`. After the change, a valid check must first confirm
+the answering build, then show Flash and Pro bars differ from each other and the ring stays
+`#5F6FDB` across both. Query the child named `ProviderRing`, not the retired `FrameRing` name.

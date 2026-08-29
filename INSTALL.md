@@ -8,7 +8,7 @@ everything there is repeated here with more detail, plus configuration, troubles
 updating, and uninstalling.
 
 McpLink is a ResoniteModLoader mod that runs an **MCP (Model Context Protocol) server inside
-the Resonite process**, giving an AI agent (Codex, Claude Code, or any MCP client) deep read/write
+the Resonite process**, giving an AI agent (Codex, Gemini CLI, Claude Code, or any MCP client) deep read/write
 access to your live worlds — 97 tools.
 
 > ⚠ **Security, up front.** The endpoint binds to **localhost only**, but anything that can
@@ -23,7 +23,7 @@ access to your live worlds — 97 tools.
 | **Resonite** (Windows) | everything | any install location; the Steam default is assumed by scripts and can be overridden |
 | **[ResoniteModLoader](https://github.com/resonite-modding-group/ResoniteModLoader)** | everything | the mod loader; McpLink does nothing without it |
 | **Python 3.8+** on PATH | the recommended proxy connection (§4) only | the proxy is a single dependency-free script; direct HTTP needs no Python |
-| An **MCP client** | talking to the server | examples use Codex and Claude Code; any streamable-HTTP or stdio MCP client works |
+| An **MCP client** | talking to the server | examples use Codex, Gemini CLI and Claude Code; any streamable-HTTP or stdio MCP client works |
 | **[claude-orgtree](https://github.com/Maurdekye/claude-orgtree)** | *optional* — the in-world agent panels only | see [README §2, "Connect to orgtree"](README.md#connect-to-orgtree); everything else works without it |
 | A **decompiler MCP server** (e.g. [ILSpy-Mcp](https://github.com/gentledepp/ILSpy-Mcp)) | *optional* — grounding engine questions in decompiled source | see [README §2, "Pair with a C# decompiler"](README.md#pair-with-a-c-decompiler); McpLink itself needs neither |
 | **Blender** (+ a Blender MCP server, e.g. the [Blender Lab add-on](https://www.blender.org/lab/mcp-server/)) | *optional* — fixing/preparing meshes before import | see [README §2, "Pair with Blender"](README.md#pair-with-blender); McpLink's own import/export tools need neither |
@@ -65,7 +65,7 @@ Both lines present = the server is up. Neither present = RML didn't load the mod
 
 ## 4. Connect your MCP client
 
-### Recommended: the always-up proxy (Codex or Claude Code)
+### Recommended: the always-up proxy (Codex, Gemini CLI or Claude Code)
 
 McpLink lives inside the game process, so its HTTP endpoint only exists while Resonite runs —
 and an MCP server that is down when a session starts contributes **zero tools** to it. The
@@ -80,10 +80,11 @@ even mid-session.
 
    ```
    codex mcp add mcplink -- python "C:\path\to\proxy\mcplink_proxy.py"
+   gemini mcp add mcplink python "C:\path\to\proxy\mcplink_proxy.py"
    claude mcp add mcplink -- python "C:\path\to\proxy\mcplink_proxy.py"
    ```
 
-3. `codex mcp list` or `claude mcp list` should show `mcplink` — **even with the game closed**.
+3. `codex mcp list`, `gemini mcp list` or `claude mcp list` should show `mcplink` — **even with the game closed**.
 
 *One-time bootstrap:* the tool cache starts empty, so run one client session (or reconnect its
 MCP server) while the game is running; after that the tools are present in every session
@@ -101,6 +102,7 @@ connects if Resonite is already running when the client session starts:
 
 ```
 codex mcp add mcplink --url http://localhost:7357/mcp
+gemini mcp add --transport http mcplink http://localhost:7357/mcp
 claude mcp add --transport http mcplink http://localhost:7357/mcp
 ```
 
@@ -143,8 +145,9 @@ which engine footguns silently no-op, when to checkpoint before mutating — is 
    ```
 
 For Codex, have it read `CLAUDE-MCPLINK.md` as project context or fold the relevant guidance into
-the project's `AGENTS.md`. For other agents, provide the file as standing context by whatever
-mechanism your client uses.
+the project's `AGENTS.md`. For Gemini CLI, fold the relevant guidance into the project's
+`GEMINI.md`. For other agents, provide the file as standing context by whatever mechanism your
+client uses.
 
 Want the agent to ground engine-behavior questions in decompiled source too? See
 [README §2, "Pair with a C# decompiler"](README.md#pair-with-a-c-decompiler) — an optional
@@ -217,7 +220,7 @@ running build's MVID, and whether the on-disk copies match it (`deployConsistent
 
 Game closed: delete `rml_mods\McpLink.dll`, the `rml_mods\McpLink_libs\` folder if present,
 and (optionally) `rml_config\McpLink.json`. Deregister the client side with
-`claude mcp remove mcplink` (or your client's equivalent). The proxy folder you copied in §4
+`claude mcp remove mcplink`, `gemini mcp remove mcplink` (or your client's equivalent). The proxy folder you copied in §4
 is self-contained — delete it too if you're done with it.
 
 ---

@@ -94,7 +94,7 @@ $notes = @"
 $section
 
 ---
-**Install**: see [INSTALL.md](https://github.com/$repoSlug/blob/main/INSTALL.md). ``McpLink.dll`` is the bare mod (drop into ``rml_mods``); the zip is the full bundle (eval companion, Claude Code proxy, docs).
+**Install**: see [INSTALL.md](https://github.com/$repoSlug/blob/main/INSTALL.md). ``McpLink.dll`` is the bare mod (drop into ``rml_mods``); the zip is the full bundle (eval companion, always-up proxy, docs).
 
 **Which build am I running?** MCP ``initialize`` -> ``serverInfo.version`` = ``$version``; the ``session_info`` tool -> ``build.informationalVersion`` = ``g$stamp``. Trust those, never file timestamps -- and restart your MCP client after updating so cached tool schemas refresh.
 "@

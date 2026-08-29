@@ -1,5 +1,45 @@
 # McpLink changelog
 
+## 2.13.0 (2026-08-29)
+
+**Gemini Prompt Agent panels now have first-class provider and tier presentation.** Gemini uses
+Flash `#aee2f9`, Pro `#6b45d6`, and provider ring `#5f6fdb`, matching the colours authored by the
+user and orgtree. Existing Gemini nodes recover the Google provider theme from their globally
+unique tier names even when the live provider catalog is unavailable.
+
+- **The dynamic provider design held.** Deployed 2.12.2 already accepted `flash` and `pro` through
+  `wizard_drive` and returned `provider: "google"`; the unchanged `/api/providers` parser also
+  flattened the live three-provider fixture in backend order. This release adds no tier enum,
+  schema field or return field — it completes presentation and guidance around vocabulary that
+  was already live.
+- **One authored value per colour.** The picker, existing-agent panels and checks reference the
+  same Gemini tier/provider values rather than restating RGB channels. Flash and Pro stay visibly
+  distinct from each other; the provider ring is stable across both tiers.
+- **Provider-neutral failure and discovery guidance.** The loud compatibility fallback now says
+  all non-Claude tiers are hidden instead of maintaining a list of provider names, and panel-hired
+  agents are told to inspect their actual client tool catalog without enumerating client brands.
+- **Only registered providers appear in model selection.** McpLink uses `/api/providers`' own
+  `hire_enabled` flag — the backend's authoritative hireability signal — and omits tiers from
+  providers where it is false. Codex and Gemini derive it from CLI connection; Claude currently
+  publishes it as unconditionally true. A missing or non-boolean flag rejects
+  the catalog into the panel's visible legacy fallback instead of silently showing everything or
+  emptying the picker. Existing-agent panels remain openable and recover their known provider
+  theme independently; the filter applies only to choosing a model for a new hire.
+- **Gemini CLI setup is documented end to end.** README, long-form install guide, proxy help and
+  installer output include the installed Gemini CLI 0.57.0 syntax for both the always-up stdio
+  proxy and direct Streamable HTTP transport.
+
+*Verification pins a sanitized response captured from the live companion backend with Claude,
+Codex and Gemini (nine tiers total). The full fixture — not just its appended Gemini row — was
+compared with the live endpoint. Before source changes, the updated fixture passed the generic
+parser check while the old two-provider control alone failed; that is the discriminator showing
+the runtime catalog already generalized. A mixed registered/unregistered fixture asserts both
+that registered tiers remain and unregistered tiers disappear, so an accidentally empty list
+cannot pass as a working filter. Its `status.connected` values deliberately disagree with
+`hire_enabled`, proving the filter reads the authoritative field rather than inferring from status.
+Exact authored panel colours and subjective rendered appearance
+remain separate post-deploy checks.*
+
 ## 2.12.2 (2026-08-29)
 
 **Codex Prompt Agent panels now use `#159acd` for their provider chrome.** This is the

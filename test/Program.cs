@@ -2476,7 +2476,7 @@ Check("default org: an empty org list never throws, even with a value configured
     PromptWizard.DefaultOrgIndex(Orgs(), "resonite", out var m) == 0 && m == null);
 
 Console.WriteLine();
-Console.WriteLine("== orgtree provider catalog: live fixture, Codex tiers, loud fallback ==");
+Console.WriteLine("== orgtree provider catalog: live fixture, dynamic provider tiers, loud fallback ==");
 string ProviderFixturePath() => Path.GetFullPath(Path.Combine(
     AppContext.BaseDirectory, "..", "..", "..", "..", "test", "fixtures",
     "providers-live-2026-08-29.json"));
@@ -2505,6 +2505,8 @@ List<(string Tier, int Seat, string Provider, string Label, string Letter, bool 
 bool ColorNear(colorX actual, float r, float g, float b) =>
     Math.Abs(actual.r - r) < 0.002f && Math.Abs(actual.g - g) < 0.002f
     && Math.Abs(actual.b - b) < 0.002f && Math.Abs(actual.a - 1f) < 0.002f;
+bool ColorsNear(colorX actual, colorX expected) =>
+    ColorNear(actual, expected.r, expected.g, expected.b);
 
 Check("live /api/providers fixture parses every row in backend order", () =>
 {
@@ -2515,12 +2517,14 @@ Check("live /api/providers fixture parses every row in backend order", () =>
         (t.Tier, t.Seat, t.Provider, t.ProviderLabel, t.Letter, t.HireEnabled, t.Reason)).ToList();
     return parsed.Error == null && actual != null && actual.SequenceEqual(expected);
 });
-Check("CONTROL: pinned live fixture contains both provider families and all Codex tiers", () =>
+Check("CONTROL: pinned live fixture contains all three provider families and their tiers", () =>
 {
     var parsed = OrgtreeClient.ParseProviderTiers(ProviderFixture()).Value!;
-    return parsed.Select(t => t.Provider).Distinct().SequenceEqual(new[] { "claude", "openai" })
+    return parsed.Select(t => t.Provider).Distinct().SequenceEqual(new[] { "claude", "openai", "google" })
         && parsed.Where(t => t.Provider == "openai").Select(t => t.Tier)
-            .SequenceEqual(new[] { "luna", "terra", "sol" });
+            .SequenceEqual(new[] { "luna", "terra", "sol" })
+        && parsed.Where(t => t.Provider == "google").Select(t => t.Tier)
+            .SequenceEqual(new[] { "flash", "pro" });
 });
 Check("wizard_drive exposes a dynamic tier string instead of a stale Claude-only enum", () =>
 {
@@ -2530,10 +2534,10 @@ Check("wizard_drive exposes a dynamic tier string instead of a stale Claude-only
     var tierSchema = wizard["inputSchema"]!["properties"]!["tier"]!;
     string description = wizard["description"]!.GetValue<string>();
     return tierSchema["type"]!.GetValue<string>() == "string" && tierSchema["enum"] == null
-        && description.Contains("/api/providers") && description.Contains("luna/terra/sol");
+        && description.Contains("currently hireable tier") && description.Contains("/api/providers");
 });
 Check("panel-hired charter uses the real provider tool catalog and fails loud when McpLink is absent", () =>
-    PromptWizard.CharterText.Contains("Codex") && PromptWizard.CharterText.Contains("Claude Code")
+    PromptWizard.CharterText.Contains("agent clients")
     && PromptWizard.CharterText.Contains("inspect your real tool catalog")
     && PromptWizard.CharterText.Contains("If no McpLink tools are present, say so plainly")
     && !PromptWizard.CharterText.Contains("mcp__mcplink__*"));
@@ -2549,14 +2553,23 @@ Check("malformed provider rows are skipped and an all-malformed catalog fails lo
     var parsed = OrgtreeClient.ParseProviderTiers(malformed);
     return parsed.Value == null && parsed.Error == "provider payload contains no valid tiers";
 });
-Check("provider availability and refusal reason are copied onto each tier", () =>
+Check("registered-provider filter keeps registered tiers and removes unregistered tiers", () =>
 {
     var payload = JsonNode.Parse(
-        """{"providers":[{"id":"openai","label":"Codex","hire_enabled":false,"reason":"not signed in","tiers":[{"tier":"luna","seat":1,"letter":"L"}]}]}""");
-    var tier = OrgtreeClient.ParseProviderTiers(payload).Value!.Single();
-    return !tier.HireEnabled && tier.Reason == "not signed in"
-        && PromptWizard.TierLabel(tier).Contains("unavailable")
-        && PromptWizard.TierUnavailable(tier).Contains("not signed in");
+        """{"providers":[{"id":"claude","label":"Claude","hire_enabled":true,"reason":null,"status":{"connected":false},"tiers":[{"tier":"haiku","seat":1,"letter":"H"}]},{"id":"google","label":"Gemini","hire_enabled":false,"reason":"not signed in","status":{"connected":true},"tiers":[{"tier":"flash","seat":1,"letter":"F"}]}]}""");
+    var tiers = OrgtreeClient.ParseProviderTiers(payload).Value!;
+    return tiers.Any(t => t.Provider == "claude" && t.Tier == "haiku")
+        && tiers.All(t => t.Provider != "google" && t.Tier != "flash");
+});
+Check("missing or malformed registration signal fails loudly instead of filtering by guess", () =>
+{
+    var missing = OrgtreeClient.ParseProviderTiers(JsonNode.Parse(
+        """{"providers":[{"id":"claude","tiers":[{"tier":"haiku","seat":1}]}]}"""));
+    var malformed = OrgtreeClient.ParseProviderTiers(JsonNode.Parse(
+        """{"providers":[{"id":"claude","hire_enabled":"yes","tiers":[{"tier":"haiku","seat":1}]}]}"""));
+    return missing.Value == null && malformed.Value == null
+        && missing.Error == "provider claude has no boolean hire_enabled field"
+        && malformed.Error == missing.Error;
 });
 Check("healthy provider result passes through with no fallback warning", () =>
 {
@@ -2569,8 +2582,9 @@ Check("broken provider result visibly falls back to legacy Claude-only tiers", (
     var failedResult = OrgtreeClient.Result<List<OrgtreeClient.ProviderTier>>.Fail("fixture-break");
     var resolved = PromptWizard.ProviderCatalogOrFallback(failedResult, out string? warning);
     return resolved.Count == 4 && resolved.All(t => t.Provider == "claude")
-        && warning != null && warning.Contains("legacy Claude-only tiers")
-        && warning.Contains("Codex tiers are hidden") && warning.Contains("fixture-break");
+        && warning != null && warning.Contains("unfiltered legacy Claude-only fallback")
+        && warning.Contains("registration status is unknown")
+        && warning.Contains("non-Claude tiers are hidden") && warning.Contains("fixture-break");
 });
 Check("empty successful provider result is degraded, never treated as Ready", () =>
 {
@@ -2603,6 +2617,7 @@ Check("default tier remains enabled opus, then falls back to first enabled tier"
     return live[PromptWizard.PreferredTierIndex(live)].Tier == "opus"
         && noOpus[PromptWizard.PreferredTierIndex(noOpus)].Tier == "terra"
         && live[PromptWizard.ResolvedTierIndex(live, "sol")].Tier == "sol"
+        && live[PromptWizard.ResolvedTierIndex(live, "pro")].Tier == "pro"
         && noOpus[PromptWizard.ResolvedTierIndex(noOpus, "opus")].Tier == "terra";
 });
 Check("Codex tier palette remains distinct from its single-source provider chrome", () =>
@@ -2621,8 +2636,28 @@ Check("Codex provider chrome's authored value is the hex recorded for this relea
         AppContext.BaseDirectory, "..", "..", "..", "..", "CHANGELOG.md")));
     return changelog.Contains($"panels now use `{hex}` for their provider chrome");
 });
-Check("existing Codex nodes recover provider chrome from their globally unique tier", () =>
+Check("Gemini tier palette remains distinct from its single-source provider chrome", () =>
+{
+    var chrome = PromptWizard.GeminiProviderChrome;
+    return ColorsNear(PromptWizard.TierColor("flash"), PromptWizard.GeminiFlashTierColor)
+        && ColorsNear(PromptWizard.TierColor("pro"), PromptWizard.GeminiProTierColor)
+        && ColorsNear(PromptWizard.ProviderColor("google"), chrome)
+        && !ColorsNear(PromptWizard.TierColor("flash"), PromptWizard.TierColor("pro"))
+        && !ColorsNear(PromptWizard.TierColor("pro"), chrome);
+});
+Check("Gemini's authored tier and provider hex values are recorded for this release", () =>
+{
+    string flash = $"#{PromptWizard.GeminiFlashTierRgb:x6}";
+    string pro = $"#{PromptWizard.GeminiProTierRgb:x6}";
+    string chrome = $"#{PromptWizard.GeminiProviderChromeRgb:x6}";
+    string changelog = File.ReadAllText(Path.GetFullPath(Path.Combine(
+        AppContext.BaseDirectory, "..", "..", "..", "..", "CHANGELOG.md")));
+    return changelog.Contains($"Flash `{flash}`") && changelog.Contains($"Pro `{pro}`")
+        && changelog.Contains($"provider ring `{chrome}`");
+});
+Check("existing nodes recover provider chrome from their globally unique tier", () =>
     PromptWizard.ProviderForTier(Array.Empty<OrgtreeClient.ProviderTier>(), "sol") == "openai"
+    && PromptWizard.ProviderForTier(Array.Empty<OrgtreeClient.ProviderTier>(), "pro") == "google"
     && PromptWizard.ProviderForTier(Array.Empty<OrgtreeClient.ProviderTier>(), "opus") == "claude"
     && PromptWizard.ProviderForTier(Array.Empty<OrgtreeClient.ProviderTier>(), "future") == null);
 

@@ -23,8 +23,9 @@ internal static class OrgtreeClient
     internal sealed record OrgInfo(string Slug, string Name);
     /// <summary>One hireable model tier from GET /api/providers. Tier names are globally
     /// unique in orgtree, so a hire still sends only Tier; Provider/ProviderLabel exist for
-    /// the in-world picker and provider chrome. HireEnabled/Reason are family-level state
-    /// copied onto every tier so a disconnected provider remains visible but cannot be hired.</summary>
+    /// the in-world picker and provider chrome. HireEnabled/Reason are retained for the legacy
+    /// fallback shape; live parsing admits tiers only from providers whose hire_enabled flag is
+    /// true (the backend's authoritative model-selection signal).</summary>
     internal sealed record ProviderTier(string Tier, int Seat, string Provider,
         string ProviderLabel, string Letter, bool HireEnabled, string? Reason);
     /// <summary>One node, flattened pre-order from the org tree — live AND archived (retired
@@ -84,9 +85,11 @@ internal static class OrgtreeClient
 
     /// <summary>Parse GET /api/providers into the flat tier vocabulary accepted by the hire
     /// endpoint. Payload order is preserved: the backend owns provider grouping and tier order.
-    /// Malformed provider/tier rows are ignored individually; an empty result fails loudly so
-    /// callers can use an explicit compatibility fallback rather than treating abstention as
-    /// a valid empty catalog.</summary>
+    /// Malformed provider/tier rows are ignored individually, except hire_enabled: a missing or
+    /// non-boolean registration signal fails the whole catalog loudly so filtering can never
+    /// silently show everything or nothing. Providers with hire_enabled:false are deliberately
+    /// omitted from the model picker. An empty result fails loudly into the visible compatibility
+    /// fallback rather than treating abstention as a valid empty catalog.</summary>
     internal static Result<List<ProviderTier>> ParseProviderTiers(JsonNode? payload)
     {
         var tiers = new List<ProviderTier>();
@@ -100,10 +103,22 @@ internal static class OrgtreeClient
             string label = StringValue(provider["label"]) ?? id;
             if (id.Length == 0 || provider["tiers"] is not JsonArray family)
                 continue;
-            bool enabled = false;
-            try { enabled = provider["hire_enabled"]?.GetValue<bool>() ?? false; }
-            catch { }
+            bool enabled;
+            try
+            {
+                if (provider["hire_enabled"] == null)
+                    return Result<List<ProviderTier>>.Fail(
+                        $"provider {id} has no boolean hire_enabled field");
+                enabled = provider["hire_enabled"]!.GetValue<bool>();
+            }
+            catch
+            {
+                return Result<List<ProviderTier>>.Fail(
+                    $"provider {id} has no boolean hire_enabled field");
+            }
             string? reason = StringValue(provider["reason"]);
+            if (!enabled)
+                continue;
             foreach (var row in family)
             {
                 if (row is not JsonObject tier)
@@ -115,7 +130,7 @@ internal static class OrgtreeClient
                 if (name.Length == 0 || seat <= 0)
                     continue;
                 string letter = StringValue(tier["letter"]) ?? name[..1].ToUpperInvariant();
-                tiers.Add(new ProviderTier(name, seat, id, label, letter, enabled, reason));
+                tiers.Add(new ProviderTier(name, seat, id, label, letter, true, reason));
             }
         }
         return tiers.Count > 0
