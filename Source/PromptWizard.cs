@@ -753,7 +753,7 @@ internal static class PromptWizard
     }
 
     /// <summary>The orgtree-node look (frontend .sq card): provider-colored desk chrome on all
-    /// sides and a thick tier-colored TOP bar. Codex is teal, Claude is terracotta; the tier
+    /// sides and a thick tier-colored TOP bar. Codex is blue, Claude is terracotta; the tier
     /// retains its own distinct hue. Three stacked rounded panels behind the window
     /// background: tier color (full, shows only as the top strip + top corners) → provider line
     /// (inset from the top by the bar) → the background panel inset by the ring on the other
@@ -1163,7 +1163,7 @@ internal static class PromptWizard
     }
 
     // The orgtree frontend's own tier palette (styles.css --tier-*). Codex's
-    // provider identity lives in the teal chrome, NOT in these tier hues.
+    // provider identity lives in the provider chrome, NOT in these tier hues.
     internal static colorX TierColor(string? tier) => tier switch
     {
         "haiku" => new colorX(0.310f, 0.839f, 0.639f, 1f),
@@ -1176,11 +1176,22 @@ internal static class PromptWizard
         _ => new colorX(0.55f, 0.58f, 0.62f, 1f), // top level / unknown tier
     };
 
-    // Provider chrome mirrors the frontend desk themes: Claude terracotta, Codex teal.
+    // One authored value for Codex provider chrome. Tests and the picker reference the derived
+    // colorX instead of duplicating its channels; exact post-deploy state is verified live.
+    internal const uint CodexProviderChromeRgb = 0x159ACD;
+    internal static readonly colorX CodexProviderChrome = RgbColor(CodexProviderChromeRgb);
+
+    private static colorX RgbColor(uint rgb) => new(
+        ((rgb >> 16) & 0xff) / 255f,
+        ((rgb >> 8) & 0xff) / 255f,
+        (rgb & 0xff) / 255f,
+        1f);
+
+    // Provider chrome: Claude terracotta, Codex blue.
     internal static colorX ProviderColor(string? provider) => provider switch
     {
         "claude" => new colorX(0.851f, 0.467f, 0.341f, 1f), // #d97757
-        "openai" => new colorX(0.345f, 0.608f, 0.584f, 1f), // #589b95
+        "openai" => CodexProviderChrome,
         _ => NeutralBorder,
     };
 

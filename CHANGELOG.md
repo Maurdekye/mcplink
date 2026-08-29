@@ -1,5 +1,19 @@
 # McpLink changelog
 
+## 2.12.2 (2026-08-29)
+
+**Codex Prompt Agent panels now use `#159acd` for their provider chrome.** This is the
+Codex-identifying ring around the panel; the Luna, Terra and Sol tier bars keep their separate tier
+colors unchanged.
+
+- **One authored color.** The Codex provider color is defined once and the panel mapping references
+  that value, so its red/green/blue channels cannot drift between the picker and an existing-agent
+  panel path.
+- **What the automated check claims.** It pins that the provider mapping uses the single authored
+  value and that the Sol tier bar remains distinct. It does not claim that a rendered pixel will
+  equal the authored hex — lighting, post-processing and color profiles can change displayed
+  pixels. Exact authored state and the rendered appearance are separate live checks after deploy.
+
 ## 2.12.1 (2026-08-29)
 
 **`render_view` and `orbit_render` no longer report success for a render that drew nothing.**
