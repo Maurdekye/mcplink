@@ -1,5 +1,39 @@
 # McpLink changelog
 
+## 2.12.0 (2026-08-29)
+
+**The in-world Prompt Agent wizard now supports Codex agents as a first-class provider.** It no
+longer carries a private Claude-only list of model tiers: the wizard reads its tier vocabulary,
+credit costs, provider labels and current hire availability from orgtree's `/api/providers`
+endpoint at runtime. Existing Claude tier names keep working, while Luna, Terra and Sol can now be
+selected through both the panel and `wizard_drive`.
+
+- **Provider-aware presentation.** Codex panels use teal provider chrome and distinct Luna, Terra
+  and Sol tier colors; Claude keeps its terracotta provider chrome and existing tier palette.
+  Existing agents recover the correct provider theme from their globally unique tier name.
+- **Unavailable means unavailable, visibly.** A disconnected or disabled provider remains in the
+  picker with orgtree's reason, but cannot be hired. `wizard_drive` returns the current `tier` and
+  `provider`, accepts the runtime tier vocabulary, and refuses unknown or disabled tiers with the
+  catalog/reason rather than silently substituting one.
+- **The compatibility fallback is loud and forceable.** If `/api/providers` is missing, errors, or
+  returns no valid tiers, the wizard visibly says it is showing the legacy Claude-only fallback
+  and that Codex tiers are hidden. Set `MCPLINK_FORCE_PROVIDER_FALLBACK=1` before starting Resonite
+  to drive that diagnostic path on demand; unset it to restore the live provider catalog.
+- **Panel-hired agent guidance is provider-neutral.** It tells Codex and Claude Code agents to use
+  the tool catalog they actually received, not to assume a Claude-only `ToolSearch`/
+  `mcp__mcplink__*` surface. If McpLink was not granted, the agent is told to say so instead of
+  claiming live-game verification. The panel message/closed markers remain tied to the same
+  constants that compose the real notices.
+- **Codex setup is documented end to end.** README, long-form install guide, proxy help and
+  installer output now include exact Codex commands for both the always-up stdio proxy and direct
+  Streamable HTTP transport.
+
+*Verification pins a sanitized response captured from the live companion backend (Claude and
+Codex, seven tiers) and derives the flattened expectations from that fixture. The live endpoint
+was compared back to the fixture after rebasing. Two deliberate mutations were also run: breaking
+the real provider parser made six checks fail, and replacing the fallback with a silent empty
+result made two fail. Both exited nonzero, were reverted, and the complete suite returned green.*
+
 ## 2.11.2 (2026-08-28)
 
 **The notice an agent gets when you open a panel on it now quotes the label its mailbox actually
