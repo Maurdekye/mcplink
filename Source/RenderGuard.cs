@@ -1,5 +1,6 @@
 using Elements.Assets;
 using Elements.Core;
+using FrooxEngine;
 
 namespace McpLink;
 
@@ -92,6 +93,39 @@ internal static class RenderGuard
                     return true;
             }
         return false;
+    }
+
+    /// <summary>
+    /// THE ONLY WAY A RENDER REACHES DISK. Renders, waits, guards, saves — one operation.
+    ///
+    /// This is deliberately a funnel rather than a convenience. The offline suite can prove the
+    /// guard WORKS but cannot prove ToolsRender CALLS it: delete an EnsureDrewSomething line and
+    /// every check still passes, which is this project's signature failure (a check that abstains
+    /// reads exactly like a pass) one level out from the bug it was written to fix.
+    ///
+    /// A test asserting "the call is present" would not fix that — it would be a source grep, and
+    /// a grep for whether a check exists abstains and reads like the check existing. So the
+    /// possibility is removed structurally instead: `Bitmap2D.Save` is not called anywhere else in
+    /// the render path, so FORGETTING THE GUARD IS NOT AN EDIT ANYONE CAN MAKE BY OMISSION.
+    /// Saving an unchecked bitmap now requires writing a new save path on purpose, which is a
+    /// conscious act rather than a tidy-up.
+    ///
+    /// Both render tools had the identical never-inspected-bitmap defect at their own
+    /// RenderToBitmap call. That is the argument for one shared path rather than two correct ones.
+    /// </summary>
+    internal static void RenderGuardedToFile(
+        World world, RenderTask task, int timeoutMs, string path, bool allowEmpty, string what)
+    {
+        var render = world.Render.RenderToBitmap(task);
+        if (!render.Wait(timeoutMs))
+            throw new TimeoutException($"{what} did not complete within {timeoutMs} ms");
+        var bitmap = render.GetAwaiter().GetResult();
+
+        EnsureDrewSomething(bitmap, world.Name, allowEmpty, what);
+
+        Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path))!);
+        if (!bitmap.Save(path, 95, preserveColorInAlpha: false))
+            throw new InvalidOperationException($"Bitmap save failed for '{path}'");
     }
 
     internal static bool AnyPixelWritten(Bitmap2D bitmap) =>

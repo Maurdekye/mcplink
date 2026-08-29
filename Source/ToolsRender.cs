@@ -114,21 +114,15 @@ internal static class ToolsRender
                 task.parameters.resolution = new int2(width, height);
                 ApplyIsolation(task, world, args);
 
-                // schedule on the render queue and block this HTTP thread (not the update thread)
-                var render = world.Render.RenderToBitmap(task);
-                if (!render.Wait(timeoutMs))
-                    throw new TimeoutException($"Render did not complete within {timeoutMs} ms");
-                var bitmap = render.GetAwaiter().GetResult();
-                // A render that drew nothing must not return the same shape as one that drew
-                // everything — see RenderGuard.
-                RenderGuard.EnsureDrewSomething(bitmap, world.Name, OptBool(args, "allowEmpty", false), "render_view");
-
                 string path = OptString(args, "path")
                               ?? Path.Combine(Path.GetTempPath(), "McpLink",
                                   $"render_{DateTime.UtcNow:yyyyMMdd_HHmmss_fff}.png");
-                Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path))!);
-                if (!bitmap.Save(path, 95, preserveColorInAlpha: false))
-                    throw new InvalidOperationException($"Bitmap save failed for '{path}'");
+
+                // Renders on the render queue (blocking this HTTP thread, not the update thread),
+                // refuses a target that was never written, then saves. Deliberately the only save
+                // path — see RenderGuard.RenderGuardedToFile.
+                RenderGuard.RenderGuardedToFile(world, task, timeoutMs, path,
+                    OptBool(args, "allowEmpty", false), "render_view");
 
                 var result = new JsonObject
                 {
@@ -236,14 +230,9 @@ internal static class ToolsRender
                     task.excludeObjects = exclude!;
 
                     int remaining = (int)Math.Max(2000, (deadline - DateTime.UtcNow).TotalMilliseconds);
-                    var render = world.Render.RenderToBitmap(task);
-                    if (!render.Wait(remaining))
-                        throw new TimeoutException($"Orbit frame {i}/{count} did not render in time");
-                    var bitmap = render.GetAwaiter().GetResult();
-                    RenderGuard.EnsureDrewSomething(bitmap, world.Name, allowEmpty, $"orbit frame {i + 1}/{count}");
                     string framePath = Path.Combine(outDir, $"orbit_{i:00}_{(int)(angle * MathX.Rad2Deg)}deg.png");
-                    if (!bitmap.Save(framePath, 95, preserveColorInAlpha: false))
-                        throw new InvalidOperationException($"Bitmap save failed for '{framePath}'");
+                    RenderGuard.RenderGuardedToFile(world, task, remaining, framePath, allowEmpty,
+                        $"orbit frame {i + 1}/{count}");
                     paths.Add(framePath);
                 }
 
