@@ -236,6 +236,72 @@ internal static class PanelChecks
             && !PromptWizard.ComposeCloseNotice(ch, selfNotice: false).Contains("FROM YOURSELF")
             && PromptWizard.ComposeCloseNotice(ch, selfNotice: true).Contains("FROM YOURSELF"));
 
+        // ---- CharterText: the markers it advertises must be the markers we actually send ----
+        //
+        // The charter tells a panel-hired agent which markers to watch for. It used to spell
+        // "[PANEL MESSAGE]" and "[PANEL CLOSED]" as PROSE LITERALS while the real mail was composed
+        // from MarkMessage/MarkClosed, with nothing binding the two and no test on the charter at
+        // all. 2.12.0 removed the duplication by composing the charter from those constants, which
+        // is the actual repair — a reword can no longer retype a marker, because it no longer types
+        // one.
+        //
+        // ⚠ SO DO NOT ASSERT CharterText.Contains(MarkMessage). Once the string is BUILT from that
+        // symbol, such a check compares the string to itself and CAN NEVER FAIL — it would pass
+        // today, pass after any future reword, and prove nothing. That is the exact instrument this
+        // channel already got burned by once: the previous provenance check pinned the half of the
+        // string that never moved and stayed green for a day while the quoted label went false.
+        //
+        // What IS still reachable is a future reword HAND-TYPING a bracketed marker again —
+        // "[PANEL DETACHED]", a mistyped "[PANEL-CLOSED]", a re-introduced literal. So assert the
+        // CLOSED SET instead of membership: every bracketed token in the charter must be one of the
+        // three constants. That has a real failure mode, and it is the only way the duplication can
+        // come back.
+        static System.Collections.Generic.List<string> BracketTokens(string s) =>
+            System.Text.RegularExpressions.Regex.Matches(s, @"\[[A-Z][A-Z ]*\]")
+                .Select(m => m.Value).ToList();
+
+        var knownMarkers = new[] { PromptWizard.MarkOpened, PromptWizard.MarkMessage, PromptWizard.MarkClosed };
+
+        // CONTROL FIRST: an extractor that matches nothing passes the closed-set check identically
+        // to a correct one, so prove it can find tokens AND reject a bogus one before believing it.
+        Check("CONTROL: the bracket-token extractor finds tokens and tells good from bogus", () =>
+        {
+            const string fixture = "watch for [PANEL MESSAGE] and also [PANEL FROZEN] ok";
+            var found = BracketTokens(fixture);
+            return found.Count == 2
+                && found.Contains(PromptWizard.MarkMessage)
+                && found.Count(t => !knownMarkers.Contains(t)) == 1   // exactly one rejected
+                && BracketTokens("no brackets at all here").Count == 0;
+        });
+
+        Check("CharterText contains NO bracketed marker outside the three Mark* constants", () =>
+        {
+            var tokens = BracketTokens(PromptWizard.CharterText);
+            // non-empty guards the vacuous pass: a charter that mentioned no marker at all would
+            // satisfy "every token is known" trivially, while telling the agent nothing to watch for
+            return tokens.Count > 0 && tokens.All(t => knownMarkers.Contains(t));
+        });
+
+        // The charter's promise has to match what the composer actually emits. Both derive from the
+        // same constants today, so this cannot drift while that holds — its job is to fail if a
+        // later change makes either side hardcode its own marker again.
+        Check("the markers the charter advertises are the ones the notices really open with", () =>
+        {
+            var tokens = BracketTokens(PromptWizard.CharterText);
+            return tokens.Contains(PromptWizard.MarkMessage)
+                && tokens.Contains(PromptWizard.MarkClosed)
+                && PromptWizard.ComposeCloseNotice(ch, selfNotice: false)
+                       .StartsWith(PromptWizard.MarkClosed, System.StringComparison.Ordinal)
+                && PromptWizard.ComposeOpenNotice(ch, selfNotice: false)
+                       .StartsWith(PromptWizard.MarkOpened, System.StringComparison.Ordinal);
+        });
+
+        // Prose, so no constant can pin it: a closed panel does NOT mean the agent was fired.
+        // Agents have historically read it that way, which is why the sentence is load-bearing.
+        Check("CharterText still says a closed panel leaves the agent HIRED", () =>
+            PromptWizard.CharterText.Contains("you remain hired")
+            && PromptWizard.CharterText.Contains("RESPONSE HANDLE"));
+
         // ---- the fallback. A fallback that has never executed is not a fallback. ----
         Check("delivery: the notice path succeeding means the waking mail is NEVER sent", () =>
         {
