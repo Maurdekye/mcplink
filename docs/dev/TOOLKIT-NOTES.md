@@ -1573,3 +1573,32 @@ the false-negative-on-VERIFICATION risk are the same missing leg, mirrored. Used
 `scratch/resonite/panel-continuity/mojibake-scan.ps1` (pure-ASCII source, detector built from
 character codes at runtime, refuses to scan if its own controls fail) rather than rolling a
 second one — see its header for why the source purity constraint exists.
+
+---
+
+## The wizard panel's chrome slot was renamed in 2.12.2: `FrameRing` → `ProviderRing`
+
+**Measured 2026-08-29 against deployed 2.12.2** (`g73786923c92a`). The Prompt Agent panel's
+provider-chrome child slot is called **`ProviderRing`**. Up to and including 2.11.2 it was
+**`FrameRing`** — the panel's direct children were `FrameBacking` / `TierBar` / `FrameRing` /
+`Image`, and are now `FrameBacking` / `TierBar` / `ProviderRing` / `Image`.
+
+**Why this is worth a note rather than a shrug.** A `find_components` / `find_slots` query keyed on
+`FrameRing` against a 2.12.2 panel returns **an empty result and a success status**. Nothing errors.
+You get `count: 0` and a clean-looking response, which reads as "the panel has no such thing" or
+"the panel didn't build" rather than "you used last version's name". **A lookup that returns empty
+and reports success is this project's standing failure shape wearing a new hat** — and here it will
+point you at the panel-construction code, which is fine, instead of at your query, which is not.
+
+Both names in one line so a future grep for either finds this entry:
+`FrameRing` (≤ 2.11.2) = `ProviderRing` (≥ 2.12.2), the provider-chrome ring.
+
+### Rule
+
+- **Pair a name-keyed panel lookup with a control**: list the panel's children (`ls` on the wizard
+  root) and confirm the name you are about to query is actually in that list. Zero hits only means
+  something once you have shown the query can produce hits.
+- The colour on it is **authored data**, so `get_component` / `reflect_get` reads the exact value in
+  **any** world including `Local` — no rendering, no user-visible spawn. Only "does it look right in
+  real lighting" needs a renderable world. Measured this way on 2.12.2: `ProviderRing` tint is
+  `#159ACD` on luna/terra/sol and `#D97757` on the Claude tiers, with `TierBar` distinct on all five.

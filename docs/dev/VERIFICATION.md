@@ -1,37 +1,95 @@
 # Live verification — v0.6 → v1.3 (updated 2026-07-18)
 
-## 2.12.1 — render-empty guard — **NOT YET LIVE-VERIFIED** (built 2026-08-29)
+## 2.12.1 — render-empty guard — **LIVE PASS 2026-08-29** ✅
 
-⚠ **This is the ONE thing the offline suite cannot reach, so it is not optional.** The suite
-exercises `RenderGuard` directly and is mutation-proven in both directions (14 checks; guard-never-
-fires → 3 red, guard-always-fires → 6 red, override-ignored → exactly 1 red, baseline and
-post-revert both 368/0, measured against the 2.12.0 base).
+**Scope of this pass, stated so it cannot be read as more than it is.** Live-verified against
+**deployed 2.12.2** (`g73786923c92a`, mvid `79defb3a`, `deployConsistent: true`, both slots
+`matchesRunning`): the guard fires from inside the shipped tool, on **both** the forced and the
+measured-empty branches, with a known-positive control and a working `allowEmpty` escape.
+**The panel's visual appearance is a separate gate and remains OPEN** — see *Prompt Agent panel —
+never visually observed* immediately below; nobody has yet looked at a Prompt Agent panel with
+their eyes. Nothing here speaks to that.
 
-**The wiring is handled structurally rather than by a test.** `RenderGuardedToFile` is the only
-path from a render to disk — `Bitmap2D.Save` appears nowhere else in the render path — so an
-unguarded save is not an edit anyone can make by omission. That closes "someone deletes the guard
-call", which no test could have covered without becoming a source grep.
+Verified on 2.12.2 rather than 2.12.1 because the game stayed closed across both deploys, so 2.12.1
+went to disk and was superseded without ever running. 2.12.2 contains this code unchanged.
 
-**What remains unobserved is the end-to-end behaviour: nobody has seen the guard refuse from inside
-a running game.** Construction argues it must; only the run below shows it.
+⚠ **The override was left UNSET, and verified unset afterwards** (read back as `<unset>` in a
+separate call). A machine left in a forced-refusal state would look exactly like a fresh bug to
+whoever hit it next.
 
-Run after the build is deployed (no game restart needed — the override is read per call):
+### What was run
 
-1. `eval`: `Environment.SetEnvironmentVariable("MCPLINK_RENDER_FORCE_EMPTY", "1")`
-2. `render_view` on **userspace** — a world MEASURED to render (44,630 distinct colours on
-   2026-08-29). It must now **refuse**, and the refusal must name `MCPLINK_RENDER_FORCE_EMPTY`.
-   ⇒ proves the guard is wired into the live path and can say NO.
-3. `eval`: `Environment.SetEnvironmentVariable("MCPLINK_RENDER_FORCE_EMPTY", null)`
-4. the same `render_view` must now **succeed with real pixels**.
-   ⇒ **the known-positive control.** Without step 4, step 2 only proves `render_view` can fail for
-   *some* reason — possibly one having nothing to do with this guard.
-5. Optional, the original defect end to end: `render_view` on the **`Local`** world must refuse
-   *without* the override set. (Recorded as strongly indicated rather than proven that `Local` is
-   unrenderable — see `TOOLKIT-NOTES.md`. If `Local` ever renders normally, this step passing
-   would be wrong; step 2's forced leg is the load-bearing one.)
+| # | step | result |
+|---|---|---|
+| 0 | baseline `render_view` on userspace | real, mode RGB, **34,255** distinct RGBA |
+| 1 | `eval` set `MCPLINK_RENDER_FORCE_EMPTY=1` | read back as `1` |
+| 2 | `render_view` userspace | **REFUSED**, message names the variable and says FORCED |
+| 3 | `eval` unset | read back as `<null/unset>` |
+| 4 | `render_view` userspace | real again, **34,240** distinct RGBA |
+| 5 | `render_view` on **`Local`**, no override | **REFUSED**: "every one of the 480x360 pixels is exactly (0,0,0,0)" |
+| 6 | same render with `allowEmpty: true` | **SUCCEEDS**, returns the all-transparent frame (mode RGBA, 1 distinct) |
 
-**Do not record this as passed on the strength of the offline suite.** Structure is not the gate —
-the same distinction that keeps the wizard-panel observation gate open below.
+### Why steps 5 and 6 are what earn the pass
+
+**Step 2 alone proves only that the guard can fire when forced — which a permanently stuck-on guard
+would also do.** Step 4 rules that out, but only for the forced branch.
+
+**Step 5 exercised the NON-FORCED branch, on the original defect, and produced a different, measured
+message.** So the two branches are demonstrated live *and are distinguishable from each other* —
+you can tell a real refusal from a forced one by reading it. **A guard is not verified until you
+have seen it refuse for the real reason, not just the forced one.**
+
+**Step 6 matters because the refusal advertises `allowEmpty` as the way out.** A refusal pointing at
+a dead end is worse than no refusal — it sends the reader somewhere that does not work.
+
+Also note step 5 settles what `TOOLKIT-NOTES.md` could only record as *strongly indicated*: the
+`Local` world really does produce a never-written target, and the shipped build now says so by
+measurement instead of returning a white-looking image.
+
+### Backing evidence (not a substitute for the above)
+
+Offline suite: 14 `RenderGuard` checks, mutation-proven in both directions — guard-never-fires → 3
+red, guard-always-fires → 6 red, override-ignored → exactly 1 red, baseline and post-revert both
+368/0 against the 2.12.0 base.
+
+Wiring is structural, not tested: `RenderGuardedToFile` is the only path from a render to disk —
+`Bitmap2D.Save` appears nowhere else in the render path — so an unguarded save is not an edit
+anyone can make by omission. That closes "someone deletes the guard call", which no test could have
+covered without becoming a source grep.
+
+To re-run this procedure later, steps 0–6 above are the procedure; no game restart is needed
+because the override is read per call.
+
+## Prompt Agent panel — never visually observed — **OPEN**
+
+**No human has ever looked at a Prompt Agent panel.** It has been spawned, driven and read many
+times; it has never been *seen*. This is the oldest open item here and it is deliberately not
+closeable by any amount of structural evidence.
+
+**What is already established, so nobody re-does it:**
+
+- The panel **builds**. Measured 2026-08-29: active, tagged `McpLinkPromptWizard`, with
+  `GenericUIContainer` / `Canvas` / `RectTransform` / `BoxCollider` / `Grabbable` /
+  `SpriteProvider`, children `FrameBacking` / `TierBar` / `ProviderRing` / `Image`, scale `0.00075`
+  (the canvas-scale footgun handled), and `bounds` of 0.858 × 0.863 × 0.087 m of **active**
+  renderer/collider geometry.
+- Its **colours are correct as authored data** (2.12.2): `ProviderRing` `#159ACD` on luna/terra/sol,
+  `#D97757` on the Claude tiers, `TierBar` distinct on all five, and the ring reverts when you
+  return to a Claude tier — so the chrome is provider-driven, not tier-driven.
+
+**None of that is the gate.** "Builds" and "is visible to a human" are different claims, and the
+reason this gate exists is that we have shipped the first while believing the second. What remains
+is only a judgement a person makes with their eyes: does the panel render, does the chrome read as
+the intended blue in real lighting, is the tier bar visibly distinct.
+
+**Why it stays open — it is blocked on solitude, not on work.** The only two venues that render are
+both user-visible: userspace puts a panel ~0.7 m in the user's face, and the focused world may be a
+session they are a guest in. `Local` is not an option — it does not render at all (that is the very
+defect the 2.12.1 guard now refuses). Standing ruling: **opportunistic — take it when the user is
+next alone in a world, never spawn into a shared session.** One panel, one look, then destroy it.
+
+⚠ **Do not fold this into a release sign-off.** A version can ship, deploy and be live-verified for
+everything else while this stays open; that has now happened across several.
 
 ## v1.6 — camera isolation — LIVE PASS 2026-07-26 ✅
 
