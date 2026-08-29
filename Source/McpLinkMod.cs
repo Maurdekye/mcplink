@@ -7,11 +7,11 @@ namespace McpLink;
 /// McpLink — a standalone MCP (Model Context Protocol) server running inside the Resonite
 /// process. Unlike ResoniteLink-based bridges it needs no per-session enabling, works in any
 /// world (including Userspace), and can reach non-synced engine state via reflection.
-/// Connect with: claude mcp add --transport http mcplink http://localhost:7357/mcp
+/// Connect any Streamable HTTP MCP client to http://localhost:7357/mcp.
 /// </summary>
 public class McpLinkMod : ResoniteMod
 {
-    public const string VERSION = "2.12.2";
+    public const string VERSION = "2.13.0";
 
     public override string Name => "McpLink";
     public override string Author => "Maurdekye";

@@ -78,7 +78,7 @@ internal static class PromptWizard
 
     // Compatibility fallback for an offline/pre-provider backend. A live modern backend owns
     // this catalog through GET /api/providers; keeping only the legacy Claude family here means
-    // McpLink never invents provider availability or lets a stale Codex table drift from orgtree.
+    // McpLink never invents provider availability or lets a stale non-Claude table drift from orgtree.
     private static readonly OrgtreeClient.ProviderTier[] LegacyTiers =
     [
         new("haiku", 1, "claude", "Claude", "H", true, null),
@@ -398,7 +398,7 @@ internal static class PromptWizard
             "'(top level)'} picks the hire parent (retired rows need their parent's list expanded first); " +
             "'expand' {row: node id or '(top level)'} toggles that node's retired-agents list; " +
             "'tier' {tier} sets any currently hireable tier advertised by orgtree's /api/providers " +
-            "catalog (for example haiku/sonnet/opus/fable or luna/terra/sol); " +
+            "catalog; " +
             "'effort' {effort: default|low|medium|high|xhigh|max} sets the thinking effort (rides the hire " +
             "in stage 1, applied immediately to a live agent in stage 2); 'create' presses Create (immediate " +
             "hire); 'open' opens the panel as a WINDOW onto the SELECTED existing agent — a view of the " +
@@ -753,7 +753,7 @@ internal static class PromptWizard
     }
 
     /// <summary>The orgtree-node look (frontend .sq card): provider-colored desk chrome on all
-    /// sides and a thick tier-colored TOP bar. Codex is blue, Claude is terracotta; the tier
+    /// sides and a thick tier-colored TOP bar. Provider identity lives in this ring; the tier
     /// retains its own distinct hue. Three stacked rounded panels behind the window
     /// background: tier color (full, shows only as the top strip + top corners) → provider line
     /// (inset from the top by the bar) → the background panel inset by the ring on the other
@@ -1036,7 +1036,7 @@ internal static class PromptWizard
         Task.Run(async () =>
         {
             // Fetch together: a healthy org list beside a broken provider catalog is NOT Ready.
-            // The latter must remain visible as a degraded state or Codex silently disappears.
+            // The latter must remain visible as a degraded state or non-Claude providers disappear.
             var orgTask = OrgtreeClient.ListOrgsAsync();
             var tierTask = OrgtreeClient.ListProviderTiersAsync();
             await Task.WhenAll(orgTask, tierTask).ConfigureAwait(false);
@@ -1074,7 +1074,8 @@ internal static class PromptWizard
     }
 
     internal static string ProviderCatalogFallbackNotice(string error) =>
-        "Provider catalog unavailable — showing legacy Claude-only tiers; Codex tiers are hidden. " +
+        "Provider catalog unavailable — showing an unfiltered legacy Claude-only fallback; " +
+        "registration status is unknown and non-Claude tiers are hidden. " +
         $"({error})";
 
     /// <summary>The compatibility branch used by the UI and exercised directly by the offline
@@ -1162,8 +1163,13 @@ internal static class PromptWizard
         public long Order;
     }
 
-    // The orgtree frontend's own tier palette (styles.css --tier-*). Codex's
-    // provider identity lives in the provider chrome, NOT in these tier hues.
+    // The orgtree frontend's own tier palette (styles.css --tier-*). Provider identity lives in
+    // the provider chrome, NOT in these tier hues.
+    internal const uint GeminiFlashTierRgb = 0xAEE2F9;
+    internal const uint GeminiProTierRgb = 0x6B45D6;
+    internal static readonly colorX GeminiFlashTierColor = RgbColor(GeminiFlashTierRgb);
+    internal static readonly colorX GeminiProTierColor = RgbColor(GeminiProTierRgb);
+
     internal static colorX TierColor(string? tier) => tier switch
     {
         "haiku" => new colorX(0.310f, 0.839f, 0.639f, 1f),
@@ -1173,6 +1179,8 @@ internal static class PromptWizard
         "luna" => new colorX(0.725f, 0.769f, 0.839f, 1f),  // #b9c4d6
         "terra" => new colorX(0.498f, 0.682f, 0.373f, 1f), // #7fae5f
         "sol" => new colorX(1.000f, 0.541f, 0.239f, 1f),   // #ff8a3d
+        "flash" => GeminiFlashTierColor,
+        "pro" => GeminiProTierColor,
         _ => new colorX(0.55f, 0.58f, 0.62f, 1f), // top level / unknown tier
     };
 
@@ -1180,6 +1188,8 @@ internal static class PromptWizard
     // colorX instead of duplicating its channels; exact post-deploy state is verified live.
     internal const uint CodexProviderChromeRgb = 0x159ACD;
     internal static readonly colorX CodexProviderChrome = RgbColor(CodexProviderChromeRgb);
+    internal const uint GeminiProviderChromeRgb = 0x5F6FDB;
+    internal static readonly colorX GeminiProviderChrome = RgbColor(GeminiProviderChromeRgb);
 
     private static colorX RgbColor(uint rgb) => new(
         ((rgb >> 16) & 0xff) / 255f,
@@ -1187,11 +1197,12 @@ internal static class PromptWizard
         (rgb & 0xff) / 255f,
         1f);
 
-    // Provider chrome: Claude terracotta, Codex blue.
+    // Provider chrome: Claude terracotta, Codex blue, Gemini blue-violet.
     internal static colorX ProviderColor(string? provider) => provider switch
     {
         "claude" => new colorX(0.851f, 0.467f, 0.341f, 1f), // #d97757
         "openai" => CodexProviderChrome,
+        "google" => GeminiProviderChrome,
         _ => NeutralBorder,
     };
 
@@ -1207,6 +1218,7 @@ internal static class PromptWizard
         {
             "haiku" or "sonnet" or "opus" or "fable" => "claude",
             "luna" or "terra" or "sol" => "openai",
+            "flash" or "pro" => "google",
             _ => null,
         };
     }
@@ -3819,8 +3831,8 @@ internal static class PromptWizard
         "as user mail (the first carries full context, live object references as engine RefIDs, and a " +
         "RESPONSE HANDLE address) — everything you orgtree_message to that handle appears on the panel " +
         "immediately, like chat. Use the MCP tools actually granted to you by orgtree; McpLink is the " +
-        "live-game server. Client-visible tool names and discovery controls differ between Codex and " +
-        "Claude Code, so inspect your real tool catalog instead of assuming ToolSearch or an mcp__ " +
+        "live-game server. Client-visible tool names and discovery controls differ between agent clients, " +
+        "so inspect your real tool catalog instead of assuming ToolSearch or an mcp__ " +
         "name exists. If no McpLink tools are present, say so plainly rather than claiming live-game " +
         "verification. The legacy mcp__resonite__* server is deprecated; never use it. Ground engine " +
         "claims with the granted ilspy-mcp server against the DLLs in the game folder root. " +

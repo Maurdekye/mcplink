@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """mcplink_proxy — always-up stdio MCP shim in front of McpLink's in-game HTTP server.
 
-MCP clients such as Codex and Claude Code spawn this per session (stdio transport),
+MCP clients such as Codex, Gemini CLI and Claude Code spawn this per session (stdio transport),
 so the `mcplink` MCP server is always "connected" even when Resonite is closed:
 
   - initialize / ping    -> answered locally, always succeed
