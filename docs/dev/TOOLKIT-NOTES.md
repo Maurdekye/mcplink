@@ -1356,3 +1356,63 @@ will read as *wholly* true after one of them decays. Ours claimed the addressing
 relationship label both fell through Orgtree's sibling clause. The label got an explicit self branch;
 the permission did not. Splitting the claim was the repair — **when half a compound claim dies, the
 sentence does not announce it.**
+
+## 2026-08-29 — ⚠ `grep <symbol> test/` FINDS YOUR OWN BUILD OUTPUT AND READS AS COVERAGE
+
+**Searching a build-output directory for evidence that a test exists is a trap, and it fails in the
+direction that reassures you.** Measured here on `CharterText`, which at the time had **no test at
+all**:
+
+```
+$ grep -rn "CharterText" test/
+Binary file test/bin/Debug/net10.0/McpLink.dll matches
+Binary file test/bin/Release/net10.0/McpLink.dll matches
+$ echo $?
+0
+```
+
+Two matches and **exit 0**. Every surface signal says *covered*. Both "matches" are the compiled
+assembly — the string is in the DLL because it is in the SOURCE the DLL was built from. The search
+found the code under test, not a test of it.
+
+**Restrict to source, and the honest answer appears:**
+
+```
+$ grep -rn "CharterText" --include=*.cs test/   # → nothing, exit 1
+$ grep -rln "ComposeOpenNotice" --include=*.cs test/   # CONTROL → test/PanelChecks.cs
+```
+
+The control is the necessary half: it proves the corrected command *can* find a symbol that really
+is tested, so the empty result above is a **real absence** rather than a typo'd pattern or a wrong
+directory.
+
+### Why this one is nastier than the usual abstention
+
+The house rule is *a check that abstains reads exactly like a pass*. This is one level up: **the
+search for whether a check exists abstained, and read like the check existing.** You are not
+misreading a test result — you are being told a test is there when nothing is.
+
+**And the exit codes invert, which is what makes it dangerous in a script.** The WRONG command
+succeeds (`0`, matches found); the RIGHT command "fails" (`1`, no matches). So the natural
+idiom does exactly the wrong thing:
+
+```
+if grep -q "$sym" test/; then echo "covered"; fi     # ← reports covered when nothing tests it
+```
+
+### Rules
+
+- **Never search `test/` bare.** Use `--include=*.cs` (or `--exclude-dir={bin,obj}`). Same for
+  `Source/` — `bin/` and `obj/` sit under both.
+- **A binary match is never evidence of a test.** If the output says `Binary file … matches`, you
+  have learned that your build output contains your source. Discard it.
+- **Pair every "is this covered?" search with a control** naming a symbol you know is tested. Absence
+  of matches only means something once you have shown the command can produce matches.
+- Coverage is `Check("...", () => ...)` calling the symbol. Confirm you can SEE that call before
+  believing coverage exists.
+
+**Found the day after** the entry above it, while checking whether a peer's imminent reword of
+`CharterText` was protected. It was not — the charter hardcoded `[PANEL MESSAGE]` / `[PANEL CLOSED]`
+as prose while the real mail composed from the `Mark*` constants, with nothing binding them. Had the
+naive grep been believed, that reword would have shipped telling every panel-hired agent to watch
+for a marker that never arrives, suite green.
