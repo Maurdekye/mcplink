@@ -1519,3 +1519,57 @@ expecting "not a texture", but `Root` *holds* textures, so the tool correctly re
 control whose status was the very thing under test — exactly what `CONTRIBUTING.md` warns about.
 Replaced with constructed ones (a fabricated RefID, and a component type that genuinely has no
 texture in its subtree).
+
+---
+
+## 2026-08-29 — a mojibake scanner that caught 2 of 5 patterns reported "28"; the real count was 62
+
+Assigned to repair reported mojibake in `docs/dev/VERIFICATION.md` (28) and `CHANGELOG.md` (1).
+Re-measuring first (required before touching either file) found both counts wrong, in opposite
+directions.
+
+**`VERIFICATION.md` was undercounted by more than half.** The file is a *mix* — genuine corruption
+sitting alongside plenty of already-correct special characters (27 correct em-dashes, 55 correct
+arrows) — and the true count was **62 across five distinct byte-level patterns**, not one. Each is
+the same mechanism as the em-dash case documented above (a UTF-8-encoded character's bytes
+re-decoded as CP1252, re-saved as UTF-8), just with a different source character:
+
+| original | UTF-8 bytes | mojibake (codepoints) | count |
+|---|---|---|---|
+| `—` U+2014 | E2 80 94 | U+00E2 U+20AC U+201D | 28 |
+| `→` U+2192 | E2 86 92 | U+00E2 U+2020 U+2019 | 28 |
+| `≥` U+2265 | E2 89 A5 | U+00E2 U+2030 U+00A5 | 4 |
+| `×` U+00D7 | C3 97 | U+00C3 U+2014 | 1 |
+| `⚠️` U+26A0 U+FE0F | E2 9A A0 EF B8 8F | U+00E2 U+0161 U+00A0 U+00EF U+00B8 U+008F | 1 |
+
+28 + 28 = 56, and **either category alone equals the reported "28"** — the scanner that produced
+that number almost certainly matched one pattern (dash or arrow) and silently missed the other
+three. In a file that's mostly correct text, that reads as "mostly clean," not as a failure — the
+exact abstains-not-fails shape this project keeps re-discovering. Verified with a byte-level decode
+of a live sample before writing the table above, not derived from memory.
+
+**Fixed:** `docs/dev/VERIFICATION.md` now scans `mojibake=0, bom=False` (was `62, True`); real
+em-dash/arrow counts *increased* by the corrected amounts (36→63 em-dashes — net +27, not +28,
+because the `×` pattern's second byte is itself a stray U+2014 that the `×` fix consumes; 58→86
+arrows, +28 exactly) rather than collapsing to zero, which is what a repair that flattened every
+special character to ASCII would have produced while *also* reporting a clean scan. Both counted,
+per `CONTRIBUTING.md`'s "verify the artifact" rule.
+
+**`CHANGELOG.md`'s reported "1" was a false positive — not undercounted, mis-typed.** Its one hit
+(line ~921 at time of writing; line numbers shift as entries are prepended) is the 1.7.1 entry
+quoting this exact bug's symptom — the codepoint pair U+00E2 U+20AC, same as the specimen the
+2026-08-28 entry above already documents and pins (its own line is *also* a legitimate hit for the
+same reason, by design). **Left unrepaired**, on purpose. Deliberately **not re-quoting the
+mojibake string itself here** — this note references it by codepoint instead of by literal, so
+appending it doesn't add a third specimen for the next scan to explain.
+
+**The control shape that made this decidable rather than a guess:** a **positive** control
+(bytes reproduced via `CP1252.GetString(UTF8.GetBytes(sample))` — not typed mojibake, which a
+shell or editor can silently "fix" or re-break in transit — must be detected) **and** a
+**negative** control (the same sample, un-mangled, must score zero) run *before* trusting any
+count. A scanner with only the positive leg would look identical whether it correctly detects
+corruption or simply flags every non-ASCII character — the false-positive-on-CHANGELOG risk and
+the false-negative-on-VERIFICATION risk are the same missing leg, mirrored. Used
+`scratch/resonite/panel-continuity/mojibake-scan.ps1` (pure-ASCII source, detector built from
+character codes at runtime, refuses to scan if its own controls fail) rather than rolling a
+second one — see its header for why the source purity constraint exists.

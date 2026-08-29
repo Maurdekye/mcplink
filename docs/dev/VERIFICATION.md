@@ -1,4 +1,4 @@
-﻿# Live verification — v0.6 → v1.3 (updated 2026-07-18)
+# Live verification — v0.6 → v1.3 (updated 2026-07-18)
 
 ## 2.12.1 — render-empty guard — **NOT YET LIVE-VERIFIED** (built 2026-08-29)
 
@@ -181,106 +181,106 @@ some action, plus a DynamicVariableInput node and a Sequence with 2+ Calls) so a
 Expected: `session_info` works and `tools/list` reports **85 tools** (81 through v0.9.1 + the
 v0.10 wave: `export_package`, `import_package`, `user_avatar`, `edit_list`).
 
-## RESULTS 2026-07-09 (fresh "Base" testing world, scripted battery â€” scratchpad verify.py)
+## RESULTS 2026-07-09 (fresh "Base" testing world, scripted battery — scratchpad verify.py)
 
 Run against the **0.10.0** build: **66/72 checks PASS**, including the ENTIRE v0.9.1 impulse
 wave (crash regression, group executions, dynamic bus tap, long-poll early return, hookErrors 0,
-unpatch/re-patch cycle Ã—2) and the v0.10 wave (package round-trip + zip structure + corrupt-file
+unpatch/re-patch cycle ×2) and the v0.10 wave (package round-trip + zip structure + corrupt-file
 rejection, user_avatar with avatar + 2 equipped tools + grabbed object, all edit_list ops +
 SyncFieldList values + out-of-range rejection). The 6 fails decomposed into 3 REAL BUGS (fixed
 for 1.0.0, below), 2 test-tolerance issues (lazily-initialized `_unlit` asset refs diff as
-ref:null on a fresh copy â€” expected transient; scripted Position write), and 1 async-undo timing
-(engine list-undo restore is async â€” poll before asserting).
+ref:null on a fresh copy — expected transient; scripted Position write), and 1 async-undo timing
+(engine list-undo restore is async — poll before asserting).
 
 **1.0.0 fixes found by this pass:**
 1. `{"$ref":...}` writes via set_member/update_component/bulk_build failed ("not assignable to
-   RefID") â€” IField case matched before ISyncRef (SyncRef implements IField<RefID>); the bare
+   RefID") — IField case matched before ISyncRef (SyncRef implements IField<RefID>); the bare
    "ID..." string form worked via RefID.Parse and had masked it. Cases reordered.
-2. `colorX` from `[r,g,b,a]` â†’ "Cannot decode a JSON array" (colorX's public fields are
-   value+profile, not 4 floats) â€” decoder now falls back to a constructor of matching arity.
-3. `history` NullReferenceException when an undo entry's target was destroyed â€” per-entry
+2. `colorX` from `[r,g,b,a]` → "Cannot decode a JSON array" (colorX's public fields are
+   value+profile, not 4 floats) — decoder now falls back to a constructor of matching arity.
+3. `history` NullReferenceException when an undo entry's target was destroyed — per-entry
    try/catch, degrades to type-only entries.
 
 **Learned (test-side, worth remembering):**
-- ProtoFlux string constants are `ValueObjectInput<string>` â€” `ValueInput<T>` is unmanaged-only.
+- ProtoFlux string constants are `ValueObjectInput<string>` — `ValueInput<T>` is unmanaged-only.
 - `DynamicImpulseReceiver.Tag` is a globalRef (`SyncRef<IGlobalValueProxy<string>>`), NOT an
-  input port â€” attach `GlobalValue<string>` on the node slot and point Tag at it.
-- Receivers match on the BUILT node proxy's tag (`DynamicImpulseHelper` decompile) â€” the world
+  input port — attach `GlobalValue<string>` on the node slot and point Tag at it.
+- Receivers match on the BUILT node proxy's tag (`DynamicImpulseHelper` decompile) — the world
   rebuilds ProtoFlux before dispatch, so raw-attached nodes work.
 
 - [ ] FINAL: rerun the battery on the deployed **1.0.0** (adds the `{"$ref"}`-write and
-      colorX-array checks) â†’ expect all green.
+      colorX-array checks) → expect all green.
 
 ## RESULTS 2026-07-07 (Maurdekye's session, port 7357)
 
-- **v0.6 â€” PASS (all).** logs (tail/level/pattern/sinceSeq); watch_changes coalescing with counts
+- **v0.6 — PASS (all).** logs (tail/level/pattern/sinceSeq); watch_changes coalescing with counts
   + structural events (childAdded/componentAdded) + auto-subscription of new children; `changes
-  waitMs` long-poll blocks on empty and returns early on event; save_objectâ†’load_object round-trip
+  waitMs` long-poll blocks on empty and returns early on event; save_object→load_object round-trip
   (.brson + .json); undo/redo with confirmed value revert; history shows the McpLink batch stack;
   marker (sphere+label, verified in render); notify; jump_user (head moved to target); user_pointer
   (head pose + per-hand tip/laser/holding); render_view `user:"local"`; export_asset.
-- **v0.7 â€” PASS (all).** eval: 1.33 s Roslyn warmup then ~0.35 s; world-thread `resolve()`+mutate,
+- **v0.7 — PASS (all).** eval: 1.33 s Roslyn warmup then ~0.35 s; world-thread `resolve()`+mutate,
   `log()` capture, `vars` persistence across calls, runtime-exception surfacing (game unaffected).
-  import_fileâ†’export_asset **byte-identical** round-trip. inventory (root + object records with
+  import_file→export_asset **byte-identical** round-trip. inventory (root + object records with
   resrec URIs). spawn_object by `resrec:///U-.../R-...`. find_assets grouped by URL.
-- **v0.8 â€” PASS (all).** diff: `identical:true` on a `cp` duplicate (remap-awareness proven),
-  precise member diff on a moved/edited copy. xargs dryRunâ†’live sweep (3/3). at/jobs (fired on
-  schedule, statusâ†’done with result). top (hotspot ranking + totals). mv (keepGlobalTransform).
-  orbit_render (4 frames, object framed â€” verified in image). chunked tar exact slot/component
+- **v0.8 — PASS (all).** diff: `identical:true` on a `cp` duplicate (remap-awareness proven),
+  precise member diff on a moved/edited copy. xargs dryRun→live sweep (3/3). at/jobs (fired on
+  schedule, status→done with result). top (hotspot ranking + totals). mv (keepGlobalTransform).
+  orbit_render (4 frames, object framed — verified in image). chunked tar exact slot/component
   match vs atomic (10237 slots / 20365 components).
-- **v0.9.0 â€” FAILED, CRASHED THE GAME.** See below. Fixed in v0.9.1 (deployed 21:00).
+- **v0.9.0 — FAILED, CRASHED THE GAME.** See below. Fixed in v0.9.1 (deployed 21:00).
 
-## v0.9 â€” impulse streams â€” RE-VERIFY AGAINST v0.9.1 (deployed 21:00, restart required)
+## v0.9 — impulse streams — RE-VERIFY AGAINST v0.9.1 (deployed 21:00, restart required)
 
-âš ï¸ **v0.9.0 hard-crashed Resonite.** Root cause: it Harmony-patched *constructed generic* methods
+⚠️ **v0.9.0 hard-crashed Resonite.** Root cause: it Harmony-patched *constructed generic* methods
 (`ExecutionRuntime<FrooxEngineContext>.Execute`, `DynamicImpulseHelper.TriggerDynamicImpulse<Proxy>`).
-Patching a constructed generic is doubly broken â€” inert for organic calls (CLR shares one
+Patching a constructed generic is doubly broken — inert for organic calls (CLR shares one
 canonical body across reference-type instantiations) AND executing the detoured stub kills the
 process. v0.9.1 patches only NON-generic methods (per-GROUP granularity now). Confirm before
-anything else: the deployed DLL is the â‰¥21:00 build, and `impulse_watch` reports `groupsWatched`.
+anything else: the deployed DLL is the ≥21:00 build, and `impulse_watch` reports `groupsWatched`.
 
-- [ ] `impulse_watch` on a small gadget â†’ `patchesApplied:true`, `groupsWatched â‰¥ 1`, log shows
+- [ ] `impulse_watch` on a small gadget → `patchesApplied:true`, `groupsWatched ≥ 1`, log shows
       "hooks patched". **Game must NOT crash** (this is the crash regression test).
-- [ ] `fire` a CallInput/action in scope, or trigger the gadget â†’ `impulse_events` shows a
+- [ ] `fire` a CallInput/action in scope, or trigger the gadget → `impulse_events` shows a
       `groupExecute`/`groupExecuteAsync`/`groupEvents` entry for that group with a sane `tMs`.
-- [ ] Dynamic tap: `dynamic_impulse` (untyped) into scope â†’ a `dynamicImpulse` event with tag +
-      receiver count. (Typed WithValue sends are NOT tapped â€” receivers still show as groupExecute.)
-- [ ] `impulse_events waitMs:10000` long-poll + trigger â†’ returns early with the trace.
+- [ ] Dynamic tap: `dynamic_impulse` (untyped) into scope → a `dynamicImpulse` event with tag +
+      receiver count. (Typed WithValue sends are NOT tapped — receivers still show as groupExecute.)
+- [ ] `impulse_events waitMs:10000` long-poll + trigger → returns early with the trace.
 - [ ] `hookErrors` stays 0 throughout.
-- [ ] `impulse_unwatch all` â†’ log shows "hooks removed", `patched:false`; frame rate unchanged
+- [ ] `impulse_unwatch all` → log shows "hooks removed", `patched:false`; frame rate unchanged
       (perf) before/during/after; a second `impulse_watch` re-patches cleanly.
-- [ ] Set `enableHooks:false` in mod config â†’ `impulse_watch` refuses politely.
+- [ ] Set `enableHooks:false` in mod config → `impulse_watch` refuses politely.
 
-## v0.10 â€” packages + avatar â€” NOT YET LIVE-VERIFIED (deployed 2026-07-09, restart required)
+## v0.10 — packages + avatar — NOT YET LIVE-VERIFIED (deployed 2026-07-09, restart required)
 
 Offline smoke suite passes (84 tools, schemas valid); the engine-touching paths need a live pass:
 
-- [ ] `export_package` on a small textured gadget â†’ file exists, `assetsPackaged â‰¥ 1`; the file
+- [ ] `export_package` on a small textured gadget → file exists, `assetsPackaged ≥ 1`; the file
       opens as a zip (it's the RecordPackage container) with `R-Main` record + assets.
-- [ ] `import_package` of that file into a scratch slot â†’ hierarchy + textures restored, refs
+- [ ] `import_package` of that file into a scratch slot → hierarchy + textures restored, refs
       intact (compose with `diff` against the original: expect only RefID-remap-invisible identity).
-- [ ] Cross-check with the game: drag-drop the exported file into Resonite â†’ imports as the same
+- [ ] Cross-check with the game: drag-drop the exported file into Resonite → imports as the same
       object (proves the package is a REAL .resonitepackage, not just McpLink-readable).
-- [ ] `import_package` of a corrupt/non-package file â†’ clean error (decode fails on the HTTP
+- [ ] `import_package` of a corrupt/non-package file → clean error (decode fails on the HTTP
       thread, no half-created slot).
 - [ ] Import failure path: the holder slot exists but `progress.Failed` reporting fires (hard to
-      provoke benignly â€” a package with a deleted asset entry would do; optional).
-- [ ] `export_package` on a slot using cloud (resdb) assets while signed in â†’ assets download and
+      provoke benignly — a package with a deleted asset entry would do; optional).
+- [ ] `export_package` on a slot using cloud (resdb) assets while signed in → assets download and
       bundle (this exercises the GatherAsset path; may take seconds).
-- [ ] `user_avatar` with an avatar equipped â†’ `avatar` names the avatar object root with `Root`
+- [ ] `user_avatar` with an avatar equipped → `avatar` names the avatar object root with `Root`
       among its bodyNodes; scale sane.
-- [ ] `user_avatar` while holding an item + tool equipped â†’ `hands[i].holding` / `hands[i].tool`
+- [ ] `user_avatar` while holding an item + tool equipped → `hands[i].holding` / `hands[i].tool`
       populated; worn attachment (e.g. a badge/watch) appears in `wornItems` with its body node.
 - [ ] `edit_list` on a scratch `MeshRenderer.Materials` (SyncAssetList): add two materials by
-      `{"$ref":...}`, `move` 1â†’0, `set` index 0 to a third, `remove` 0, then `values` wholesale
-      replace â€” count and render correct after each; a single Ctrl+Z (or `undo`) rolls the whole
+      `{"$ref":...}`, `move` 1→0, `set` index 0 to a third, `remove` 0, then `values` wholesale
+      replace — count and render correct after each; a single Ctrl+Z (or `undo`) rolls the whole
       call back (move is the known non-undoable exception).
 - [ ] `edit_list` on a SyncFieldList (e.g. a MultiValueTextureDriver-style float list): `add`
       with a bare value writes the element field; `set` decodes typed literals.
 
-## Known sharp edges (by design â€” verify the guardrails, not the absence)
+## Known sharp edges (by design — verify the guardrails, not the absence)
 
-- Impulse streams are **per-GROUP**, not per-node â€” pair with get_protoflux_subgraph flowTrace for
+- Impulse streams are **per-GROUP**, not per-node — pair with get_protoflux_subgraph flowTrace for
   intra-group order. Typed (WithValue/WithObject) dynamic sends are untappable (generic all the way).
 - `eval` on the update thread has **no watchdog**: an infinite loop freezes the game. Don't test that.
 - `at` jobs are in-memory only; gone after restart (verify `jobs` is empty on a fresh boot).
@@ -293,25 +293,25 @@ Never patch a constructed generic method or a method of a constructed generic ty
 intercept organic calls (shared canonical body) and invoking the stub crashes the process.
 `ImpulseHooks.ResolvePatchTargets()` now throws on any generic target and a smoke test asserts it.
 
-## v1.1 hot reload â€” live pass (pending)
+## v1.1 hot reload — live pass (pending)
 
-Prereq: `rml_libs\ResoniteHotReloadLib.dll` + `Core` (v3.1.0, installed 2026-07-09), McpLink â‰¥1.1.0
-loaded from a normal restart (1.1.0 staged for the NEXT restart on 2026-07-09 â€” the running 1.0.0
+Prereq: `rml_libs\ResoniteHotReloadLib.dll` + `Core` (v3.1.0, installed 2026-07-09), McpLink ≥1.1.0
+loaded from a normal restart (1.1.0 staged for the NEXT restart on 2026-07-09 — the running 1.0.0
 session cannot hot-reload; the first reload needs the registration that only 1.1.0 makes).
 
 - [ ] Startup log shows "Hot reload enabled" (registration succeeded, lib found).
-- [ ] `hot_reload` with a stale/missing HotReloadMods DLL â†’ helpful error / old `dllAgeSeconds`.
-- [ ] Happy path: touch a source string â†’ `dotnet build -c Release` (HotReloadMods copy succeeds
-      while the game runs; rml_mods copy may fail locked â€” that's fine) â†’ `hot_reload` â†’ within
+- [ ] `hot_reload` with a stale/missing HotReloadMods DLL → helpful error / old `dllAgeSeconds`.
+- [ ] Happy path: touch a source string → `dotnet build -c Release` (HotReloadMods copy succeeds
+      while the game runs; rml_mods copy may fail locked — that's fine) → `hot_reload` → within
       ~2 s `logs` shows "McpLink X hot-reloaded" and the changed string is live. Port unchanged.
 - [ ] Teardown correctness: start a `watch_changes` + an `impulse_watch` + an `at` job before
-      reloading â†’ after reload `changes`/`impulse_events` report unknown watch (fresh registry),
+      reloading → after reload `changes`/`impulse_events` report unknown watch (fresh registry),
       `jobs` is empty, ImpulseHooks unpatched (start+stop a new impulse_watch to confirm patch
       cycle still works post-reload).
 - [ ] Double reload: run the loop twice in a row (regression: PrepareHotReload matches the
-      ORIGINAL instance by type FullName â€” must keep working on generation 2+).
+      ORIGINAL instance by type FullName — must keep working on generation 2+).
 - [ ] `eval` still works after reload (new ALC loads McpLinkEval.dll fresh; ~1-2 s warmup again).
-- [ ] In-game trigger parity: Dev Tool â†’ Create New â†’ Hot Reload Mods â†’ McpLink button.
+- [ ] In-game trigger parity: Dev Tool → Create New → Hot Reload Mods → McpLink button.
 
 ### v1.1 pass record (2026-07-10)
 
