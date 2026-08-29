@@ -39,6 +39,9 @@ internal static class ToolsRender
             "\"isolate\":{\"description\":\"Slot/component id or array of ids — render ONLY these hierarchies, " +
             "everything else (world, occluders) is hidden. Overrides a Camera's SelectiveRender list.\"}," +
             "\"exclude\":{\"description\":\"Slot/component id or array of ids — hide these hierarchies from the render.\"}," +
+            "\"allowEmpty\":{\"type\":\"boolean\",\"default\":false,\"description\":\"Accept an image in which every " +
+            "pixel is (0,0,0,0). Off by default: such an image means the render target was never written, and a " +
+            "fully transparent PNG displays as WHITE, so it is otherwise indistinguishable from a real render.\"}," +
             "\"timeoutMs\":{\"type\":\"integer\",\"default\":30000}}}",
             args =>
             {
@@ -116,6 +119,9 @@ internal static class ToolsRender
                 if (!render.Wait(timeoutMs))
                     throw new TimeoutException($"Render did not complete within {timeoutMs} ms");
                 var bitmap = render.GetAwaiter().GetResult();
+                // A render that drew nothing must not return the same shape as one that drew
+                // everything — see RenderGuard.
+                RenderGuard.EnsureDrewSomething(bitmap, world.Name, OptBool(args, "allowEmpty", false), "render_view");
 
                 string path = OptString(args, "path")
                               ?? Path.Combine(Path.GetTempPath(), "McpLink",
@@ -161,11 +167,15 @@ internal static class ToolsRender
             "\"isolate\":{\"description\":\"Slot/component id or array of ids — render ONLY these hierarchies, " +
             "everything else (world, occluders) is hidden. Pass the targetId again to orbit the object in isolation.\"}," +
             "\"exclude\":{\"description\":\"Slot/component id or array of ids — hide these hierarchies from the render.\"}," +
+            "\"allowEmpty\":{\"type\":\"boolean\",\"default\":false,\"description\":\"Accept a frame in which every " +
+            "pixel is (0,0,0,0). Off by default: such a frame means the render target was never written, and a " +
+            "fully transparent PNG displays as WHITE, so it is otherwise indistinguishable from a real render.\"}," +
             "\"timeoutMs\":{\"type\":\"integer\",\"default\":60000}}}",
             args =>
             {
                 var world = GetWorld(args);
                 string? targetId = OptString(args, "targetId");
+                bool allowEmpty = OptBool(args, "allowEmpty", false);
                 int count = Math.Clamp(OptInt(args, "count", 6), 2, 24);
                 int width = Math.Clamp(OptInt(args, "width", 960), 16, 4096);
                 int height = Math.Clamp(OptInt(args, "height", 540), 16, 4096);
@@ -230,6 +240,7 @@ internal static class ToolsRender
                     if (!render.Wait(remaining))
                         throw new TimeoutException($"Orbit frame {i}/{count} did not render in time");
                     var bitmap = render.GetAwaiter().GetResult();
+                    RenderGuard.EnsureDrewSomething(bitmap, world.Name, allowEmpty, $"orbit frame {i + 1}/{count}");
                     string framePath = Path.Combine(outDir, $"orbit_{i:00}_{(int)(angle * MathX.Rad2Deg)}deg.png");
                     if (!bitmap.Save(framePath, 95, preserveColorInAlpha: false))
                         throw new InvalidOperationException($"Bitmap save failed for '{framePath}'");
