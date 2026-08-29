@@ -2475,6 +2475,146 @@ Check("default org: an empty org list never throws, even with a value configured
     PromptWizard.DefaultOrgIndex(Orgs(), "resonite", out var m) == 0 && m == null);
 
 Console.WriteLine();
+Console.WriteLine("== orgtree provider catalog: live fixture, Codex tiers, loud fallback ==");
+string ProviderFixturePath() => Path.GetFullPath(Path.Combine(
+    AppContext.BaseDirectory, "..", "..", "..", "..", "test", "fixtures",
+    "providers-live-2026-08-29.json"));
+JsonObject ProviderFixture() =>
+    (JsonObject)JsonNode.Parse(File.ReadAllText(ProviderFixturePath()))!;
+List<(string Tier, int Seat, string Provider, string Label, string Letter, bool Enabled, string? Reason)>
+    FixtureProviderRows(JsonObject fixture)
+{
+    var expected = new List<(string, int, string, string, string, bool, string?)>();
+    foreach (var providerNode in fixture["providers"]!.AsArray())
+    {
+        var provider = providerNode!.AsObject();
+        string id = provider["id"]!.GetValue<string>();
+        string label = provider["label"]!.GetValue<string>();
+        bool enabled = provider["hire_enabled"]!.GetValue<bool>();
+        string? reason = provider["reason"]?.GetValue<string>();
+        foreach (var tierNode in provider["tiers"]!.AsArray())
+        {
+            var tier = tierNode!.AsObject();
+            expected.Add((tier["tier"]!.GetValue<string>(), tier["seat"]!.GetValue<int>(),
+                id, label, tier["letter"]!.GetValue<string>(), enabled, reason));
+        }
+    }
+    return expected;
+}
+bool ColorNear(colorX actual, float r, float g, float b) =>
+    Math.Abs(actual.r - r) < 0.002f && Math.Abs(actual.g - g) < 0.002f
+    && Math.Abs(actual.b - b) < 0.002f && Math.Abs(actual.a - 1f) < 0.002f;
+
+Check("live /api/providers fixture parses every row in backend order", () =>
+{
+    var fixture = ProviderFixture();
+    var expected = FixtureProviderRows(fixture);
+    var parsed = OrgtreeClient.ParseProviderTiers(fixture);
+    var actual = parsed.Value?.Select(t =>
+        (t.Tier, t.Seat, t.Provider, t.ProviderLabel, t.Letter, t.HireEnabled, t.Reason)).ToList();
+    return parsed.Error == null && actual != null && actual.SequenceEqual(expected);
+});
+Check("CONTROL: pinned live fixture contains both provider families and all Codex tiers", () =>
+{
+    var parsed = OrgtreeClient.ParseProviderTiers(ProviderFixture()).Value!;
+    return parsed.Select(t => t.Provider).Distinct().SequenceEqual(new[] { "claude", "openai" })
+        && parsed.Where(t => t.Provider == "openai").Select(t => t.Tier)
+            .SequenceEqual(new[] { "luna", "terra", "sol" });
+});
+Check("wizard_drive exposes a dynamic tier string instead of a stale Claude-only enum", () =>
+{
+    var (json, _) = dispatcher.HandlePost("""{"jsonrpc":"2.0","id":420,"method":"tools/list"}""");
+    var tools = JsonNode.Parse(json!)!["result"]!["tools"]!.AsArray();
+    var wizard = tools.Single(t => t!["name"]!.GetValue<string>() == "wizard_drive")!;
+    var tierSchema = wizard["inputSchema"]!["properties"]!["tier"]!;
+    string description = wizard["description"]!.GetValue<string>();
+    return tierSchema["type"]!.GetValue<string>() == "string" && tierSchema["enum"] == null
+        && description.Contains("/api/providers") && description.Contains("luna/terra/sol");
+});
+Check("panel-hired charter uses the real provider tool catalog and fails loud when McpLink is absent", () =>
+    PromptWizard.CharterText.Contains("Codex") && PromptWizard.CharterText.Contains("Claude Code")
+    && PromptWizard.CharterText.Contains("inspect your real tool catalog")
+    && PromptWizard.CharterText.Contains("If no McpLink tools are present, say so plainly")
+    && !PromptWizard.CharterText.Contains("mcp__mcplink__*"));
+Check("missing providers array fails loudly instead of becoming an empty success", () =>
+{
+    var parsed = OrgtreeClient.ParseProviderTiers(JsonNode.Parse("""{"status":"healthy"}"""));
+    return parsed.Value == null && parsed.Error == "provider payload has no providers array";
+});
+Check("malformed provider rows are skipped and an all-malformed catalog fails loudly", () =>
+{
+    var malformed = JsonNode.Parse(
+        """{"providers":[{"id":42,"label":false,"hire_enabled":"yes","tiers":[{"tier":12,"seat":"one"}]}]}""");
+    var parsed = OrgtreeClient.ParseProviderTiers(malformed);
+    return parsed.Value == null && parsed.Error == "provider payload contains no valid tiers";
+});
+Check("provider availability and refusal reason are copied onto each tier", () =>
+{
+    var payload = JsonNode.Parse(
+        """{"providers":[{"id":"openai","label":"Codex","hire_enabled":false,"reason":"not signed in","tiers":[{"tier":"luna","seat":1,"letter":"L"}]}]}""");
+    var tier = OrgtreeClient.ParseProviderTiers(payload).Value!.Single();
+    return !tier.HireEnabled && tier.Reason == "not signed in"
+        && PromptWizard.TierLabel(tier).Contains("unavailable")
+        && PromptWizard.TierUnavailable(tier).Contains("not signed in");
+});
+Check("healthy provider result passes through with no fallback warning", () =>
+{
+    var parsed = OrgtreeClient.ParseProviderTiers(ProviderFixture());
+    var resolved = PromptWizard.ProviderCatalogOrFallback(parsed, out string? warning);
+    return warning == null && ReferenceEquals(resolved, parsed.Value);
+});
+Check("broken provider result visibly falls back to legacy Claude-only tiers", () =>
+{
+    var failedResult = OrgtreeClient.Result<List<OrgtreeClient.ProviderTier>>.Fail("fixture-break");
+    var resolved = PromptWizard.ProviderCatalogOrFallback(failedResult, out string? warning);
+    return resolved.Count == 4 && resolved.All(t => t.Provider == "claude")
+        && warning != null && warning.Contains("legacy Claude-only tiers")
+        && warning.Contains("Codex tiers are hidden") && warning.Contains("fixture-break");
+});
+Check("empty successful provider result is degraded, never treated as Ready", () =>
+{
+    var empty = OrgtreeClient.Result<List<OrgtreeClient.ProviderTier>>.Ok(new());
+    var resolved = PromptWizard.ProviderCatalogOrFallback(empty, out string? warning);
+    return resolved.Count == 4 && warning != null && warning.Contains("catalog was empty");
+});
+Check("force-fallback seam accepts only its documented true spellings", () =>
+    new string?[] { "1", "true", "TRUE", "yes", "YES" }.All(OrgtreeClient.ProviderFetchForced)
+    && new string?[] { null, "", "0", "false", "no", "on" }.All(v => !OrgtreeClient.ProviderFetchForced(v)));
+Check("forced provider fetch executes the real failure branch before any network request", () =>
+{
+    string? old = Environment.GetEnvironmentVariable(OrgtreeClient.ForceProviderFallbackEnv);
+    try
+    {
+        Environment.SetEnvironmentVariable(OrgtreeClient.ForceProviderFallbackEnv, "1");
+        var result = OrgtreeClient.ListProviderTiersAsync(timeoutSeconds: 1).GetAwaiter().GetResult();
+        return result.Value == null && result.Error != null
+            && result.Error.Contains("forced by " + OrgtreeClient.ForceProviderFallbackEnv);
+    }
+    finally
+    {
+        Environment.SetEnvironmentVariable(OrgtreeClient.ForceProviderFallbackEnv, old);
+    }
+});
+Check("default tier remains enabled opus, then falls back to first enabled tier", () =>
+{
+    var live = OrgtreeClient.ParseProviderTiers(ProviderFixture()).Value!;
+    var noOpus = live.Select(t => t with { HireEnabled = t.Tier == "terra" }).ToList();
+    return live[PromptWizard.PreferredTierIndex(live)].Tier == "opus"
+        && noOpus[PromptWizard.PreferredTierIndex(noOpus)].Tier == "terra"
+        && live[PromptWizard.ResolvedTierIndex(live, "sol")].Tier == "sol"
+        && noOpus[PromptWizard.ResolvedTierIndex(noOpus, "opus")].Tier == "terra";
+});
+Check("Codex tier palette and provider teal are pinned to the panel theme", () =>
+    ColorNear(PromptWizard.TierColor("luna"), 0.725f, 0.769f, 0.839f)
+    && ColorNear(PromptWizard.TierColor("terra"), 0.498f, 0.682f, 0.373f)
+    && ColorNear(PromptWizard.TierColor("sol"), 1.000f, 0.541f, 0.239f)
+    && ColorNear(PromptWizard.ProviderColor("openai"), 0.345f, 0.608f, 0.584f));
+Check("existing Codex nodes recover provider chrome from their globally unique tier", () =>
+    PromptWizard.ProviderForTier(Array.Empty<OrgtreeClient.ProviderTier>(), "sol") == "openai"
+    && PromptWizard.ProviderForTier(Array.Empty<OrgtreeClient.ProviderTier>(), "opus") == "claude"
+    && PromptWizard.ProviderForTier(Array.Empty<OrgtreeClient.ProviderTier>(), "future") == null);
+
+Console.WriteLine();
 Console.WriteLine("== orgtree availability gate: exposure decision and refusal ==");
 Check("fresh public install (no outbox, backend down) stays hidden", () =>
     !PromptWizard.ShouldExpose("", false));

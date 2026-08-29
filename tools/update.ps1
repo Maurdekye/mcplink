@@ -116,7 +116,7 @@ try {
 
     Write-Host ""
     Write-Host "McpLink updated to $latest (hash-verified)." -ForegroundColor Green
-    Write-Host "Start Resonite, then RESTART your MCP client / Claude session too:"
+    Write-Host "Start Resonite, then RESTART your MCP client session too:"
     Write-Host "clients cache tool schemas per session and would keep showing the old tools."
 } finally {
     Remove-Item $stage -Recurse -Force -Confirm:$false -ErrorAction SilentlyContinue

@@ -76,8 +76,17 @@ internal static class PromptWizard
     private const string WizardTag = "McpLinkPromptWizard";
     private const string TopLevelLabel = "(top level)";
 
-    private static readonly (string Name, int Cost)[] Tiers = [("haiku", 1), ("sonnet", 2), ("opus", 5), ("fable", 10)];
-    private const int DefaultTierIndex = 2; // opus
+    // Compatibility fallback for an offline/pre-provider backend. A live modern backend owns
+    // this catalog through GET /api/providers; keeping only the legacy Claude family here means
+    // McpLink never invents provider availability or lets a stale Codex table drift from orgtree.
+    private static readonly OrgtreeClient.ProviderTier[] LegacyTiers =
+    [
+        new("haiku", 1, "claude", "Claude", "H", true, null),
+        new("sonnet", 2, "claude", "Claude", "S", true, null),
+        new("opus", 5, "claude", "Claude", "O", true, null),
+        new("fable", 10, "claude", "Claude", "F", true, null),
+    ];
+    private const string DefaultTier = "opus";
 
     // thinking-effort cycle, index 0 = no override (the node inherits the org default, which
     // the backend resolves to "high" unless the org says otherwise); the rest are the ledger's
@@ -388,7 +397,8 @@ internal static class PromptWizard
             "user's behalf). Actions: 'name' {text} sets the agent name; 'selectRow' {row: node id or " +
             "'(top level)'} picks the hire parent (retired rows need their parent's list expanded first); " +
             "'expand' {row: node id or '(top level)'} toggles that node's retired-agents list; " +
-            "'tier' {tier: haiku|sonnet|opus|fable} sets the tier; " +
+            "'tier' {tier} sets any currently hireable tier advertised by orgtree's /api/providers " +
+            "catalog (for example haiku/sonnet/opus/fable or luna/terra/sol); " +
             "'effort' {effort: default|low|medium|high|xhigh|max} sets the thinking effort (rides the hire " +
             "in stage 1, applied immediately to a live agent in stage 2); 'create' presses Create (immediate " +
             "hire); 'open' opens the panel as a WINDOW onto the SELECTED existing agent — a view of the " +
@@ -457,14 +467,13 @@ internal static class PromptWizard
                         case "tier":
                         {
                             string tier = Req("tier");
-                            int index = Array.FindIndex(Tiers, t => t.Name == tier);
+                            int index = state.Tiers.FindIndex(t => t.Tier == tier);
                             if (index < 0)
-                                throw new ArgumentException($"Unknown tier '{tier}'");
-                            state.TierIndex = index;
-                            if (state.TierButton is { IsDestroyed: false } tb)
-                                SetButtonLabel(tb, TierLabel(index));
-                            UpdateGhostTier(state);
-                            UpdateFrame(state, WithAlpha(TierColor(Tiers[index].Name), 0.55f));
+                                throw new ArgumentException($"Unknown tier '{tier}' — catalog: " +
+                                    string.Join("|", state.Tiers.Select(t => t.Tier)));
+                            if (!state.Tiers[index].HireEnabled)
+                                throw new InvalidOperationException(TierUnavailable(state.Tiers[index]));
+                            SelectTier(state, index, announce: false);
                             break;
                         }
                         case "effort":
@@ -546,6 +555,8 @@ internal static class PromptWizard
                         ["window"] = state.WindowMode,
                         ["fallback"] = state.FallbackMode,
                         ["retired"] = state.RetireFired,
+                        ["tier"] = CurrentTier(state).Tier,
+                        ["provider"] = CurrentTier(state).Provider,
                         ["effort"] = Efforts[state.EffortIndex],
                         ["attachments"] = state.Attachments.Count,
                         ["threadEntries"] = state.ThreadCounter,
@@ -636,7 +647,8 @@ internal static class PromptWizard
         public Slot Root = null!;
         public Slot Body = null!;                  // stage container (children swapped on stage change)
         public IField<string>? Title;              // panel header title (GenericUIContainer)
-        public Image? Frame;                       // tier-colored window rim
+        public Image? Frame;                       // tier-colored top bar
+        public Image? FrameRing;                   // provider-colored desk chrome
 
         // ---- stage 1 (create) ----
         public Slot? StageContent;                 // the scroll VerticalLayout content slot
@@ -650,7 +662,8 @@ internal static class PromptWizard
         public List<OrgtreeClient.OrgInfo> Orgs = new();
         public int OrgIndex;
         public bool OrgsLoading;
-        public int TierIndex = DefaultTierIndex;
+        public List<OrgtreeClient.ProviderTier> Tiers = new(LegacyTiers);
+        public int TierIndex = PreferredTierIndex(LegacyTiers);
         public int EffortIndex;                    // 0 = default (no override)
         public int EffortApplyVersion;             // debounces chat-stage cycling into ONE scope call
         public readonly List<TreeRow> TreeRows = new();
@@ -739,9 +752,10 @@ internal static class PromptWizard
         BuildCreateStage(state);
     }
 
-    /// <summary>The orgtree-node look (frontend .sq card): a thin neutral border on all sides
-    /// and a thick tier-colored TOP bar. Three stacked rounded panels behind the window
-    /// background: tier color (full, shows only as the top strip + top corners) → neutral line
+    /// <summary>The orgtree-node look (frontend .sq card): provider-colored desk chrome on all
+    /// sides and a thick tier-colored TOP bar. Codex is teal, Claude is terracotta; the tier
+    /// retains its own distinct hue. Three stacked rounded panels behind the window
+    /// background: tier color (full, shows only as the top strip + top corners) → provider line
     /// (inset from the top by the bar) → the background panel inset by the ring on the other
     /// edges. UIX draws in hierarchy order, and plain Images are not interaction targets, so
     /// nothing here covers content or eats clicks.</summary>
@@ -785,14 +799,18 @@ internal static class PromptWizard
         // world as the only thing behind it, the scene bled through the top strip + corners —
         // a solid dark layer underneath makes the ghost-alpha blend against the panel instead
         FramePanel("FrameBacking", new colorX(0.10f, 0.11f, 0.14f, 1f), -3, 0f);
-        state.Frame = FramePanel("TierBar", WithAlpha(TierColor(Tiers[state.TierIndex].Name), 0.55f), -2, 0f);
-        FramePanel("FrameRing", NeutralBorder, -1, PanelTopBarPx); // covers the tier layer except its top strip
+        var tier = CurrentTier(state);
+        state.Frame = FramePanel("TierBar", WithAlpha(TierColor(tier.Tier), 0.55f), -2, 0f);
+        state.FrameRing = FramePanel("ProviderRing", ProviderColor(tier.Provider), -1, PanelTopBarPx);
+        // the provider ring covers the tier layer everywhere except its top strip
     }
 
-    private static void UpdateFrame(WizardState state, colorX color)
+    private static void UpdateTheme(WizardState state, string? tier, string? provider, bool preview)
     {
         if (state.Frame != null && !state.Frame.IsDestroyed)
-            state.Frame.Tint.Value = color;
+            state.Frame.Tint.Value = preview ? WithAlpha(TierColor(tier), 0.55f) : TierColor(tier);
+        if (state.FrameRing != null && !state.FrameRing.IsDestroyed)
+            state.FrameRing.Tint.Value = ProviderColor(provider);
     }
 
     private static void SetTitle(WizardState state, string title)
@@ -831,17 +849,14 @@ internal static class PromptWizard
         state.OrgButton = PickerRow(ui, "Organization:", "loading…", Next, () => CycleOrg(state));
         var treeLabel = Label(ui, "<b>Hire under</b>  <size=70%>(click a node — the new agent previews beneath it)</size>");
         treeLabel.Slot.OrderOffset = OrderTree - 2;
-        var tierButton = PickerRow(ui, "Agent tier:", TierLabel(DefaultTierIndex),
+        var tierButton = PickerRow(ui, "Agent tier:", TierLabel(CurrentTier(state)),
             c => c.Slot.OrderOffset = OrderTierRow, () => { });
         state.TierButton = tierButton;
         tierButton.LocalPressed += (_, _) =>
         {
             if (state.NodeId != null || state.FallbackMode)
                 return;
-            state.TierIndex = (state.TierIndex + 1) % Tiers.Length;
-            SetButtonLabel(tierButton, TierLabel(state.TierIndex));
-            UpdateGhostTier(state);
-            UpdateFrame(state, WithAlpha(TierColor(Tiers[state.TierIndex].Name), 0.55f));
+            SelectTier(state, (state.TierIndex + 1) % state.Tiers.Count, announce: true);
         };
 
         state.EffortButton = PickerRow(ui, "Thinking effort:", EffortLabel(0),
@@ -873,7 +888,48 @@ internal static class PromptWizard
         RefreshOrgs(state);
     }
 
-    private static string TierLabel(int index) => $"{Tiers[index].Name}  ({Tiers[index].Cost} cr)";
+    internal static int PreferredTierIndex(IReadOnlyList<OrgtreeClient.ProviderTier> tiers)
+    {
+        for (int i = 0; i < tiers.Count; i++)
+            if (tiers[i].Tier == DefaultTier && tiers[i].HireEnabled)
+                return i;
+        for (int i = 0; i < tiers.Count; i++)
+            if (tiers[i].HireEnabled)
+                return i;
+        return 0;
+    }
+
+    internal static int ResolvedTierIndex(IReadOnlyList<OrgtreeClient.ProviderTier> tiers,
+        string selected)
+    {
+        for (int i = 0; i < tiers.Count; i++)
+            if (tiers[i].Tier == selected && tiers[i].HireEnabled)
+                return i;
+        return PreferredTierIndex(tiers);
+    }
+
+    private static OrgtreeClient.ProviderTier CurrentTier(WizardState state) =>
+        state.Tiers[Math.Clamp(state.TierIndex, 0, state.Tiers.Count - 1)];
+
+    internal static string TierLabel(OrgtreeClient.ProviderTier tier) =>
+        $"{tier.Tier} · {tier.ProviderLabel}  ({tier.Seat} cr)" +
+        (tier.HireEnabled ? "" : "  — unavailable");
+
+    internal static string TierUnavailable(OrgtreeClient.ProviderTier tier) =>
+        $"Tier '{tier.Tier}' ({tier.ProviderLabel}) is unavailable" +
+        (string.IsNullOrWhiteSpace(tier.Reason) ? "." : $": {tier.Reason}");
+
+    private static void SelectTier(WizardState state, int index, bool announce)
+    {
+        state.TierIndex = Math.Clamp(index, 0, state.Tiers.Count - 1);
+        var tier = CurrentTier(state);
+        if (state.TierButton is { IsDestroyed: false } button)
+            SetButtonLabel(button, TierLabel(tier));
+        UpdateGhostTier(state);
+        UpdateTheme(state, tier.Tier, tier.Provider, preview: true);
+        if (announce && !tier.HireEnabled)
+            SetStatus(state, $"<color=#fc6>{Escape(TierUnavailable(tier))}</color>");
+    }
 
     private static string OpenLabel(TreeRow? row) =>
         row?.Id == null ? "Open chat  (select an agent above)"
@@ -979,28 +1035,61 @@ internal static class PromptWizard
         var world = state.Root.World;
         Task.Run(async () =>
         {
-            var r = await OrgtreeClient.ListOrgsAsync().ConfigureAwait(false);
+            // Fetch together: a healthy org list beside a broken provider catalog is NOT Ready.
+            // The latter must remain visible as a degraded state or Codex silently disappears.
+            var orgTask = OrgtreeClient.ListOrgsAsync();
+            var tierTask = OrgtreeClient.ListProviderTiersAsync();
+            await Task.WhenAll(orgTask, tierTask).ConfigureAwait(false);
+            var r = orgTask.Result;
+            var providerResult = tierTask.Result;
             RunSync(world, state, () =>
             {
                 state.OrgsLoading = false;
+                string selected = CurrentTier(state).Tier;
+                state.Tiers = ProviderCatalogOrFallback(providerResult, out string? providerWarning);
+                SelectTier(state, ResolvedTierIndex(state.Tiers, selected), announce: false);
                 if (r.Error != null)
                 {
                     state.Orgs = new List<OrgtreeClient.OrgInfo>();
                     SetButtonLabel(state.OrgButton, "(backend offline)");
-                    SetStatus(state, string.IsNullOrWhiteSpace(McpLinkMod.PromptOutbox)
+                    string offline = string.IsNullOrWhiteSpace(McpLinkMod.PromptOutbox)
                         ? $"<color=#f88>orgtree backend unreachable and no promptOutbox fallback is configured.\n{Escape(r.Error)}</color>"
-                        : $"<color=#fc6>orgtree backend unreachable — Create will queue messages to the outbox file for the orchestrator.\n<size=70%>{Escape(r.Error)}</size></color>");
+                        : $"<color=#fc6>orgtree backend unreachable — Create will queue messages to the outbox file for the orchestrator.\n<size=70%>{Escape(r.Error)}</size></color>";
+                    SetStatus(state, providerWarning == null ? offline
+                        : $"<color=#fc6>{Escape(providerWarning)}</color>\n{offline}");
                     return;
                 }
                 state.Orgs = r.Value!;
                 state.OrgIndex = DefaultOrgIndex(state.Orgs, McpLinkMod.PromptDefaultOrg, out string? missing);
                 SetButtonLabel(state.OrgButton, OrgLabel(state));
-                SetStatus(state, missing == null
+                string ready = missing == null
                     ? "Ready."
-                    : $"<color=#fc6>configured default org \"{Escape(missing)}\" isn't on the backend — using \"{Escape(state.Orgs[state.OrgIndex].Slug)}\".</color>");
+                    : $"configured default org \"{missing}\" isn't on the backend — using \"{state.Orgs[state.OrgIndex].Slug}\".";
+                SetStatus(state, providerWarning == null
+                    ? (missing == null ? ready : $"<color=#fc6>{Escape(ready)}</color>")
+                    : $"<color=#fc6>{Escape(providerWarning)}\n{Escape(ready)}</color>");
                 RefreshNodes(state);
             });
         });
+    }
+
+    internal static string ProviderCatalogFallbackNotice(string error) =>
+        "Provider catalog unavailable — showing legacy Claude-only tiers; Codex tiers are hidden. " +
+        $"({error})";
+
+    /// <summary>The compatibility branch used by the UI and exercised directly by the offline
+    /// suite. A broken primary must never masquerade as a healthy empty/Claude-only catalog.</summary>
+    internal static List<OrgtreeClient.ProviderTier> ProviderCatalogOrFallback(
+        OrgtreeClient.Result<List<OrgtreeClient.ProviderTier>> result, out string? warning)
+    {
+        if (result.Error == null && result.Value is { Count: > 0 } catalog)
+        {
+            warning = null;
+            return catalog;
+        }
+        string error = result.Error ?? "provider catalog was empty";
+        warning = ProviderCatalogFallbackNotice(error);
+        return new List<OrgtreeClient.ProviderTier>(LegacyTiers);
     }
 
     private static string OrgLabel(WizardState state) =>
@@ -1073,16 +1162,43 @@ internal static class PromptWizard
         public long Order;
     }
 
-    // the orgtree frontend's own CVD-validated tier palette (styles.css --tier-*):
-    // haiku #4fd6a3 · sonnet #3d8ce6 · opus #dcb0f5 · fable #e8b04b
-    private static colorX TierColor(string? tier) => tier switch
+    // The orgtree frontend's own tier palette (styles.css --tier-*). Codex's
+    // provider identity lives in the teal chrome, NOT in these tier hues.
+    internal static colorX TierColor(string? tier) => tier switch
     {
         "haiku" => new colorX(0.310f, 0.839f, 0.639f, 1f),
         "sonnet" => new colorX(0.239f, 0.549f, 0.902f, 1f),
         "opus" => new colorX(0.863f, 0.690f, 0.961f, 1f),
         "fable" => new colorX(0.910f, 0.690f, 0.294f, 1f),
+        "luna" => new colorX(0.725f, 0.769f, 0.839f, 1f),  // #b9c4d6
+        "terra" => new colorX(0.498f, 0.682f, 0.373f, 1f), // #7fae5f
+        "sol" => new colorX(1.000f, 0.541f, 0.239f, 1f),   // #ff8a3d
         _ => new colorX(0.55f, 0.58f, 0.62f, 1f), // top level / unknown tier
     };
+
+    // Provider chrome mirrors the frontend desk themes: Claude terracotta, Codex teal.
+    internal static colorX ProviderColor(string? provider) => provider switch
+    {
+        "claude" => new colorX(0.851f, 0.467f, 0.341f, 1f), // #d97757
+        "openai" => new colorX(0.345f, 0.608f, 0.584f, 1f), // #589b95
+        _ => NeutralBorder,
+    };
+
+    internal static string? ProviderForTier(IReadOnlyList<OrgtreeClient.ProviderTier> catalog,
+        string? tier)
+    {
+        foreach (var item in catalog)
+            if (item.Tier == tier)
+                return item.Provider;
+        // Old backend/tree payloads carry only a tier. Keep known colors correct even while
+        // the provider catalog is on its loud compatibility fallback.
+        return tier switch
+        {
+            "haiku" or "sonnet" or "opus" or "fable" => "claude",
+            "luna" or "terra" or "sol" => "openai",
+            _ => null,
+        };
+    }
 
     private static colorX WithAlpha(colorX c, float a) => new(c.r, c.g, c.b, a, c.Profile);
 
@@ -1231,7 +1347,7 @@ internal static class PromptWizard
 
     private static void BuildGhost(WizardState state)
     {
-        state.Ghost = BuildCard(state, "", Tiers[state.TierIndex].Name, 1, OrderTree + 1, ghost: true);
+        state.Ghost = BuildCard(state, "", CurrentTier(state).Tier, 1, OrderTree + 1, ghost: true);
         state.GhostLive = true;
         UpdateGhostLabel(state);
         UpdateGhostTier(state);
@@ -1311,8 +1427,8 @@ internal static class PromptWizard
     {
         if (state.Ghost != null && !state.Ghost.Border.IsDestroyed)
             state.Ghost.Border.Tint.Value = state.GhostLive
-                ? WithAlpha(TierColor(Tiers[state.TierIndex].Name), 0.5f)
-                : TierColor(Tiers[state.TierIndex].Name);
+                ? WithAlpha(TierColor(CurrentTier(state).Tier), 0.5f)
+                : TierColor(CurrentTier(state).Tier);
     }
 
     // ======================= create (hire, no prompt yet) =======================
@@ -1340,7 +1456,13 @@ internal static class PromptWizard
             return;
         }
         string? parentId = parentRow?.Id;
-        string tier = Tiers[state.TierIndex].Name;
+        var tierChoice = CurrentTier(state);
+        if (!tierChoice.HireEnabled)
+        {
+            SetStatus(state, $"<color=#fc6>{Escape(TierUnavailable(tierChoice))}</color>");
+            return;
+        }
+        string tier = tierChoice.Tier;
 
         if (state.Orgs.Count == 0)
         {
@@ -1354,7 +1476,7 @@ internal static class PromptWizard
             state.FallbackPlacement = parentId ?? "ingame-prompt";
             state.AgentLabel = name;
             SetTitle(state, $"{name} (offline queue)");
-            UpdateFrame(state, NeutralBorder);
+            UpdateTheme(state, null, null, preview: false);
             EnterChatStage(state);
             AppendSystem(state, $"backend offline — messages queue to the orchestrator outbox as v1 prompts " +
                                 $"(placement {Escape(state.FallbackPlacement)}, tier {tier}). Responses arrive as " +
@@ -1391,7 +1513,7 @@ internal static class PromptWizard
                 state.Peer = peer;
                 state.AgentLabel = node;
                 SetTitle(state, node);
-                UpdateFrame(state, TierColor(tier));
+                UpdateTheme(state, tier, tierChoice.Provider, preview: false);
                 // the panel represents this agent in-game: bind the identity onto the slot
                 // itself (introspectable data, survives the mod's memory) and join the wire
                 // graph so related panels get linked in 3D
@@ -1522,7 +1644,7 @@ internal static class PromptWizard
                 state.KickoffSent = windowPeer == null;
                 state.EffortIndex = Math.Max(0, Array.IndexOf(Efforts, r.Value.ScopeEffort ?? ""));
                 SetTitle(state, node + state.TitleTag);
-                UpdateFrame(state, TierColor(tier));
+                UpdateTheme(state, tier, ProviderForTier(state.Tiers, tier), preview: false);
                 state.Root.AttachComponent<Comment>().Text.Value =
                     $"orgtree agent window {org.Slug}/{node}"
                     + (windowPeer != null ? $" · handle @mcp:{windowPeer}" : " · no handle (degraded)")
@@ -2739,7 +2861,7 @@ internal static class PromptWizard
                             if (!state.FallbackMode)
                                 PanelBindings.Remove(slug, node, state.WindowMode); // already gone
                             AgentWires.Drop(state.Wire);
-                            UpdateFrame(state, NeutralBorder);
+                            UpdateTheme(state, null, null, preview: false);
                             SetTitle(state, $"{state.AgentLabel}{state.TitleTag} (retired)");
                             PaintPresence(state, "<color=#777>○ retired</color>");
                             AppendSystem(state, "the agent was retired outside this panel — the thread is closed.");
@@ -3680,19 +3802,22 @@ internal static class PromptWizard
         return attachments;
     }
 
-    private const string CharterText =
+    internal const string CharterText =
         "In-world task agent hired from the Resonite Prompt Wizard: the host user created you from " +
         "inside the running game and chats with you through an in-world panel. Their messages arrive " +
         "as user mail (the first carries full context, live object references as engine RefIDs, and a " +
         "RESPONSE HANDLE address) — everything you orgtree_message to that handle appears on the panel " +
-        "immediately, like chat. Work against the live game through the mcp__mcplink__* MCP tools " +
-        "(deferred — load schemas via ToolSearch first; mcp__resonite__* is deprecated, never use it) " +
-        "and ground engine claims with mcp__ilspy-mcp__* against the DLLs in the game folder root. " +
+        "immediately, like chat. Use the MCP tools actually granted to you by orgtree; McpLink is the " +
+        "live-game server. Client-visible tool names and discovery controls differ between Codex and " +
+        "Claude Code, so inspect your real tool catalog instead of assuming ToolSearch or an mcp__ " +
+        "name exists. If no McpLink tools are present, say so plainly rather than claiming live-game " +
+        "verification. The legacy mcp__resonite__* server is deprecated; never use it. Ground engine " +
+        "claims with the granted ilspy-mcp server against the DLLs in the game folder root. " +
         "Read-only toward the user's objects unless asked for changes; save_object before risky " +
         "mutations. The cross-session mail hub is OFF-LIMITS. When a task completes: answer to the " +
         "handle, then orgtree_status done with a short summary. Panel mail is marked: every message " +
-        "from the panel opens with [PANEL MESSAGE] and repeats the handle, so you never have to " +
-        "remember it. If a [PANEL CLOSED] mail arrives, your panel is gone but you remain hired: " +
+        "from the panel opens with " + MarkMessage + " and repeats the handle, so you never have to " +
+        "remember it. If a " + MarkClosed + " mail arrives, your panel is gone but you remain hired: " +
         "stop using the handle and work via org channels.";
 
     /// <summary>Takes a PanelChannel rather than the live WizardState (2.11.0) so it can run OFF
@@ -3836,7 +3961,7 @@ internal static class PromptWizard
                 ["refs"] = refs,
                 ["placement"] = state.FallbackPlacement,
                 ["agentName"] = state.AgentLabel,
-                ["tier"] = Tiers[state.TierIndex].Name,
+                ["tier"] = CurrentTier(state).Tier,
                 ["effort"] = state.EffortIndex == 0 ? null : Efforts[state.EffortIndex],
                 ["world"] = new JsonObject { ["name"] = world.Name, ["sessionId"] = world.SessionId },
                 ["submitter"] = new JsonObject

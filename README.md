@@ -7,7 +7,7 @@ Developing it? See [`CLAUDE.md`](CLAUDE.md). Driving it from an agent? See
 **An MCP server that runs inside Resonite.** McpLink is a
 [ResoniteModLoader](https://github.com/resonite-modding-group/ResoniteModLoader) mod that embeds
 a [Model Context Protocol](https://modelcontextprotocol.io/) server in the game process, so an
-AI agent — Claude Code, or any MCP-capable client — can inspect and modify your live Resonite
+AI agent — Codex, Claude Code, or any MCP-capable client — can inspect and modify your live Resonite
 worlds: slots, components, ProtoFlux, assets, physics, screenshots, event streams, and (optionally)
 C# against the running engine. **97 tools**, no per-session setup, works in any world including
 Userspace.
@@ -46,11 +46,12 @@ and working — that's the one hard prerequisite, and its README covers installi
    [McpLink] MCP server listening on http://localhost:7357/mcp
    ```
 
-4. **Connect your agent.** For **Claude Code**, the recommended route is the bundled always-up
-   proxy (a dependency-free Python 3.8+ script — the one extra requirement of this route). Copy
-   the zip's `proxy\` folder somewhere permanent, then:
+4. **Connect your agent.** For **Codex or Claude Code**, the recommended route is the bundled
+   always-up proxy (a dependency-free Python 3.8+ script — the one extra requirement of this
+   route). Copy the zip's `proxy\` folder somewhere permanent, then use the command for your client:
 
    ```
+   codex mcp add mcplink -- python "C:\path\to\proxy\mcplink_proxy.py"
    claude mcp add mcplink -- python "C:\path\to\proxy\mcplink_proxy.py"
    ```
 
@@ -60,6 +61,7 @@ and working — that's the one hard prerequisite, and its README covers installi
    the server only connects if Resonite is already running when your session starts:
 
    ```
+   codex mcp add mcplink --url http://localhost:7357/mcp
    claude mcp add --transport http mcplink http://localhost:7357/mcp
    ```
 
@@ -93,8 +95,8 @@ are required — set up whichever is useful to you; the rest of McpLink works wi
 ### Connect to orgtree
 
 McpLink pairs with **[claude-orgtree](https://github.com/Maurdekye/claude-orgtree)** — a custom
-orchestrator that organizes Claude Code agents into an authority hierarchy — and the integration
-runs deep: an in-world **Prompt Agent** panel lets you hire an agent from inside VR by clicking a
+orchestrator that organizes Codex and Claude Code agents into an authority hierarchy — and the
+integration runs deep: an in-world **Prompt Agent** panel lets you hire an agent from inside VR by clicking a
 node in your live org chart, name it, pick its model tier and thinking effort, and then *chat with
 it* in a floating panel that embodies the agent — presence ticker showing what it's doing right
 now, its status reports as system lines, drag-and-drop reference attachments, interactive question
@@ -115,6 +117,12 @@ McpLink never mentions it: the menu entry stays hidden and `open_prompt_wizard` 
 3. Optional settings (see [Configuration](#configuration)): `promptDefaultOrg` preselects which
    organization new panels open on; `promptHireDir` names a folder that panel-hired agents get
    read-write access to (empty = game folder only).
+
+The Prompt Agent tier picker reads orgtree's live provider catalog, so Claude and Codex tiers
+appear with their current credit costs and availability. If that catalog cannot be read, the
+panel says it is showing a legacy Claude-only fallback instead of silently hiding Codex. To
+exercise that diagnostic path on demand, set `MCPLINK_FORCE_PROVIDER_FALLBACK=1` before starting
+Resonite; unset it to restore the live catalog.
 
 **Offline queue (advanced):** with no backend but a `promptOutbox` file path configured, the
 panel still works in a degraded mode — each submission appends one JSON line

@@ -16,10 +16,17 @@ namespace McpLink;
 internal static class OrgtreeClient
 {
     private static readonly HttpClient Http = new() { Timeout = Timeout.InfiniteTimeSpan };
+    internal const string ForceProviderFallbackEnv = "MCPLINK_FORCE_PROVIDER_FALLBACK";
 
     private static string BaseUrl => McpLinkMod.OrgtreeBase.TrimEnd('/');
 
     internal sealed record OrgInfo(string Slug, string Name);
+    /// <summary>One hireable model tier from GET /api/providers. Tier names are globally
+    /// unique in orgtree, so a hire still sends only Tier; Provider/ProviderLabel exist for
+    /// the in-world picker and provider chrome. HireEnabled/Reason are family-level state
+    /// copied onto every tier so a disconnected provider remains visible but cannot be hired.</summary>
+    internal sealed record ProviderTier(string Tier, int Seat, string Provider,
+        string ProviderLabel, string Letter, bool HireEnabled, string? Reason);
     /// <summary>One node, flattened pre-order from the org tree — live AND archived (retired
     /// agents are rehirable; unrecoverable ones are excluded entirely). Parent is the node's
     /// real superior, for tree reconstruction and the panel wire graph.</summary>
@@ -74,6 +81,72 @@ internal static class OrgtreeClient
     private static string Truncate(string s, int max) => s.Length <= max ? s : s[..max] + "…";
 
     // ======================= org / node discovery =======================
+
+    /// <summary>Parse GET /api/providers into the flat tier vocabulary accepted by the hire
+    /// endpoint. Payload order is preserved: the backend owns provider grouping and tier order.
+    /// Malformed provider/tier rows are ignored individually; an empty result fails loudly so
+    /// callers can use an explicit compatibility fallback rather than treating abstention as
+    /// a valid empty catalog.</summary>
+    internal static Result<List<ProviderTier>> ParseProviderTiers(JsonNode? payload)
+    {
+        var tiers = new List<ProviderTier>();
+        if (payload?["providers"] is not JsonArray providers)
+            return Result<List<ProviderTier>>.Fail("provider payload has no providers array");
+        foreach (var node in providers)
+        {
+            if (node is not JsonObject provider)
+                continue;
+            string id = StringValue(provider["id"]) ?? "";
+            string label = StringValue(provider["label"]) ?? id;
+            if (id.Length == 0 || provider["tiers"] is not JsonArray family)
+                continue;
+            bool enabled = false;
+            try { enabled = provider["hire_enabled"]?.GetValue<bool>() ?? false; }
+            catch { }
+            string? reason = StringValue(provider["reason"]);
+            foreach (var row in family)
+            {
+                if (row is not JsonObject tier)
+                    continue;
+                string name = StringValue(tier["tier"]) ?? "";
+                int seat;
+                try { seat = tier["seat"]?.GetValue<int>() ?? 0; }
+                catch { continue; }
+                if (name.Length == 0 || seat <= 0)
+                    continue;
+                string letter = StringValue(tier["letter"]) ?? name[..1].ToUpperInvariant();
+                tiers.Add(new ProviderTier(name, seat, id, label, letter, enabled, reason));
+            }
+        }
+        return tiers.Count > 0
+            ? Result<List<ProviderTier>>.Ok(tiers)
+            : Result<List<ProviderTier>>.Fail("provider payload contains no valid tiers");
+    }
+
+    private static string? StringValue(JsonNode? node)
+    {
+        try { return node?.GetValue<string>(); }
+        catch { return null; }
+    }
+
+    internal static async Task<Result<List<ProviderTier>>> ListProviderTiersAsync(int timeoutSeconds = 20)
+    {
+        if (ProviderFetchForced(Environment.GetEnvironmentVariable(ForceProviderFallbackEnv)))
+            return Result<List<ProviderTier>>.Fail(
+                $"provider catalog fetch forced by {ForceProviderFallbackEnv}");
+        var r = await RequestAsync(HttpMethod.Get, "/api/providers", null, timeoutSeconds)
+            .ConfigureAwait(false);
+        return r.Error != null
+            ? Result<List<ProviderTier>>.Fail(r.Error)
+            : ParseProviderTiers(r.Value);
+    }
+
+    /// <summary>The force-fallback test seam. Environment lookup stays outside this pure helper
+    /// so the offline suite can prove every accepted spelling without depending on its ambient
+    /// service environment.</summary>
+    internal static bool ProviderFetchForced(string? value) =>
+        value != null && (value == "1" || value.Equals("true", StringComparison.OrdinalIgnoreCase)
+            || value.Equals("yes", StringComparison.OrdinalIgnoreCase));
 
     internal static async Task<Result<List<OrgInfo>>> ListOrgsAsync(int timeoutSeconds = 20)
     {

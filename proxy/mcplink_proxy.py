@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """mcplink_proxy — always-up stdio MCP shim in front of McpLink's in-game HTTP server.
 
-Claude Code spawns this per session (stdio transport), so the `mcplink` MCP server
-is always "connected" even when Resonite is closed:
+MCP clients such as Codex and Claude Code spawn this per session (stdio transport),
+so the `mcplink` MCP server is always "connected" even when Resonite is closed:
 
   - initialize / ping    -> answered locally, always succeed
   - tools/list           -> forwarded to http://localhost:7357/mcp when the game is up
@@ -10,7 +10,7 @@ is always "connected" even when Resonite is closed:
                             the cache when the game is down
   - tools/call           -> forwarded when the game is up; a clear isError result
                             ("Resonite is not running") when it is down
-  - stale backend session (game restarted mid-Claude-session) -> re-initializes
+  - stale backend session (game restarted mid-client-session) -> re-initializes
                             against the new game instance and retries once
 
 No third-party dependencies; stdout carries only newline-delimited JSON-RPC,
