@@ -1626,6 +1626,17 @@ The remaining provider-shaped assumptions were:
    they are visually close. On these inputs, the Pro bar is much closer to its provider ring than
    the equivalent Codex pairs, so Flash is the clean ring-vs-bar discriminator and Pro needs a
    human "does this look muddy" judgement rather than an exact-pixel rule.
+
+   Post-deploy measurement on 2.13.0 confirmed the authored values exactly, but also exposed a
+   layout-level ambiguity: from a distance and angle, an observer read a Sol/Codex panel's chrome
+   as orange. Component state showed its `ProviderRing` was the correct `#159ACD`; the visually
+   dominant orange was the solid `#FF8A3D` `TierBar`. The thin ring can therefore lose the
+   at-a-glance provider-identification job to a saturated tier bar even when every colour is
+   correct. Never grade provider chrome from a perceived rendered colour alone: confirm the
+   answering build, read the authored component state, and render same-session provider controls.
+   If provider identity needs more prominence, ring weight or placement is the design lever; do
+   not silently alter authored hex values. On Pro, ring/bar distance is only 44.0 in RGB space, so
+   the two purple-blue elements have even less visual separation than Flash.
 3. **Existing-node recovery (`ProviderForTier`) — compatibility duplication.** Current node rows
    carry only a globally unique tier name. When `/api/providers` is available, provider recovery is
    fully dynamic. When it is unavailable, preserving provider chrome requires a local tier-to-
@@ -1660,3 +1671,9 @@ Pre-change authored-state control on deployed 2.12.2: both Google tiers used the
 `#595E6B` and identical fallback bar `#8C949E`. After the change, a valid check must first confirm
 the answering build, then show Flash and Pro bars differ from each other and the ring stays
 `#5F6FDB` across both. Query the child named `ProviderRing`, not the retired `FrameRing` name.
+
+Panel lifecycle is part of live visual verification: whoever spawns a Prompt Agent panel owns
+destroying it on every exit path, including an interrupted turn. After the 2.13.0 check, the test
+panel was destroyed and an unrelated orphan (`ID42B2E00`, Base world, `sol/openai`, no bound org or
+node) was deliberately left untouched because its owner was unknown. Do not treat "no agent
+bound" as authorization to delete someone else's world content.
