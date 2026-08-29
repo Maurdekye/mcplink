@@ -1416,3 +1416,106 @@ if grep -q "$sym" test/; then echo "covered"; fi     # ← reports covered when 
 as prose while the real mail composed from the `Mark*` constants, with nothing binding them. Had the
 naive grep been believed, that reword would have shipped telling every panel-hired agent to watch
 for a marker that never arrives, suite green.
+
+---
+
+## `render_view` reports SUCCESS for a render that produced zero pixels
+
+**Measured 2026-08-29, live, McpLink 2.11.2 (mvid `d642ab16`, `deployConsistent: true`).**
+
+`render_view` against the **`Local`** (focus `Background`) world returns a perfectly normal success
+result — `path`, `width`, `height`, `world`, `position`, `rotation`, even `isolated: 1` — for a PNG
+in which **every single pixel is `(0,0,0,0)`**. Nothing in the response says the render came back
+empty.
+
+### Why it fools you twice
+
+1. **A fully transparent PNG displays as WHITE.** Open it and you see a clean white frame, which
+   reads as "correct render, the world is just empty / brightly lit". It looks like an answer.
+2. **The tool's success is `save didn't throw`, not `something was drawn`.** `ToolsRender.cs:115-125`
+   does `world.Render.RenderToBitmap(task)` → `Wait` → `bitmap.Save(path, 95,
+   preserveColorInAlpha: false)` and returns the result object. There is no inspection of the
+   bitmap's contents anywhere between the await and the return.
+
+This is the house abstention shape inside a shipping tool: **the check produced no observation and
+reported it in the exact format it uses for a successful one.**
+
+### The measurement, with its controls
+
+Four independent renders of `Local` — near front-side no-isolate (1000×900), `isolate` on the target
+from −z (800×800), `isolate` on the same target from **+z, the other face** (800×800), and a wide
+70° whole-world shot from (12,8,−12) — **all 100% `(0,0,0,0)`**.
+
+Controls proving the renderer was working at that same moment (this is what makes it a finding
+rather than "the world was empty, obviously"):
+
+| render | mode | alpha | distinct RGBA |
+|---|---|---|---|
+| `userspace` — **also not the focused world** | RGB | 255 | **44,630** |
+| focused world, from user head | RGB | 255 | 513 |
+| `Local` × 4 | **RGBA** | **0** | **1** |
+
+So it is **not** "only the focused world renders" — userspace disproves that.
+
+**The strongest tell is the PNG mode.** Renders that drew something come back **RGB**; the `Local`
+ones come back **RGBA and uniformly zero** — the render target was never written.
+
+### Rules
+
+- **Never accept a `render_view` result without looking at the pixels.** The returned JSON cannot
+  distinguish "rendered your scene" from "rendered nothing". Eyeballing is not enough either — a
+  zero-alpha frame looks like a legitimate white background.
+- **Count distinct RGBA values.** `len(set(Image.open(p).convert('RGBA').get_flattened_data()))`.
+  `1` means you have no observation. This is the known-positive control for the renderer itself.
+- **Do not use the `Local` world as a "safe venue" to look at something you built.** It is
+  attractive precisely because nobody can see it — and nothing can, including you. Verify structure
+  there (`bounds`, `get_slot`) and render somewhere that demonstrably renders.
+- **`isolate` does not rescue it.** An isolated 0.86 m panel dead-centre at ~1.1 m, which should
+  fill the frame, rendered nothing from *either* face.
+
+⚠ **Not fully excluded:** that `Local` genuinely holds no visible geometry and no skybox, making a
+blank frame correct. Against that reading — a rendering camera writes a *background* (both controls
+did, alpha 255), and the isolated subject was missing from both sides. Recorded as strongly
+indicated, not proven. **Either way the tool-level defect stands**: an empty render is
+indistinguishable from a good one in the response.
+
+**Fix worth making** (proposed, not yet written): between the await and the save, reject a
+never-written / all-zero-alpha target — fail loud, or refuse up front for a world that cannot be
+rendered. A render that drew nothing must not return the same shape as one that drew everything.
+
+---
+
+## `read_texture` searches the whole subtree, and its error names the wrong type
+
+**Measured 2026-08-29, live, same build.** Two separate traps in one message.
+
+**1. A slot id resolves to any texture *on it or under it*.** Passing a high slot does not mean
+"the texture on this slot" — it means "some texture somewhere in this hierarchy". Passing userspace
+`Root` (`ID2300`) resolves to whichever texture the walk reaches first; `Root` alone carries a
+`GradientStripTexture`, a `SolidColorTexture` and a dozen `StaticTexture2D`s. You will get *a*
+texture and have no idea which. Pass the **component** id when you care.
+
+**2. The error attributes the found type to the id you passed.** Passing the *slot* `ID2300` printed:
+
+> `ID2300 resolves to a GradientStripTexture, which generates its pixels procedurally…`
+
+`ID2300` is a **Slot**. The message states the type of the texture it *found* as though it were the
+type of the id you *supplied* — so someone debugging would conclude their slot is a
+`GradientStripTexture` and go looking for a bug that does not exist.
+
+### What works, verified with controls
+
+The tool is otherwise honest, and its refusals are real refusals:
+
+- procedural `GradientStripTexture` → refused **by name**, explicitly "refused rather than returned
+  empty". Contract kept.
+- nonexistent `ID7FFFFFF` → `No element with RefID ID7FFFFFF in world 'Userspace'`
+- a `Grabbable` with no texture beneath it → `has no Texture2D on it or under it`
+- two different `resdb:///` URLs → two **visibly different** images (34,703 B of real content vs a
+  6,501 B white UI swatch). It is not handing back a cached constant.
+
+⚠ **My first negative control was invalid** and it is the instructive part: I picked userspace `Root`
+expecting "not a texture", but `Root` *holds* textures, so the tool correctly resolved one. A shelf
+control whose status was the very thing under test — exactly what `CONTRIBUTING.md` warns about.
+Replaced with constructed ones (a fabricated RefID, and a component type that genuinely has no
+texture in its subtree).
