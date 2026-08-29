@@ -39,6 +39,9 @@ internal static class ToolsRender
             "\"isolate\":{\"description\":\"Slot/component id or array of ids — render ONLY these hierarchies, " +
             "everything else (world, occluders) is hidden. Overrides a Camera's SelectiveRender list.\"}," +
             "\"exclude\":{\"description\":\"Slot/component id or array of ids — hide these hierarchies from the render.\"}," +
+            "\"allowEmpty\":{\"type\":\"boolean\",\"default\":false,\"description\":\"Accept an image in which every " +
+            "pixel is (0,0,0,0). Off by default: such an image means the render target was never written, and a " +
+            "fully transparent PNG displays as WHITE, so it is otherwise indistinguishable from a real render.\"}," +
             "\"timeoutMs\":{\"type\":\"integer\",\"default\":30000}}}",
             args =>
             {
@@ -111,18 +114,15 @@ internal static class ToolsRender
                 task.parameters.resolution = new int2(width, height);
                 ApplyIsolation(task, world, args);
 
-                // schedule on the render queue and block this HTTP thread (not the update thread)
-                var render = world.Render.RenderToBitmap(task);
-                if (!render.Wait(timeoutMs))
-                    throw new TimeoutException($"Render did not complete within {timeoutMs} ms");
-                var bitmap = render.GetAwaiter().GetResult();
-
                 string path = OptString(args, "path")
                               ?? Path.Combine(Path.GetTempPath(), "McpLink",
                                   $"render_{DateTime.UtcNow:yyyyMMdd_HHmmss_fff}.png");
-                Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path))!);
-                if (!bitmap.Save(path, 95, preserveColorInAlpha: false))
-                    throw new InvalidOperationException($"Bitmap save failed for '{path}'");
+
+                // Renders on the render queue (blocking this HTTP thread, not the update thread),
+                // refuses a target that was never written, then saves. Deliberately the only save
+                // path — see RenderGuard.RenderGuardedToFile.
+                RenderGuard.RenderGuardedToFile(world, task, timeoutMs, path,
+                    OptBool(args, "allowEmpty", false), "render_view");
 
                 var result = new JsonObject
                 {
@@ -161,11 +161,15 @@ internal static class ToolsRender
             "\"isolate\":{\"description\":\"Slot/component id or array of ids — render ONLY these hierarchies, " +
             "everything else (world, occluders) is hidden. Pass the targetId again to orbit the object in isolation.\"}," +
             "\"exclude\":{\"description\":\"Slot/component id or array of ids — hide these hierarchies from the render.\"}," +
+            "\"allowEmpty\":{\"type\":\"boolean\",\"default\":false,\"description\":\"Accept a frame in which every " +
+            "pixel is (0,0,0,0). Off by default: such a frame means the render target was never written, and a " +
+            "fully transparent PNG displays as WHITE, so it is otherwise indistinguishable from a real render.\"}," +
             "\"timeoutMs\":{\"type\":\"integer\",\"default\":60000}}}",
             args =>
             {
                 var world = GetWorld(args);
                 string? targetId = OptString(args, "targetId");
+                bool allowEmpty = OptBool(args, "allowEmpty", false);
                 int count = Math.Clamp(OptInt(args, "count", 6), 2, 24);
                 int width = Math.Clamp(OptInt(args, "width", 960), 16, 4096);
                 int height = Math.Clamp(OptInt(args, "height", 540), 16, 4096);
@@ -226,13 +230,9 @@ internal static class ToolsRender
                     task.excludeObjects = exclude!;
 
                     int remaining = (int)Math.Max(2000, (deadline - DateTime.UtcNow).TotalMilliseconds);
-                    var render = world.Render.RenderToBitmap(task);
-                    if (!render.Wait(remaining))
-                        throw new TimeoutException($"Orbit frame {i}/{count} did not render in time");
-                    var bitmap = render.GetAwaiter().GetResult();
                     string framePath = Path.Combine(outDir, $"orbit_{i:00}_{(int)(angle * MathX.Rad2Deg)}deg.png");
-                    if (!bitmap.Save(framePath, 95, preserveColorInAlpha: false))
-                        throw new InvalidOperationException($"Bitmap save failed for '{framePath}'");
+                    RenderGuard.RenderGuardedToFile(world, task, remaining, framePath, allowEmpty,
+                        $"orbit frame {i + 1}/{count}");
                     paths.Add(framePath);
                 }
 

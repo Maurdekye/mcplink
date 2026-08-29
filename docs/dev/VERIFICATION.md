@@ -1,5 +1,38 @@
 ﻿# Live verification — v0.6 → v1.3 (updated 2026-07-18)
 
+## 2.12.1 — render-empty guard — **NOT YET LIVE-VERIFIED** (built 2026-08-29)
+
+⚠ **This is the ONE thing the offline suite cannot reach, so it is not optional.** The suite
+exercises `RenderGuard` directly and is mutation-proven in both directions (14 checks; guard-never-
+fires → 3 red, guard-always-fires → 6 red, override-ignored → exactly 1 red, baseline and
+post-revert both 368/0, measured against the 2.12.0 base).
+
+**The wiring is handled structurally rather than by a test.** `RenderGuardedToFile` is the only
+path from a render to disk — `Bitmap2D.Save` appears nowhere else in the render path — so an
+unguarded save is not an edit anyone can make by omission. That closes "someone deletes the guard
+call", which no test could have covered without becoming a source grep.
+
+**What remains unobserved is the end-to-end behaviour: nobody has seen the guard refuse from inside
+a running game.** Construction argues it must; only the run below shows it.
+
+Run after the build is deployed (no game restart needed — the override is read per call):
+
+1. `eval`: `Environment.SetEnvironmentVariable("MCPLINK_RENDER_FORCE_EMPTY", "1")`
+2. `render_view` on **userspace** — a world MEASURED to render (44,630 distinct colours on
+   2026-08-29). It must now **refuse**, and the refusal must name `MCPLINK_RENDER_FORCE_EMPTY`.
+   ⇒ proves the guard is wired into the live path and can say NO.
+3. `eval`: `Environment.SetEnvironmentVariable("MCPLINK_RENDER_FORCE_EMPTY", null)`
+4. the same `render_view` must now **succeed with real pixels**.
+   ⇒ **the known-positive control.** Without step 4, step 2 only proves `render_view` can fail for
+   *some* reason — possibly one having nothing to do with this guard.
+5. Optional, the original defect end to end: `render_view` on the **`Local`** world must refuse
+   *without* the override set. (Recorded as strongly indicated rather than proven that `Local` is
+   unrenderable — see `TOOLKIT-NOTES.md`. If `Local` ever renders normally, this step passing
+   would be wrong; step 2's forced leg is the load-bearing one.)
+
+**Do not record this as passed on the strength of the offline suite.** Structure is not the gate —
+the same distinction that keeps the wizard-panel observation gate open below.
+
 ## v1.6 — camera isolation — LIVE PASS 2026-07-26 ✅
 
 **PASSED** (hot_reloaded 1.5.0 → 1.6.0 mid-session, smoke gate 98/98 at package time).

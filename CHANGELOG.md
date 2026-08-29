@@ -1,5 +1,31 @@
 # McpLink changelog
 
+## 2.12.1 (2026-08-29)
+
+**`render_view` and `orbit_render` no longer report success for a render that drew nothing.**
+Measured live against 2.11.2: rendering the `Local` background world returned a perfectly normal
+result — path, width, height, position, rotation, even `isolated: 1` — for a PNG in which *every
+pixel was (0,0,0,0)*. Nothing in the response distinguished it from a render of the whole world.
+
+- **Why it went unnoticed.** A fully transparent PNG **displays as white**, so the empty frame
+  looks like a legitimate render of an empty or brightly-lit scene. And the tools' success
+  criterion was "`Save` didn't throw", never "something was drawn" — the bitmap was never
+  inspected. This is an instrument we use *to verify other things* being unable to tell "I saw
+  nothing" from "I saw everything".
+- **What you will see.** Both tools now refuse such a render with a message naming the world, the
+  frame size, and the likely cause. Renders that drew anything at all — including a plain opaque
+  background — are unaffected.
+- **The opt-out.** `allowEmpty: true` accepts an all-transparent frame, for the caller who
+  genuinely wants one.
+- **What the check actually claims.** It measures the produced bitmap rather than predicting which
+  worlds "can" be rendered — a rule about the engine goes stale silently, a measurement does not.
+  It cannot separate "the target was never written" from "a genuine render whose every pixel is
+  legitimately transparent"; those are byte-identical, so it ships as the narrower check and says
+  only what it measured.
+- **Forcing the failure.** `MCPLINK_RENDER_FORCE_EMPTY=1` makes any render take the refusal path,
+  so the guard can be driven into failure on demand against a real, working render — the same
+  affordance as `MCPLINK_GAME`/`MCPLINK_BUILT` in the deploy probe. Read per call, so `eval` can
+  set it without a restart.
 ## 2.12.0 (2026-08-29)
 
 **The in-world Prompt Agent wizard now supports Codex agents as a first-class provider.** It no
