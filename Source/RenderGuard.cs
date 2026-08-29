@@ -54,10 +54,11 @@ internal static class RenderGuard
     /// NOBODY HAS EVIDENCE WORKS. Without this you can only observe the guard staying quiet, which
     /// is indistinguishable from a guard that is wired up wrong and can never fire at all.
     ///
-    /// ⚠ THE GAP THIS CLOSES, AND IT IS THE ONE THE OFFLINE SUITE CANNOT REACH. The suite tests
-    /// this class directly; it does NOT prove ToolsRender actually CALLS it. Delete the
-    /// EnsureDrewSomething line from render_view and the whole suite stays green. So the wiring is
-    /// verified live, and this variable is how:
+    /// ⚠ WHAT THIS REACHES THAT THE OFFLINE SUITE CANNOT. The suite tests this class directly; it
+    /// cannot prove the SHIPPED TOOL refuses, because that needs a live world. The wiring itself is
+    /// no longer a testing problem — RenderGuardedToFile is the only path to disk, so an unguarded
+    /// save is not something anyone can produce by omission — but "the guard fires end to end
+    /// inside a running game" is still an observation nobody has made. This variable is how:
     ///
     ///   1. eval: Environment.SetEnvironmentVariable("MCPLINK_RENDER_FORCE_EMPTY", "1")
     ///   2. render_view on a world KNOWN to render (userspace) — it must now REFUSE, and the

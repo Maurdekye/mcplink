@@ -4,10 +4,16 @@
 
 ⚠ **This is the ONE thing the offline suite cannot reach, so it is not optional.** The suite
 exercises `RenderGuard` directly and is mutation-proven in both directions (14 checks; guard-never-
-fires → 3 red, guard-always-fires → 6 red, override-ignored → exactly 1 red, post-revert 353/0).
-**But it does NOT prove `ToolsRender` calls the guard at all** — delete the `EnsureDrewSomething`
-line from `render_view` and the entire suite stays green. Only the live run below shows the guard
-firing from inside the shipped tool.
+fires → 3 red, guard-always-fires → 6 red, override-ignored → exactly 1 red, baseline and
+post-revert both 368/0, measured against the 2.12.0 base).
+
+**The wiring is handled structurally rather than by a test.** `RenderGuardedToFile` is the only
+path from a render to disk — `Bitmap2D.Save` appears nowhere else in the render path — so an
+unguarded save is not an edit anyone can make by omission. That closes "someone deletes the guard
+call", which no test could have covered without becoming a source grep.
+
+**What remains unobserved is the end-to-end behaviour: nobody has seen the guard refuse from inside
+a running game.** Construction argues it must; only the run below shows it.
 
 Run after the build is deployed (no game restart needed — the override is read per call):
 
