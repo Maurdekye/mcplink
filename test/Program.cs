@@ -2605,11 +2605,22 @@ Check("default tier remains enabled opus, then falls back to first enabled tier"
         && live[PromptWizard.ResolvedTierIndex(live, "sol")].Tier == "sol"
         && noOpus[PromptWizard.ResolvedTierIndex(noOpus, "opus")].Tier == "terra";
 });
-Check("Codex tier palette and provider teal are pinned to the panel theme", () =>
-    ColorNear(PromptWizard.TierColor("luna"), 0.725f, 0.769f, 0.839f)
-    && ColorNear(PromptWizard.TierColor("terra"), 0.498f, 0.682f, 0.373f)
-    && ColorNear(PromptWizard.TierColor("sol"), 1.000f, 0.541f, 0.239f)
-    && ColorNear(PromptWizard.ProviderColor("openai"), 0.345f, 0.608f, 0.584f));
+Check("Codex tier palette remains distinct from its single-source provider chrome", () =>
+{
+    var chrome = PromptWizard.CodexProviderChrome;
+    return ColorNear(PromptWizard.TierColor("luna"), 0.725f, 0.769f, 0.839f)
+        && ColorNear(PromptWizard.TierColor("terra"), 0.498f, 0.682f, 0.373f)
+        && ColorNear(PromptWizard.TierColor("sol"), 1.000f, 0.541f, 0.239f)
+        && ColorNear(PromptWizard.ProviderColor("openai"), chrome.r, chrome.g, chrome.b)
+        && !ColorNear(PromptWizard.TierColor("sol"), chrome.r, chrome.g, chrome.b);
+});
+Check("Codex provider chrome's authored value is the hex recorded for this release", () =>
+{
+    string hex = $"#{PromptWizard.CodexProviderChromeRgb:x6}";
+    string changelog = File.ReadAllText(Path.GetFullPath(Path.Combine(
+        AppContext.BaseDirectory, "..", "..", "..", "..", "CHANGELOG.md")));
+    return changelog.Contains($"panels now use `{hex}` for their provider chrome");
+});
 Check("existing Codex nodes recover provider chrome from their globally unique tier", () =>
     PromptWizard.ProviderForTier(Array.Empty<OrgtreeClient.ProviderTier>(), "sol") == "openai"
     && PromptWizard.ProviderForTier(Array.Empty<OrgtreeClient.ProviderTier>(), "opus") == "claude"
