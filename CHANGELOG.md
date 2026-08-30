@@ -1,5 +1,26 @@
 # McpLink changelog
 
+## 2.14.0 (2026-08-30)
+
+**A prompt panel now carries the overseer eye on its back, so a panel seen from behind is
+recognisably one of yours.** It is the eye from your orgtree page — the same mark, drawn from that
+icon's own geometry rather than an approximation — tinted to match the panel's provider colour.
+
+- **The front of the panel is unchanged.** The eye is drawn beneath the panel's opaque backing
+  layer, so it is hidden from the front and only appears once you walk around it. That is a
+  consequence of where it sits in the draw order, not of careful positioning, so it cannot drift
+  into view later.
+- **It reads correctly from behind.** A panel's back shows a mirror image of its front, which would
+  normally reverse an icon. This one is symmetric to the byte, so the mirroring makes no difference
+  and nothing has to be flipped.
+- **The image is served from this repository**, at a URL pinned to a specific commit. It is not
+  stored in anyone's Resonite account, so there is no account for it to depend on and nothing that
+  can be deleted out from under an installed copy. Everyone in the session sees it, including people
+  who do not have McpLink.
+
+*The back was never actually blank — a panel's canvas already drew from both sides — so this adds a
+mark to that surface rather than redesigning it.*
+
 ## 2.13.0 (2026-08-29)
 
 **Gemini Prompt Agent panels now have first-class provider and tier presentation.** Gemini uses

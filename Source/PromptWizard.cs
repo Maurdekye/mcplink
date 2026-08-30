@@ -649,6 +649,7 @@ internal static class PromptWizard
         public IField<string>? Title;              // panel header title (GenericUIContainer)
         public Image? Frame;                       // tier-colored top bar
         public Image? FrameRing;                   // provider-colored desk chrome
+        public Image? BackEye;                     // overseer eye on the reverse face (null until minted)
 
         // ---- stage 1 (create) ----
         public Slot? StageContent;                 // the scroll VerticalLayout content slot
@@ -745,6 +746,7 @@ internal static class PromptWizard
 
         state.Title = root.GetComponent<GenericUIContainer>()?.ContainerTitle as IField<string>;
         BuildTierFrame(state);
+        BuildBackFaceEye(state);
 
         var body = ui.Empty("Body");
         state.Body = body;
@@ -798,7 +800,7 @@ internal static class PromptWizard
         // opaque backing FIRST: the tier bar renders half-alpha while composing, and with the
         // world as the only thing behind it, the scene bled through the top strip + corners —
         // a solid dark layer underneath makes the ghost-alpha blend against the panel instead
-        FramePanel("FrameBacking", new colorX(0.10f, 0.11f, 0.14f, 1f), -3, 0f);
+        FramePanel("FrameBacking", new colorX(0.10f, 0.11f, 0.14f, 1f), OrderFrameBacking, 0f);
         var tier = CurrentTier(state);
         state.Frame = FramePanel("TierBar", WithAlpha(TierColor(tier.Tier), 0.55f), -2, 0f);
         state.FrameRing = FramePanel("ProviderRing", ProviderColor(tier.Provider), -1, PanelTopBarPx);
@@ -811,6 +813,94 @@ internal static class PromptWizard
             state.Frame.Tint.Value = preview ? WithAlpha(TierColor(tier), 0.55f) : TierColor(tier);
         if (state.FrameRing != null && !state.FrameRing.IsDestroyed)
             state.FrameRing.Tint.Value = ProviderColor(provider);
+        if (state.BackEye != null && !state.BackEye.IsDestroyed)
+            state.BackEye.Tint.Value = WithAlpha(ProviderColor(provider), BackEyeAlpha);
+    }
+
+    // ======================= the overseer eye on the panel's back =======================
+
+    /// <summary>The overseer eye, served to every client from THIS repository at a commit-pinned
+    /// raw.githubusercontent.com URL. The image itself is <c>assets/overseer-eye.png</c>.
+    ///
+    /// ⚠ PINNED TO A COMMIT SHA ON PURPOSE, NOT TO A BRANCH. A `main` URL would let a later rename,
+    /// move or overwrite break the icon retroactively for every user who ever installed the mod,
+    /// including old versions nobody is maintaining. A commit URL cannot change under us. The cost
+    /// is that adding the image and referencing it are necessarily two commits.
+    ///
+    /// ⚠ IT MUST BE A URL EVERY STOCK CLIENT CAN FETCH — the panel is ordinary synced world content
+    /// and OTHER USERS DO NOT HAVE THIS MOD, so nothing generated mod-side reaches them, and a
+    /// `localdb://` uri (what `import_file` returns) is local to this machine. Deliberately NOT a
+    /// `resdb://` cloud asset either: minting one would put the icon in a person's Resonite account
+    /// and make every McpLink install depend on that account continuing to exist.
+    ///
+    /// Verified live 2026-08-30 against this exact URL, on the engine, in a private world:
+    /// HTTP 200, `content-type: image/png`, zero redirects, bytes SHA256-identical to the committed
+    /// file, and in-engine <c>LoadState=FullyLoaded size=[480; 260]</c>.
+    ///
+    /// ⚠ CHECK DIMENSIONS, NEVER LoadState, WHEN RE-VERIFYING THIS. `FullyLoaded` means "fetched",
+    /// not "is an image" — a markdown file measured `FullyLoaded` at size `[0; 0]`. 480x260 is the
+    /// 48x26 viewBox at 10x; `[0; 0]` means the URL served something that did not decode.</summary>
+    internal const string BackEyeAssetUri =
+        "https://raw.githubusercontent.com/Maurdekye/mcplink/"
+        + "75039e567abd2d87c8d2b14a305bfcd450ba0130/assets/overseer-eye.png";
+
+    /// <summary>False while <see cref="BackEyeAssetUri"/> is still a placeholder. Guards the build
+    /// so a half-configured mod ships no eye rather than a broken one: a panel with no eye is the
+    /// correct degraded state, and much better than every panel carrying an Image pointed at a URL
+    /// that resolves for nobody.</summary>
+    internal static bool BackEyeConfigured =>
+        !BackEyeAssetUri.Contains("PLACEHOLDER", StringComparison.Ordinal);
+
+    // The eye sits behind FrameBacking (order -3), which is the panel's opaque dark layer. From
+    // the FRONT that backing hides it completely; from the BEHIND the draw order inverts and the
+    // eye is the nearest thing on the panel. That is the whole trick, and it means the front is
+    // untouched by construction rather than by careful placement.
+    internal const long OrderFrameBacking = -3;
+    internal const long OrderBackEye = -4;
+    private const float BackEyeAlpha = 0.85f;
+
+    /// <summary>Put the overseer eye on the reverse face of a prompt/agent panel, so a panel seen
+    /// from behind is identifiable as one of ours (user request 2026-08-30, "can you put the
+    /// overseer eye icon on the back of the prompt panels").
+    ///
+    /// ⚠ The back is NOT a blank surface and this does not make one — measured: the shared
+    /// UI_UnlitMaterial has Sidedness=Double, so the canvas already renders from behind, showing
+    /// the reverse of the same coplanar Image stack. This ADDS to that (user's stated preference)
+    /// rather than redesigning it.
+    ///
+    /// The icon is horizontally symmetric BY CONSTRUCTION — the source geometry mirrors about
+    /// x=24, and the PNG is symmetrised so a horizontal flip is a byte-identical no-op. That is
+    /// why nothing here flips anything: seen mirrored from the back, a provably symmetric image
+    /// reads correctly, so "not mirrored" is satisfied without a transform to get wrong.</summary>
+    private static void BuildBackFaceEye(WizardState state)
+    {
+        if (!BackEyeConfigured)
+            return;
+
+        var slot = state.Root.AddSlot("BackFaceEye", persistent: false);
+        slot.OrderOffset = OrderBackEye;
+
+        var rect = slot.AttachComponent<RectTransform>();
+        // Anchors, not pixel offsets: the panel is authored at 1150x1150 but scaled, and a
+        // fractional box keeps the eye centred and proportionate whatever the canvas becomes.
+        rect.AnchorMin.Value = new float2(0.22f, 0.36f);
+        rect.AnchorMax.Value = new float2(0.78f, 0.64f);
+
+        var tex = slot.AttachComponent<StaticTexture2D>();
+        tex.URL.Value = new Uri(BackEyeAssetUri);
+
+        var sprite = slot.AttachComponent<SpriteProvider>();
+        sprite.Texture.Target = tex;
+
+        var image = slot.AttachComponent<Image>();
+        image.Sprite.Target = sprite;
+        // The source art is 48x26; without this the eye stretches to the anchor box and stops
+        // being their icon, which is the entire reason this option was chosen over the free one.
+        image.PreserveAspect.Value = true;
+        // Plain Images are not interaction targets, so this cannot eat a click on the front.
+        image.Tint.Value = WithAlpha(ProviderColor(CurrentTier(state).Provider), BackEyeAlpha);
+
+        state.BackEye = image;
     }
 
     private static void SetTitle(WizardState state, string title)

@@ -302,6 +302,58 @@ internal static class PanelChecks
             PromptWizard.CharterText.Contains("you remain hired")
             && PromptWizard.CharterText.Contains("RESPONSE HANDLE"));
 
+        // ---- the overseer eye on the panel's back face (2.14.0) ----
+        //
+        // The icon is served from this repo at a COMMIT-PINNED raw.githubusercontent URL. Everything
+        // pinned here is a property that can silently break the icon for every installed copy of the
+        // mod, which is why it is worth a check rather than a comment.
+        Check("the back-eye URL is configured, absolute https, and NOT a placeholder", () =>
+            PromptWizard.BackEyeConfigured
+            && System.Uri.TryCreate(PromptWizard.BackEyeAssetUri, System.UriKind.Absolute, out var u)
+            && u.Scheme == "https");
+
+        Check("CONTROL: the placeholder guard actually rejects a placeholder", () =>
+            // if this cannot fail, BackEyeConfigured is decoration and a half-configured mod ships
+            "resdb:///PLACEHOLDER_OVERSEER_EYE_NOT_YET_MINTED.png"
+                .Contains("PLACEHOLDER", StringComparison.Ordinal)
+            && !PromptWizard.BackEyeAssetUri.Contains("PLACEHOLDER", StringComparison.Ordinal));
+
+        // ⚠ A BRANCH URL WOULD BREAK RETROACTIVELY. raw.githubusercontent serves whatever the ref
+        // points at NOW, so /main/ lets a later rename or overwrite blank the icon in versions
+        // already shipped and no longer maintained. A 40-hex commit sha cannot move.
+        Check("the back-eye URL is pinned to a commit sha, not to a branch", () =>
+        {
+            var m = System.Text.RegularExpressions.Regex.Match(
+                PromptWizard.BackEyeAssetUri,
+                @"^https://raw\.githubusercontent\.com/[^/]+/[^/]+/([^/]+)/(.+)$");
+            if (!m.Success)
+                return false;
+            string reference = m.Groups[1].Value, path = m.Groups[2].Value;
+            return System.Text.RegularExpressions.Regex.IsMatch(reference, "^[0-9a-f]{40}$")
+                && reference is not ("main" or "master" or "HEAD")
+                && path.EndsWith(".png", StringComparison.Ordinal);
+        });
+
+        Check("CONTROL: that pin check rejects a /main/ URL and a short sha", () =>
+        {
+            static bool Pinned(string url)
+            {
+                var m = System.Text.RegularExpressions.Regex.Match(
+                    url, @"^https://raw\.githubusercontent\.com/[^/]+/[^/]+/([^/]+)/(.+)$");
+                return m.Success
+                    && System.Text.RegularExpressions.Regex.IsMatch(m.Groups[1].Value, "^[0-9a-f]{40}$");
+            }
+            return !Pinned("https://raw.githubusercontent.com/o/r/main/assets/overseer-eye.png")
+                && !Pinned("https://raw.githubusercontent.com/o/r/75039e5/assets/overseer-eye.png")
+                && Pinned(PromptWizard.BackEyeAssetUri);
+        });
+
+        // The eye must draw BEHIND the opaque backing, or it shows through the FRONT of the panel.
+        // Derived from the real constants rather than restating -3/-4, so moving either one is
+        // caught instead of quietly inverting the layering.
+        Check("the back eye draws strictly behind the opaque frame backing", () =>
+            PromptWizard.OrderBackEye < PromptWizard.OrderFrameBacking);
+
         // ---- the fallback. A fallback that has never executed is not a fallback. ----
         Check("delivery: the notice path succeeding means the waking mail is NEVER sent", () =>
         {
