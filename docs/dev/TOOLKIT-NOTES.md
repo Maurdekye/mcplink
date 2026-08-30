@@ -1938,3 +1938,31 @@ public 5-user           -> UNSAFE
 ```
 
 Three controls, one per direction. Without the first, the fix is unproven.
+
+---
+
+## 2026-08-27 (recorded 2026-08-31) — ROOT-SCOPED GRAPH RESULTS ARE NOT REFERENCE CLOSURE
+
+While replacing a packed `ForEachObject` with `AsyncForEachObject`, a workspace ProtoFlux program
+reparented the new node out of the pack within about **1 second**. Direct RefID tools still showed
+the node and all **7** reconstructed connections, but `get_protoflux_subgraph` rooted at the pack
+did not include that node in `nodeTypes` or emit its **4** outgoing `Loop*` edges.
+
+That looked like an async-node exporter bug. It was not. `get_protoflux_subgraph` walks descendants
+of the requested root; it does not pull every referenced node into scope. Decompiling the deployed
+DLL confirmed that `GraphExport.Collect` accepts every descendant `ProtoFluxNode` and filters only
+relay nodes and `Comment`. The async node was simply outside the root by snapshot time.
+
+⇒ When a direct-by-RefID result disagrees with a root-scoped scan, first re-read the node's parent
+and the scan root. Also remember that `find_referrers`/`RunWalk` breadcrumbs begin at the supplied
+`rootId`: a path that omits `World/Userspace/Workspace` can be correctly root-relative, not broken.
+
+### `update_slot.updated` MEANS WRITTEN NOW, NOT STILL TRUE LATER
+
+In the same session, `update_slot` returned `updated:["parent","rotation",...]`; the competing
+ProtoFlux program reverted both fields within about **1 second**. The response accurately names
+the fields written during that call, but it is not a durability or post-settlement assertion.
+
+⇒ After mutating a world with automation in it, wait longer than the competing update interval and
+re-read the actual slot/component fields. Treat the mutation response as an acknowledgement of the
+write attempt, never as proof that another actor did not immediately replace it.
