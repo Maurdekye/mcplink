@@ -695,6 +695,15 @@ pattern collapsed.** As with 2.6.0, each is backed by a job it broke; measuremen
   silhouette almost indistinguishable from a failed albedo load, sending the debugging to the wrong
   member). A submesh with no material at all — it renders as nothing, silently — is reported too.
   Truncation is a sibling `truncated` field; `renderers` only ever holds real entries.
+- **Reopened agent chat windows now reconnect to the same response channel and replay both sides
+  of the conversation.** A window onto an existing agent previously had no response handle, so the
+  agent had nowhere to send a deliberate reply back into it; reopening then showed user mail
+  without those replies and reduced the user's attached object references to inert text. The
+  window now reuses its `@mcp:resonite.*` handle (or attaches one post-hire while preserving other
+  clients' handles), merges durable user mail with durable handle replies by timestamp, resumes
+  polling at the history cursor, and rehydrates reference tokens into grabbable cards. Fresh
+  hire/body panels still begin at “now”, and only explicitly addressed messages are replayed —
+  never agent working output.
 - **The prompt panel's response contract no longer emits the reference token it is teaching.** The
   contract that tells an agent how to attach a grabbable reference card wrote its worked example as
   a literal `[[ref:ID12345678]]` — and the panel replays the kickoff body through the same token
