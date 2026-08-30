@@ -11,8 +11,9 @@ real:
 - **[TOOLKIT-NOTES.md](TOOLKIT-NOTES.md)** — the friction diary. Append-only log of everything
   a tool made an agent guess at, work around, or that quietly returned a wrong answer — each
   entry with the measurement that proves it, and its disposition once fixed.
-- **[VERIFICATION.md](VERIFICATION.md)** — live-verification plans and results for the early
-  tool waves (v0.4–v1.0): what was tested against a running game, and what it found.
+- **[VERIFICATION.md](VERIFICATION.md)** — live-verification plans and results from the v0.6 tool
+  wave through the 2.13 Prompt Agent panel pass: what ran against a live game, what it found, and
+  which exact assertions still lack discriminating evidence.
 - **[PLAN-v1.4.md](PLAN-v1.4.md)** — a representative design/plan document for one release.
 - **[PANEL-CHAT-ACCEPTANCE.md](PANEL-CHAT-ACCEPTANCE.md)** — the acceptance-test record for
   the orgtree agent-panel chat feature.

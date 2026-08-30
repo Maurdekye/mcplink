@@ -1,4 +1,4 @@
-# Live verification — v0.6 → v1.3 (updated 2026-07-18)
+# Live verification record — v0.6 → v2.13 (updated 2026-08-30)
 
 ## 2.12.1 — render-empty guard — **LIVE PASS 2026-08-29** ✅
 
@@ -6,9 +6,8 @@
 **deployed 2.12.2** (`g73786923c92a`, mvid `79defb3a`, `deployConsistent: true`, both slots
 `matchesRunning`): the guard fires from inside the shipped tool, on **both** the forced and the
 measured-empty branches, with a known-positive control and a working `allowEmpty` escape.
-**The panel's visual appearance is a separate gate and remains OPEN** — see *Prompt Agent panel —
-never visually observed* immediately below; nobody has yet looked at a Prompt Agent panel with
-their eyes. Nothing here speaks to that.
+**The panel's ordinary front-side visual gate was passed later on 2.13.0** — see *Prompt Agent
+panel* immediately below. Nothing in this render-empty pass speaks to that separate result.
 
 Verified on 2.12.2 rather than 2.12.1 because the game stayed closed across both deploys, so 2.12.1
 went to disk and was superseded without ever running. 2.12.2 contains this code unchanged.
@@ -60,36 +59,40 @@ covered without becoming a source grep.
 To re-run this procedure later, steps 0–6 above are the procedure; no game restart is needed
 because the override is read per call.
 
-## Prompt Agent panel — never visually observed — **OPEN**
+## Prompt Agent panel — **LIVE PASS 2026-08-29** ✅
 
-**No human has ever looked at a Prompt Agent panel.** It has been spawned, driven and read many
-times; it has never been *seen*. This is the oldest open item here and it is deliberately not
-closeable by any amount of structural evidence.
+**Scope:** the ordinary front side of the Prompt Agent panel. This does **not** verify the new 2.14.0
+back-eye/front-hidden behavior, which was added after this pass and needs its own evidence.
 
-**What is already established, so nobody re-does it:**
+The exact answering build was **2.13.0** (`gc4c00eda1a78`, MVID prefix `e358be5e`, `hotReloads: 0`,
+`deployConsistent: true`, both `rml_mods` and `HotReloadMods` `matchesRunning: true`). After the
+focused Base world settled, the panel was spawned at 0.85 m and inspected both isolated and in
+context.
 
-- The panel **builds**. Measured 2026-08-29: active, tagged `McpLinkPromptWizard`, with
-  `GenericUIContainer` / `Canvas` / `RectTransform` / `BoxCollider` / `Grabbable` /
-  `SpriteProvider`, children `FrameBacking` / `TierBar` / `ProviderRing` / `Image`, scale `0.00075`
-  (the canvas-scale footgun handled), and `bounds` of 0.858 × 0.863 × 0.087 m of **active**
-  renderer/collider geometry.
-- Its **colours are correct as authored data** (2.12.2): `ProviderRing` `#159ACD` on luna/terra/sol,
-  `#D97757` on the Claude tiers, `TierBar` distinct on all five, and the ring reverts when you
-  return to a Claude tier — so the chrome is provider-driven, not tier-driven.
+### What was seen
 
-**None of that is the gate.** "Builds" and "is visible to a human" are different claims, and the
-reason this gate exists is that we have shipped the first while believing the second. What remains
-is only a judgement a person makes with their eyes: does the panel render, does the chrome read as
-the intended blue in real lighting, is the tier bar visibly distinct.
+- The panel was legible and complete: title bar, pin/close controls, agent and org fields, live org
+  map and node cards, luna/Codex tier, effort row, Create/Open-chat actions, and Ready state.
+- No z-fighting or missing elements were visible.
+- The 900×900 isolated render contained **10,238 distinct RGBA values**; the in-context render
+  contained **15,948**. These positive counts distinguish a drawn panel from the all-transparent
+  `Local`-world frame that the render-empty guard refuses.
 
-**Why it stays open — it is blocked on solitude, not on work.** The only two venues that render are
-both user-visible: userspace puts a panel ~0.7 m in the user's face, and the focused world may be a
-session they are a guest in. `Local` is not an option — it does not render at all (that is the very
-defect the 2.12.1 guard now refuses). Standing ruling: **opportunistic — take it when the user is
-next alone in a world, never spawn into a shared session.** One panel, one look, then destroy it.
+### Same-session controls
 
-⚠ **Do not fold this into a release sign-off.** A version can ship, deploy and be live-verified for
-everything else while this stays open; that has now happened across several.
+- Codex: `ProviderRing #159ACD`, luna `TierBar #B9C4D6`.
+- Claude: `ProviderRing #D97757`, tier bar `#DCB0F5`.
+- Gemini: `ProviderRing #5F6FDB`; flash bar `#AEE2F9`, pro bar `#6B45D6`.
+- The earlier structural control also remained true: active `McpLinkPromptWizard` panel, children
+  `FrameBacking` / `TierBar` / `ProviderRing` / `Image`, scale `0.00075`, active bounds
+  0.858 × 0.863 × 0.087 m.
+
+**Visual caveat, not a failed gate:** the saturated tier bar can dominate the thinner provider
+ring. A Sol panel was initially read as orange even though component state showed the Codex ring's
+correct blue; the orange was the `#FF8A3D` Sol bar. Grade provider chrome using same-session provider
+controls plus component state, not one perceived colour from a distant angle.
+
+Cleanup was observed: test panel `ID479DA00` was destroyed after the pass.
 
 ## v1.6 — camera isolation — LIVE PASS 2026-07-26 ✅
 
@@ -195,11 +198,14 @@ Original checklist — each item replays the session failure that motivated the 
     `find_components {namePattern}`, `get_slot_transform {space:"local"}`,
     `get_component {includeMemberIds:true}`.
 
-## v1.3 — ProtoFlux workflow wave — NOT YET LIVE-VERIFIED (built 2026-07-18, hot_reload or restart required)
+## v1.3 — ProtoFlux workflow wave — **OPEN: consolidated live battery not run**
 
-Offline smoke suite: 88/88 PASS (89 tools). Every item below needs one live check against a
-running game; build a small scratch rig first (`flux_build`: ValueInput<bool> → FireOnTrue →
-some action, plus a DynamicVariableInput node and a Sequence with 2+ Calls) so all checks reuse it.
+Status re-audited 2026-08-30: no later pass record covers this named battery. Ad-hoc uses of some
+tools do not establish the combined port/global/placement/wiring/evaluation/error-path claims below.
+The historical offline smoke suite was 88/88 PASS (89 tools). Every item below still needs one live
+check against a running game; build a small scratch rig first (`flux_build`: ValueInput<bool> →
+FireOnTrue → some action, plus a DynamicVariableInput node and a Sequence with 2+ Calls) so all checks
+reuse it.
 
 - [ ] `flux_ports` on the Sequence node → lists `Calls[0]`/`Calls[1]` impulse elements with
       targets, and on a ReadDynamicValueVariable → `VariableName` under globalRefs + `Value`/
@@ -234,6 +240,10 @@ some action, plus a DynamicVariableInput node and a Sequence with 2+ Calls) so a
       `dependencies:"BreakAll"`; `dependencies:true` reports `CollectAssets`.
 
 ## Older waves (v0.6 – v1.2)
+
+These are historical verification records, not a current-release sign-off. An unchecked edge or
+parity case means no discriminating evidence was recorded for that exact assertion; it must not be
+silently promoted by a broader nearby pass.
 
 
 Expected: `session_info` works and `tools/list` reports **85 tools** (81 through v0.9.1 + the
@@ -288,53 +298,41 @@ ref:null on a fresh copy — expected transient; scripted Position write), and 1
   match vs atomic (10237 slots / 20365 components).
 - **v0.9.0 — FAILED, CRASHED THE GAME.** See below. Fixed in v0.9.1 (deployed 21:00).
 
-## v0.9 — impulse streams — RE-VERIFY AGAINST v0.9.1 (deployed 21:00, restart required)
+## v0.9 — impulse streams — **NAMED LIVE CASES PASS in the 0.10.0 battery**
 
 ⚠️ **v0.9.0 hard-crashed Resonite.** Root cause: it Harmony-patched *constructed generic* methods
 (`ExecutionRuntime<FrooxEngineContext>.Execute`, `DynamicImpulseHelper.TriggerDynamicImpulse<Proxy>`).
 Patching a constructed generic is doubly broken — inert for organic calls (CLR shares one
 canonical body across reference-type instantiations) AND executing the detoured stub kills the
-process. v0.9.1 patches only NON-generic methods (per-GROUP granularity now). Confirm before
-anything else: the deployed DLL is the ≥21:00 build, and `impulse_watch` reports `groupsWatched`.
+process. v0.9.1 patches only NON-generic methods (per-GROUP granularity now).
 
-- [ ] `impulse_watch` on a small gadget → `patchesApplied:true`, `groupsWatched ≥ 1`, log shows
-      "hooks patched". **Game must NOT crash** (this is the crash regression test).
-- [ ] `fire` a CallInput/action in scope, or trigger the gadget → `impulse_events` shows a
-      `groupExecute`/`groupExecuteAsync`/`groupEvents` entry for that group with a sane `tMs`.
-- [ ] Dynamic tap: `dynamic_impulse` (untyped) into scope → a `dynamicImpulse` event with tag +
-      receiver count. (Typed WithValue sends are NOT tapped — receivers still show as groupExecute.)
-- [ ] `impulse_events waitMs:10000` long-poll + trigger → returns early with the trace.
-- [ ] `hookErrors` stays 0 throughout.
-- [ ] `impulse_unwatch all` → log shows "hooks removed", `patched:false`; frame rate unchanged
-      (perf) before/during/after; a second `impulse_watch` re-patches cleanly.
+The exact 0.10.0 pass record above closes these named v0.9.1 cases:
+
+- [x] Crash regression: watch/execute completed without the v0.9.0 process crash.
+- [x] Group execution events and the dynamic-impulse bus tap were observed.
+- [x] The 10 s long-poll returned early on an event; `hookErrors` stayed 0.
+- [x] Unpatch/re-patch completed twice.
+
+It does **not** record separate before/during/after frame-rate numbers, so no performance claim is
+inferred from the unpatch result.
+
 - [ ] Set `enableHooks:false` in mod config → `impulse_watch` refuses politely.
 
-## v0.10 — packages + avatar — NOT YET LIVE-VERIFIED (deployed 2026-07-09, restart required)
+## v0.10 — packages + avatar — **NAMED LIVE CASES PASS; edge/parity cases open**
 
-Offline smoke suite passes (84 tools, schemas valid); the engine-touching paths need a live pass:
+The exact 0.10.0 record above closes only the cases it names:
 
-- [ ] `export_package` on a small textured gadget → file exists, `assetsPackaged ≥ 1`; the file
-      opens as a zip (it's the RecordPackage container) with `R-Main` record + assets.
-- [ ] `import_package` of that file into a scratch slot → hierarchy + textures restored, refs
-      intact (compose with `diff` against the original: expect only RefID-remap-invisible identity).
-- [ ] Cross-check with the game: drag-drop the exported file into Resonite → imports as the same
-      object (proves the package is a REAL .resonitepackage, not just McpLink-readable).
-- [ ] `import_package` of a corrupt/non-package file → clean error (decode fails on the HTTP
-      thread, no half-created slot).
-- [ ] Import failure path: the holder slot exists but `progress.Failed` reporting fires (hard to
-      provoke benignly — a package with a deleted asset entry would do; optional).
-- [ ] `export_package` on a slot using cloud (resdb) assets while signed in → assets download and
-      bundle (this exercises the GatherAsset path; may take seconds).
-- [ ] `user_avatar` with an avatar equipped → `avatar` names the avatar object root with `Root`
-      among its bodyNodes; scale sane.
-- [ ] `user_avatar` while holding an item + tool equipped → `hands[i].holding` / `hands[i].tool`
-      populated; worn attachment (e.g. a badge/watch) appears in `wornItems` with its body node.
-- [ ] `edit_list` on a scratch `MeshRenderer.Materials` (SyncAssetList): add two materials by
-      `{"$ref":...}`, `move` 1→0, `set` index 0 to a third, `remove` 0, then `values` wholesale
-      replace — count and render correct after each; a single Ctrl+Z (or `undo`) rolls the whole
-      call back (move is the known non-undoable exception).
-- [ ] `edit_list` on a SyncFieldList (e.g. a MultiValueTextureDriver-style float list): `add`
-      with a bare value writes the element field; `set` decodes typed literals.
+- [x] Package round-trip and zip/container structure.
+- [x] Corrupt-package rejection.
+- [x] `user_avatar` with an avatar, two equipped tools and a grabbed object.
+- [x] All exercised `edit_list` operations, SyncFieldList values and out-of-range rejection.
+
+Still unproved by that named record:
+
+- [ ] Drag/drop the exported package into Resonite and compare it with the source object.
+- [ ] Exercise the import-holder `progress.Failed` path with a safely broken package.
+- [ ] Export cloud (`resdb`) assets while signed in to exercise `GatherAsset`.
+- [ ] Confirm a worn attachment appears in `wornItems` with its body node.
 
 ## Known sharp edges (by design — verify the guardrails, not the absence)
 
@@ -351,25 +349,15 @@ Never patch a constructed generic method or a method of a constructed generic ty
 intercept organic calls (shared canonical body) and invoking the stub crashes the process.
 `ImpulseHooks.ResolvePatchTargets()` now throws on any generic target and a smoke test asserts it.
 
-## v1.1 hot reload — live pass (pending)
+## v1.1 hot reload — **LIVE PASS 2026-07-10; in-game trigger parity open**
 
 Prereq: `rml_libs\ResoniteHotReloadLib.dll` + `Core` (v3.1.0, installed 2026-07-09), McpLink ≥1.1.0
 loaded from a normal restart (1.1.0 staged for the NEXT restart on 2026-07-09 — the running 1.0.0
 session cannot hot-reload; the first reload needs the registration that only 1.1.0 makes).
 
-- [ ] Startup log shows "Hot reload enabled" (registration succeeded, lib found).
-- [ ] `hot_reload` with a stale/missing HotReloadMods DLL → helpful error / old `dllAgeSeconds`.
-- [ ] Happy path: touch a source string → `dotnet build -c Release` (HotReloadMods copy succeeds
-      while the game runs; rml_mods copy may fail locked — that's fine) → `hot_reload` → within
-      ~2 s `logs` shows "McpLink X hot-reloaded" and the changed string is live. Port unchanged.
-- [ ] Teardown correctness: start a `watch_changes` + an `impulse_watch` + an `at` job before
-      reloading → after reload `changes`/`impulse_events` report unknown watch (fresh registry),
-      `jobs` is empty, ImpulseHooks unpatched (start+stop a new impulse_watch to confirm patch
-      cycle still works post-reload).
-- [ ] Double reload: run the loop twice in a row (regression: PrepareHotReload matches the
-      ORIGINAL instance by type FullName — must keep working on generation 2+).
-- [ ] `eval` still works after reload (new ALC loads McpLinkEval.dll fresh; ~1-2 s warmup again).
-- [ ] In-game trigger parity: Dev Tool → Create New → Hot Reload Mods → McpLink button.
+The original unchecked plan is not repeated here: the measured record immediately below is the
+authority and closes startup, negative, happy-path ×2, teardown, generation-2 and eval claims. Only
+the in-game Dev Tool button remains without direct evidence.
 
 ### v1.1 pass record (2026-07-10)
 
@@ -408,8 +396,13 @@ iterated via the v1.1 hot-reload loop (2 reload cycles, priorReloads 3→4):
       the canvas at 1 px = 1 m). Fix: `canvasScale` (default 0.001) multiplied in *after*
       placement, because `PositionInFrontOfUser(scale:true)` → `ScaleToUser` stomps pre-set scale.
 - [x] Undoable spawn + `destroy` cleanup of the mis-scaled panel.
-- [ ] `replaceId`, explicit `position`+`lookAt`, `inFrontOf` other-user paths — code-reviewed,
-      not yet exercised live (game closed before a second pass); verify opportunistically.
+- [ ] `replaceId`, explicit `position`+`lookAt`, and `inFrontOf` another user still lack a
+      **discriminating** live pass. A 2026-08-25 attempt reported explicit `position` + `replaceId`
+      but landed 5.80 m away at neither the requested point nor the old pose. Current source checks
+      explicit `position` first, while the live note inferred that `replaceId` won; the resolved
+      arguments/branch were never asserted. The attempt proves a discrepancy, not which placement
+      leg ran, so none of the three is promoted. See the 2026-08-25 `spawn_markdown` entry in
+      [TOOLKIT-NOTES.md](TOOLKIT-NOTES.md).
 
 Also hit live (pre-existing, now in CHANGELOG known issues): `eval` broken by a stale pinned
 McpLinkEval AssemblyLoadContext after hot reloads (`InvalidCastException: EvalGlobals context #4
