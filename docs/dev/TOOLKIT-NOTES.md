@@ -1966,3 +1966,19 @@ the fields written during that call, but it is not a durability or post-settleme
 ⇒ After mutating a world with automation in it, wait longer than the competing update interval and
 re-read the actual slot/component fields. Treat the mutation response as an acknowledgement of the
 write attempt, never as proof that another actor did not immediately replace it.
+
+---
+
+## 2026-08-24 — `spawn_markdown` TITLES TAKE RAW TEXT
+
+The collider sub-frame report panel (`ID1B69C000`) was created with an HTML-escaped title:
+`Colliders &amp; sub-frame raycasts`. The title bar displayed the five literal characters
+`&amp;`; `spawn_markdown` does not HTML-decode its `title` argument.
+
+The control was the same live panel with the title text changed to raw
+`Colliders & sub-frame raycasts`. A `render_view` from 1.35 m along the panel-to-user-head line
+then showed the ampersand correctly and the body remained readable. The panel was at
+`[-7.058, -14.415, 15.107]`; the user's head was at `[-8.152, -14.345, 13.568]`.
+
+⇒ Pass ordinary text in `title`, including raw `&`. Do not pre-escape it as HTML. This applies to
+the title argument; markdown/body escaping is a separate path.
