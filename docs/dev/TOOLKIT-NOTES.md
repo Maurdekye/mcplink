@@ -1861,3 +1861,80 @@ The `<<'EOF'` quoting is what matters — unquoted `<<EOF` still expands. Same h
 
 *(Recorded with some appreciation: the trap fired **while documenting the trap**, and ran the exact
 binary the sentence was warning about.)*
+
+## 2026-08-30 — `LoadState=FullyLoaded` DOES NOT MEAN "IS AN IMAGE"
+
+Checking whether Resonite would load a texture from a plain `https://` URL, measured live:
+
+```
+resonite CDN png       FullyLoaded  size=[512; 512]
+github.com PNG         FullyLoaded  size=[ 32;  32]
+github README.md       FullyLoaded  size=[  0;   0]   <-- a MARKDOWN FILE
+bogus URL (404)        Asset=null
+```
+
+**A markdown file reports `FullyLoaded`.** The fetch succeeded; the decode did not. `LoadState`
+answers *"did bytes arrive"*, not *"is this an image"* — so a check that stops at `FullyLoaded`
+will certify a README as a texture.
+
+⇒ **Check `Asset.Size`. `[0; 0]` is the tell.** Assert the dimensions you actually expect.
+
+**How this was nearly missed, which is the reusable part.** The first probe used only
+`assets.resonite.com` — Resonite's *own* domain — and reported a clean pass. That result was
+consistent with "https works" and also with "only Resonite's domain works", and I couldn't tell
+which. Adding an arbitrary host (github.com) separated those. Adding a **non-image on a working
+host** then separated "fetched" from "decoded" — a distinction nothing in the happy path exposes.
+**Probe your instrument with a thing that should fail**; a control that only ever passes is telling
+you about itself, not about the system.
+
+### Nothing loads until something references it
+
+Assets are refcount-driven. A freshly configured `StaticTexture2D` has `Asset == null` and will stay
+that way forever if nothing consumes it — **`Asset=null` is not evidence of failure** unless you
+forced a load first. To force one:
+
+```csharp
+tex.DirectLoad.Value = true;                 // the only Load-named field on StaticTexture2D
+var sp = slot.AttachComponent<SpriteProvider>();
+sp.Texture.Target = tex;                     // a real consumer
+```
+
+`DirectLoad` alone was not enough in practice; the consumer is what makes it resolve.
+
+---
+
+## 2026-08-30 — A PREDICATE THAT IS TRUE OF EXACTLY THE USELESS CASE IS A LIVE ABSTENTION
+
+A watchdog was armed to wake me when the game reached a world safe to spawn a test panel into:
+
+```python
+safe = (users == 1 and authority is True)      # "I am alone and in charge"
+```
+
+It fired: `SAFE Local users=1 authority=True`.
+
+**`Local` satisfies it, and `Local` is the one world that provably cannot be rendered** —
+`render_view` there returns a frame with every pixel `(0,0,0,0)`, and a transparent PNG **displays
+as white**, so an empty render looks like a perfectly plausible one. The predicate did not merely
+admit a bad case; **it was true of precisely the case that would have produced a convincing blank
+picture I might have believed.**
+
+The fix is one clause — `and name != "Local"` — but the lesson is the shape:
+
+- The predicate encoded **"am I permitted to act here"** (nobody else present) and silently implied
+  **"will acting here produce a result"** (the world draws). Those are different questions, and only
+  the first was written down.
+- The failure is invisible from inside: it fires, it looks correct, and the damage appears one step
+  later as a blank render that resembles success.
+
+⇒ When a guard means *"conditions are right to do X"*, enumerate what X actually needs and check
+that X **can produce an observable result**, not only that you are allowed to attempt it. Then run
+the predicate against the known-bad case by name and assert it says no:
+
+```
+Local, solo, authority  -> UNSAFE   (the v1 bug, now pinned)
+Rolling Hills, solo     -> SAFE
+public 5-user           -> UNSAFE
+```
+
+Three controls, one per direction. Without the first, the fix is unproven.
