@@ -1740,3 +1740,124 @@ broken on FrooxEngine", which is what I was about to record.
 the literal answer I needed —
 `OfficialAssets.Common.Icons.Eye = resdb:///7904ce4243d91cf35709d07ef653a1295ee174f9468b9fd12728a07728c8d3bb.png`
 — an engine-shipped icon that removed an entire asset-creation pipeline from the job.
+
+## 2026-08-30 — A PIXEL CHECK CANNOT SEE SHAPE, AND OTHER IMAGE-PIPELINE TRAPS
+
+The sharpest one first, because it is a level past the usual rule.
+
+### ⭐ A well-formed, non-vacuous, fully-passing check that was blind to the defect class
+
+Rasterising an icon with PIL, the first output was **visibly broken** — comb-teeth moiré running
+along the whole stroke, plus a kink where two beziers met. Every assertion passed:
+
+```
+opaque px       : 33453 / 124800  (26.8%)   PASS
+accent-coloured : 33449                     PASS
+centre (pupil)  : (217,119,87,255)          PASS  -- exact #d97757
+corner          : (0,0,0,0)                 PASS  -- fully transparent
+=> SELF-CHECK PASS
+```
+
+Those are not lazy assertions. They are specific, they have controls, and **not one of them can
+represent shape.** Opacity ratio, colour presence, an exact centre pixel and a transparent corner
+are all satisfied by a correctly-coloured mess. Only *looking at the image* found it.
+
+This is not "add a control" — **I had controls and they were all green.** The rule is narrower and
+nastier: *a check measures the properties you encoded, and a defect in a property you did not
+encode is invisible to it no matter how rigorous it is.* Before trusting a check, ask what class of
+wrongness it is structurally incapable of registering. For images that class is almost always
+geometry.
+
+**The mechanism, so nobody rediscovers it:** `ImageDraw.line(points, width=N, joint="curve")`
+stamps a pieslice at **every vertex**. Feed it a densely sampled bezier (800+ points) and the
+overlapping joins moiré into regular teeth along the edge. Fixes, in order of preference:
+
+1. **Stamp a round brush along the path** — `draw.ellipse` at each sampled point, radius = width/2.
+   No joins exist, so no join artifacts can. This is what shipped.
+2. Sample far more coarsely and drop `joint`.
+
+Draw supersampled (×8–×16) and downsample with `LANCZOS`; PIL primitives have no antialiasing, so
+the downsample *is* the antialiasing.
+
+**And verify geometry against the source, not the render.** The realistic defect in a hand-copied
+path is a *transcription slip* — one mistyped digit gives a smooth, plausible, wrong shape that no
+render inspection and no pixel statistic can catch. Parse the authoritative source and compare the
+numbers; give that comparison a control that feeds a deliberately wrong value and asserts rejection.
+
+### There is no SVG rasteriser on this machine
+
+`cairosvg`, `svglib`, `skia`, `wand`, `inkscape`, `rsvg-convert` — **all absent.** `PIL` is present.
+So SVG work means evaluating the path maths yourself.
+
+⚠ **`convert` IS on PATH and it is NOT ImageMagick.** It resolves to
+`C:\WINDOWS\system32\convert.exe`, the **FAT→NTFS filesystem conversion utility**. Handed an image
+it answers:
+
+```
+$ convert --version
+Invalid drive specification.
+```
+
+An unrecognisable error from a disk tool you did not mean to run. Check `command -v convert` before
+believing you have ImageMagick.
+
+### ⚠ A watchdog probe that always dies looks exactly like a condition that never comes true
+
+A probe printing a Resonite world name crashed on its first run:
+
+```
+UnicodeEncodeError: 'charmap' codec can't encode character '\u0950'
+```
+
+The world was named `[F.E] ॐ Open Sangha Livestream`. `cp1252` stdout cannot encode `ॐ`, so the
+script died before printing — and **a watchdog whose target always exits non-zero never matches,
+which is indistinguishable from "the thing I am waiting for hasn't happened yet."** It would have
+sat armed and silent forever.
+
+**The reason it bit is the general hazard: a watchdog target does NOT run in your shell.** It runs
+under the backend service's environment — its own PATH, its own codepage, none of your rc files. So
+its console encoding was never yours to assume, exactly as PATH isn't.
+
+Rules for any watchdog target:
+- **Force output to ASCII** (`s.encode("ascii", "replace").decode()`) when it can contain
+  user-controlled text. World names, usernames and session titles carry arbitrary Unicode.
+- **Read the `smoke` block on create.** It runs the target once and shows real output and exit code
+  — the five seconds that tells you whether the dog can ever fire.
+- Keep the machine-readable token (`SAFE` / `UNSAFE`) separate from any human-readable text, and
+  never let formatting the pretty part be able to kill the signal.
+
+### ⚠ Backticks in a double-quoted `git commit -m` SILENTLY DELETE THE WORD
+
+Writing the entry above, this commit message:
+
+```
+... and `convert` on PATH is Windows' FAT->NTFS utility ...
+```
+
+was passed as `git commit -m "…"`. In a **double-quoted** bash string backticks are command
+substitution, so bash **ran `convert`** — the Windows filesystem utility — printed its complaint
+(`Must specify a file system`) into the middle of the git output, and substituted its empty stdout
+into the message. The committed text read:
+
+```
+... and  on PATH is Windows' FAT->NTFS utility ...
+```
+
+The word was **gone**, with no error and a successful commit. Nothing warns you; the commit
+succeeds, and the damage is a missing noun in the middle of a sentence you will never re-read.
+
+⇒ **Never use `-m "…"` for a message containing backticks.** Use a quoted heredoc, which is literal:
+
+```bash
+git commit -F - <<'EOF'
+Subject line
+
+Body with `backticks`, $dollars and "quotes" all safe.
+EOF
+```
+
+The `<<'EOF'` quoting is what matters — unquoted `<<EOF` still expands. Same hazard for any
+`-m`-style flag taking prose: `gh pr create --body`, `gh release create --notes`.
+
+*(Recorded with some appreciation: the trap fired **while documenting the trap**, and ran the exact
+binary the sentence was warning about.)*
