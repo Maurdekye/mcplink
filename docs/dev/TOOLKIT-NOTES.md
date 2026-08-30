@@ -1677,3 +1677,66 @@ destroying it on every exit path, including an interrupted turn. After the 2.13.
 panel was destroyed and an unrelated orphan (`ID42B2E00`, Base world, `sol/openai`, no bound org or
 node) was deliberately left untouched because its owner was unknown. Do not treat "no agent
 bound" as authorization to delete someone else's world content.
+
+## 2026-08-30 — ilspy-mcp: NESTED TYPES NEED `+`, AND THE DLLs ARE IN THE GAME ROOT
+
+Two ways to make `ilspy-mcp` fail with a message that tells you nothing. Both cost me time on the
+same job, and **neither is a bug in the tool** — which is exactly why they're worth writing down: I
+was one message away from filing a defect report against a working tool.
+
+Every failure looks identical, and identically uninformative:
+
+```
+An error occurred invoking 'decompile_type'.
+```
+
+No path, no type name, no inner exception, no distinction between "file not found", "type not
+found" and "type name malformed". You cannot tell the three apart from the error, so you must
+bound them with controls.
+
+### 1. The assemblies are in the GAME FOLDER ROOT, not `Resonite_Data\Managed`
+
+```
+C:\...\common\Resonite\FrooxEngine.dll                  ← correct
+C:\...\common\Resonite\Resonite_Data\Managed\...        ← DOES NOT EXIST
+```
+
+There is no `Managed` directory at all. A wrong path produces the same bare error as everything
+else, so it reads like the tool is broken rather than like you typed the wrong path.
+
+⚠ The part worth sitting with: **McpLink's own `CharterText` says "the DLLs in the game folder
+root"**, and I had read that string closely an hour before, for a different reason. I answered from
+memory of how .NET games are usually laid out instead of from the source I'd just been editing.
+Confirm the path (`ls` it) before concluding anything about the tool.
+
+### 2. `decompile_type` needs `+` between nested types, not `.`
+
+```
+OfficialAssets.Common.Icons   -> An error occurred invoking 'decompile_type'.
+OfficialAssets+Common+Icons   -> works
+```
+
+`OfficialAssets.Common.Icons` is a chain of NESTED classes, not namespaces, and the tool wants CLR
+nested-type notation. Nothing in the error hints at this, and the dotted form is what every other
+tool in the kit accepts — `search_members_by_name` happily *reports* the type as
+`OfficialAssets.Common.Icons`, so the tool that finds it prints a name the tool that decompiles it
+rejects.
+
+**The control that bounds it:** `FrooxEngine.Eye` — non-nested — decompiles fine with dots, on the
+same assembly, in the same session. That is what proves it is the *nesting* rather than the
+assembly, the path, or the server being down. Without that control the honest reading was "ilspy is
+broken on FrooxEngine", which is what I was about to record.
+
+### Working recipe
+
+1. `search_members_by_name` first — it takes a bare search term, has no type-name syntax to get
+   wrong, and tells you the containing type. It is the cheap way in.
+2. Convert its dotted answer to `+` form yourself for `decompile_type`.
+3. Expect a big result: `OfficialAssets+Common+Icons` came back **523,845 characters / 20,889
+   lines** and was written to a file rather than returned. That is normal for an asset catalog —
+   grep the saved file for the field you want instead of trying to read it.
+
+**What it was worth:** two minutes of controls turned "the toolkit is broken, file a defect" into
+the literal answer I needed —
+`OfficialAssets.Common.Icons.Eye = resdb:///7904ce4243d91cf35709d07ef653a1295ee174f9468b9fd12728a07728c8d3bb.png`
+— an engine-shipped icon that removed an entire asset-creation pipeline from the job.
