@@ -67,6 +67,10 @@ param(
     [int]$RetrySeconds = 60,
     [ValidateSet('schtask', 'none')][string]$WaiterLaunch = 'schtask',
     [string]$WaiterTaskName = 'McpLinkDeployWaiter',
+    [string]$SchtasksExe = 'schtasks.exe',
+    # Internal marker carried only by the scheduled child. Direct/manual -Waiter runs must
+    # never delete a real pending deploy task merely because they share the default name.
+    [switch]$ScheduledWaiter,
     [switch]$SkipStampCheck,
     [switch]$Waiter
 )
@@ -100,6 +104,25 @@ function Write-Outcome([hashtable]$o) {
     $tmp = "$OutcomePath.tmp"
     Write-TextFile $tmp ($o | ConvertTo-Json -Depth 8)
     Move-Item $tmp $OutcomePath -Force
+}
+
+# A scheduled waiter owns the task definition that launched it. Task Scheduler keeps a
+# completed one-time task indefinitely, and its 23:59 trigger can later open another PowerShell
+# window. Remove that definition on EVERY waiter exit path. Cleanup is deliberately best-effort
+# and loud: it must not replace a deploy/refusal exit code, but a failure must leave evidence.
+function Remove-ScheduledWaiterTask {
+    if (-not $ScheduledWaiter) { return }
+    try {
+        & $SchtasksExe /delete /f /tn $WaiterTaskName | Out-Null
+        $deleteExit = $LASTEXITCODE
+        if ($deleteExit -eq 0) {
+            Write-Log "waiter cleanup: removed scheduled task '$WaiterTaskName'"
+        } else {
+            Write-Log "WAITER CLEANUP FAILED: '$SchtasksExe /delete' exited $deleteExit for task '$WaiterTaskName'; the deploy/refusal result is preserved, but the task may remain"
+        }
+    } catch {
+        Write-Log "WAITER CLEANUP FAILED: could not remove task '$WaiterTaskName' with '$SchtasksExe' ($($_.Exception.Message)); the deploy/refusal result is preserved, but the task may remain"
+    }
 }
 
 # "Closed" means BOTH: no game process, and the destination file writable. The process check
@@ -303,7 +326,16 @@ function Invoke-Waiter {
 
 # ======================= main =======================
 
-if ($Waiter) { Invoke-Waiter; exit 0 }
+if ($Waiter) {
+    try {
+        Invoke-Waiter
+        exit 0
+    } finally {
+        # Invoke-Waiter exits from inside its own try on success, corruption refusal, missing
+        # stage, and duplicate-waiter paths. This outer finally is what covers all of them.
+        Remove-ScheduledWaiterTask
+    }
+}
 
 if (-not (Test-Path $Src)) {
     Write-Log "SOURCE MISSING: $Src - nothing staged"
@@ -384,11 +416,14 @@ if (Test-GameClosed $Dst $GameProcessName) {
 
 if ($WaiterLaunch -eq 'schtask') {
     try {
-        $tr = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`" -Waiter -StageDir `"$StageDir`""
-        schtasks /create /f /tn $WaiterTaskName /sc once /st 23:59 /tr $tr | Out-Null
-        if ($LASTEXITCODE -ne 0) { throw "schtasks /create exited $LASTEXITCODE" }
-        schtasks /run /tn $WaiterTaskName | Out-Null
-        if ($LASTEXITCODE -ne 0) { throw "schtasks /run exited $LASTEXITCODE" }
+        # Keep the task action below schtasks.exe's 261-character /tr ceiling on the canonical
+        # paths. The scheduled child uses the platform scheduler default; SchtasksExe remains an
+        # injection seam for the parent and for direct-child harness calls only.
+        $tr = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`" -Waiter -ScheduledWaiter -StageDir `"$StageDir`" -WaiterTaskName `"$WaiterTaskName`""
+        & $SchtasksExe /create /f /tn $WaiterTaskName /sc once /st 23:59 /tr $tr | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "$SchtasksExe /create exited $LASTEXITCODE" }
+        & $SchtasksExe /run /tn $WaiterTaskName | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "$SchtasksExe /run exited $LASTEXITCODE" }
     } catch {
         Write-Log "STAGED BUT WAITER NOT ARMED: $($_.Exception.Message) - the deploy will NOT happen until deploy.ps1 runs again"
         Write-Outcome @{ outcome = 'staged-no-waiter'; pin = $pin; productVersion = "$productVersion"; error = "$($_.Exception.Message)"; needsUserAction = 'waiter could not be armed - re-run tools/deploy.ps1' }
